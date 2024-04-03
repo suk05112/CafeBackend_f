@@ -4,6 +4,8 @@ from typing import Union
 import pymysql
 import dbinfo
 
+#https://fastapi.tiangolo.com/ko/
+
 app = FastAPI()
 connection = pymysql.connect(
         host = dbinfo.db_host,
@@ -26,6 +28,3 @@ async def root():
 def read_item(item_id: int, q: Union[str, None] = None):
     return {"item_id": item_id, "q": q}
 
-
-
-#https://fastapi.tiangolo.com/ko/
