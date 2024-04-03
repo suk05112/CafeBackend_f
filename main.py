@@ -1,6 +1,9 @@
 from fastapi import FastAPI
 from typing import Union
 
+import pymysql
+import dbinfo
+
 app = FastAPI()
 connection = pymysql.connect(
         host = dbinfo.db_host,
