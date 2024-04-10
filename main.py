@@ -41,6 +41,15 @@ class StoreCreate(BaseModel):
     store_lng: float
     store_photo_cnt: int
 
+class Menu(BaseModel):
+    name: str
+    menuId: str
+    storeId :str
+    description: str
+    price: int
+    status: str
+    categoryId: str
+
 # @app.post("/store/update/{store_id}")
 # def registerStore():
 @app.post("/store/register")
@@ -102,7 +111,7 @@ async def registerStore(store: StoreCreate):
     
         store_photo_urls = []
         
-        for i in range(1, event['store_photo_cnt']+1):
+        for i in range(1, store.store_photo_cnt+1):
             s3_url = s3.generate_presigned_url('put_object',
                                                     Params={'Bucket': bucket_name,
                                                             'Key': f'store_image/store_image_{store_id}_{i}.png',
@@ -133,7 +142,7 @@ async def registerStore(store: StoreCreate):
     finally:
         connection.close()
 
-@app.get("owner/store/list/{owner_Id}")
+@app.get("/store/list/{owner_id}")
 def getStoreList(owner_id: int):
     connection = pymysql.connect(
         host = dbinfo.db_host,
@@ -227,7 +236,7 @@ def getStoreList(owner_id: int):
     # return {"item_id": item_id}
 
 @app.post("/store/update/{store_id}")
-def updateStore():
+def updateStore(store: StoreCreate):
     connection = pymysql.connect(
         host = dbinfo.db_host,
         user = dbinfo.db_username,
@@ -242,21 +251,21 @@ def updateStore():
         query = "UPDATE Store SET "
         values = []
 
-        if 'store_address' in event:
+        if store.store_address:
             query += "store_address = %s, "
-            values.append(event['store_address'])
-        if 'store_telephone' in event:
+            values.append(store.store_address)
+        if store.store_telephone:
             query += "store_telephone = %s, "
-            values.append(event['store_telephone'])
-        if 'store_description' in event:
+            values.append(store.store_telephone)
+        if store.store_description:
             query += "store_description = %s, "
-            values.append(event['store_description'])
-        if 'store_photo' in event:
+            values.append(store.store_description)
+        if store.store_photo:
             query += "store_photo = %s, "
-            values.append(event['store_photo'])
-        if 'store_logo' in event:
+            values.append(store.store_photo)
+        if store.store_logo:
             query += "store_logo = %s, "
-            values.append(event['store_logo'])
+            values.append(store.store_logo)
 
         query = query[:-2]  # 마지막 쉼표와 공백 제거
         query += " WHERE store_id = %s"
@@ -332,3 +341,120 @@ def deleteStore():
         }
     finally:
         connection.close()
+
+@app.get("/menu/list/{store_id}")
+def getMenuList(store_id: int):
+    connection = pymysql.connect(
+    host = dbinfo.db_host,
+    user = dbinfo.db_username,
+    passwd = dbinfo.db_password,
+    db = dbinfo.db_name,
+    port = dbinfo.db_port
+    )
+
+    try:
+        # store_id = store_id
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        cursor.execute("select menuId, name, price, description, status from Menu where storeId=%s;", store_id)
+        rows = cursor.fetchall()
+    
+        bucket_name = "cafe-platform-bucket"
+    
+        s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
+                          aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                          region_name='ap-northeast-2',
+                          config= Config(signature_version='s3v4'))
+         
+        menuList = []
+
+        for row in rows:
+            menu_id = row["menuId"]
+            menu_image_url = s3.generate_presigned_url('get_object',
+                                    Params={'Bucket': bucket_name,
+                                            'Key': f'menu/menu_{store_id}_{menu_id}.png',
+                                            },
+                                    ExpiresIn=3600)
+            menu = {
+                "menu_id": row["menuId"],
+                "name":row["name"],
+                "price": row["price"],
+                "description": row["description"],
+                "status": row["status"],
+                "menu_image_url": menu_image_url
+            }
+            menuList.append(menu)
+        
+        return {
+            'statusCode': 200,
+            'menuList': menuList
+        }
+        
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed find menuList",
+            'store_id': store_id
+        }
+        
+        
+    finally:
+        connection.close()
+
+@app.post("/add/menu/{store_id}") 
+def addMenu(menu: Menu):
+    try:
+        connection = pymysql.connect(
+        host = dbinfo.db_host,
+        user = dbinfo.db_username,
+        passwd = dbinfo.db_password,
+        db = dbinfo.db_name,
+        port = dbinfo.db_port
+        )
+        
+        cursor = connection.cursor()
+        
+        bucket_name = "cafe-platform-bucket"
+        s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
+                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                      region_name='ap-northeast-2',
+                      config= Config(signature_version='s3v4'))
+                      
+        query = """
+        INSERT INTO Menu (
+            storeId, name, price, description
+        ) VALUES (
+            {}, '{}', {}, '{}'
+        );
+        """.format(
+                menu.store_Id, 
+                menu.name, 
+                menu.price, 
+                menu.description, 
+            )
+            
+        cursor.execute(query)
+        connection.commit()
+        menu_id = cursor.lastrowid
+        store_id = menu.store_Id
+        menu_url = s3.generate_presigned_url('put_object',
+                                            Params={'Bucket': bucket_name,
+                                                    'Key': f'menu/menu_{store_id}_{menu_id}.png',
+                                                    },
+                                          ExpiresIn=3600)
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed register menu - " + str(e),
+            'store_Id': menu.store_Id
+        }
+        return result
+    finally:
+        connection.close()
+
+    return {
+        'statusCode': 200,
+        'menu_id': menu_id,
+        'menu_url': menu_url
+    }
