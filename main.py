@@ -18,6 +18,11 @@ connection = pymysql.connect(
         port = dbinfo.db_port
     )
 
+bucket_name = "cafe-platform-bucket"
+s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
+                aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                region_name='ap-northeast-2',
+                config= Config(signature_version='s3v4'))
 @app.get("/")
 async def root():
     return {"msg" : "Hello World"}
@@ -376,6 +381,7 @@ def getMenuList(store_id: int):
                                     ExpiresIn=3600)
             menu = {
                 "menu_id": row["menuId"],
+                "store_id": store_id,
                 "name":row["name"],
                 "price": row["price"],
                 "description": row["description"],
@@ -396,8 +402,7 @@ def getMenuList(store_id: int):
             'msg': "failed find menuList",
             'store_id': store_id
         }
-        
-        
+
     finally:
         connection.close()
 
@@ -413,13 +418,7 @@ def addMenu(menu: Menu):
         )
         
         cursor = connection.cursor()
-        
-        bucket_name = "cafe-platform-bucket"
-        s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
-                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                      region_name='ap-northeast-2',
-                      config= Config(signature_version='s3v4'))
-                      
+          
         query = """
         INSERT INTO Menu (
             storeId, name, price, description
@@ -458,3 +457,68 @@ def addMenu(menu: Menu):
         'menu_id': menu_id,
         'menu_url': menu_url
     }
+
+@app.get("/gifticon/list/{user_id}")
+def getGifticonList(user_id: int):
+    connection = pymysql.connect(
+        host = dbinfo.db_host,
+        user = dbinfo.db_username,
+        passwd = dbinfo.db_password,
+        db = dbinfo.db_name,
+        port = dbinfo.db_port
+    ) # db 접근 하기 위한 정보 
+
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    gifticonList = []
+       
+    try:
+        user_id = user_id
+            
+        cursor.execute('''SELECT og.order_id, Menu.*, Gifticon.*
+            FROM Order_Gifticon as og 
+            JOIN Menu ON og.menu_id  = Menu.menuId 
+            JOIN Gifticon ON og.gifticon_id  = Gifticon.id
+            WHERE og.user_id=%s ;''', user_id)
+
+        rows = cursor.fetchall()
+
+        for row in rows:
+            store_id = row['store_id']
+            menu_id = row['menu_id']
+            menu_url = s3.generate_presigned_url('put_object',
+                                    Params={'Bucket': bucket_name,
+                                            'Key': f'menu/menu_{store_id}_{menu_id}.png',
+                                            },
+                                    ExpiresIn=3600)
+            gifticon = {
+                "order_id": row['order_id'],
+                "name": row['name'],
+                "price": row['price'],
+                "description": row['description'],
+                "validity": row['validity'],
+                "sender": row['sender'],
+                "use_yn": row['use_yn'],
+                "availability": row['availability'],
+                "menu_ url" : menu_url
+            }
+
+            gifticonList.append(gifticon)
+    
+        print(gifticonList)
+    
+        return {
+            'statusCode': 200,
+            'gifticonList': gifticonList
+        }
+        
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed get gifticon list",
+        }
+        return result
+
+    finally:        
+        cursor.close()
+        connection.close()
