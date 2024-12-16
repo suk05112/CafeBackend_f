@@ -208,7 +208,14 @@ def getGifticon(gifticon_id: int):
                     
         gifticon = cursor.fetchone()
 
+        cursor.execute('''SELECT order_id
+        FROM Order_Gifticon
+        WHERE gifticon_id=%s ;''', gifticon['id'])
+        
+        order_id = cursor.fetchone()
+
         print("읽어온 기프티콘", gifticon)
+
         if gifticon:
             print("여기는 탐")
             store_id = gifticon['store_id']
@@ -220,11 +227,14 @@ def getGifticon(gifticon_id: int):
                                     ExpiresIn=3600)
             gifticon = {
                 "gifticon_id": gifticon['id'],
+                "order_id": order_id['order_id'],
                 "validity": gifticon['validity'],
                 "sender": gifticon['sender'],
                 "use_yn": gifticon['use_yn'],
                 "availability": gifticon['availability'],
-                "menu_url" : menu_url
+                "menu_url" : menu_url,
+                "msg" : gifticon['msg'],
+                "created_time" : gifticon['created_time'],
             }
     
         print("gifticon", gifticon)

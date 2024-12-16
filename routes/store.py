@@ -109,6 +109,99 @@ def getStoreList():
         cursor.close()
         connection.close()
 
+@router.get("/list/{owner_id}")
+def getStore(owner_id: int):
+    connection = pymysql.connect(
+        host = dbinfo.db_host,
+        user = dbinfo.db_username,
+        passwd = dbinfo.db_password,
+        db = dbinfo.db_name,
+        port = dbinfo.db_port
+    ) # db 접근 하기 위한 정보 
+
+    cursor = connection.cursor() # DB에 접속 및 DB 객체를 가져옴
+    
+    bucket_name = "cafe-platform-bucket"
+
+    s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
+                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                      region_name='ap-northeast-2',
+                      config= Config(signature_version='s3v4'))
+                      
+    try:
+        owner_id = owner_id
+            
+        cursor.execute('''select
+        owner_id, 
+        store_id, 
+        store_name, 
+        status, 
+        inspection_status, 
+        open_yn,
+        store_photo_cnt,
+        store_lat, 
+        store_lng 
+        from Store where owner_id=%s ;''', owner_id)
+        
+        rows = cursor.fetchall()
+        row = rows[0]
+   
+        storeList = []
+        
+        for row in rows:
+            store_logo_url = s3.generate_presigned_url('get_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'logo/store_logo_{row[1]}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+                                                  
+            store_photo_urls = []
+        
+            for i in range(1, row[6]+1):
+                s3_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_image/store_image_{row[1]}_{i}.png',
+                                                                    },
+                                                          ExpiresIn=3600)
+
+                store_photo_urls.append(s3_url) 
+            
+            store = {
+                "owner_id": row[0],
+                "store_id": row[1],
+                "store_name": row[2],
+                "store_logo": store_logo_url,
+                "store_photo_urls": store_photo_urls,
+                "status": row[3],
+                "inspection_status": row[4],
+                "open_yn": row[5],
+                "store_lat": row[7],
+                "store_lng": row[8],
+
+            }
+            storeList.append(store)
+            
+        result = {
+            # 'statusCode': 200,
+            'store': storeList
+        }
+    
+        # return result
+        return {
+            'statusCode': 200,
+            'body': result
+        }
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed get store list",
+        }
+    finally:        
+        cursor.close()
+        connection.close()
+    # return {"item_id": item_id}
+    
 @router.post("/register")
 async def registerStore(store: StoreCreate):
     connection = pymysql.connect(
@@ -176,11 +269,7 @@ async def registerStore(store: StoreCreate):
                                                   ExpiresIn=3600)
 
             store_photo_urls.append(s3_url)
-        
-        rows = cursor.fetchall()
-        
-        print(s3_url)
-        print("sujin test")
+    
         
         return {
             'statusCode': 200,
@@ -193,14 +282,17 @@ async def registerStore(store: StoreCreate):
         result = {
             'statusCode': 500,
             'msg': "failed register store - " + str(e),
-            'store_id': -1
-        }
+            'store_photo_urls': [],
+            'store_photo_get_urls': []
+            }
         return result
     finally:
         connection.close()
 
+
+#store.store_photo_cnt이 -1이면 이미지 변경은 없다는 의미
 @router.post("/update/{store_id}")
-def updateStore(store: StoreCreate):
+def updateStore(store_id: int, store: StoreCreate):
     connection = pymysql.connect(
         host = dbinfo.db_host,
         user = dbinfo.db_username,
@@ -208,12 +300,40 @@ def updateStore(store: StoreCreate):
         db = dbinfo.db_name,
         port = dbinfo.db_port
     )
+    
+    bucket_name = "cafe-platform-bucket"
+
+    s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
+                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                      region_name='ap-northeast-2',
+                      config= Config(signature_version='s3v4'))
+    
     try:
         cursor = connection.cursor()
         
-        store_id = store_id
+        #기존에 저장된 이미지 삭제
+        cursor.execute('''select
+        store_photo_cnt
+        from Store where store_id=%s ;''', (store_id,))
+        
+        stored_photo_cnt = cursor.fetchone()
+        print('stored_photo_cnt', stored_photo_cnt)
+        # # 저장된 값이 없거나 None인 경우 처리
+        # if stored_photo_cnt:
+        #     stored_photo_cnt = stored_photo_cnt[0]  # 튜플에서 첫 번째 값 추출
+        # else:
+        #     stored_photo_cnt = 0        
+             
+        if store.store_photo_cnt != -1: # 변경된 이미지가 있을 때만 저장된 이미지 삭제
+            if stored_photo_cnt or stored_photo_cnt != 0:  # 조회 결과가 있는지 확인
+                stored_photo_cnt = stored_photo_cnt[0] 
+                for i in range(1, stored_photo_cnt+1):
+                    object_key =  f'store_image/store_image_{store_id}_{i}.png'
+                    s3.delete_object(Bucket=bucket_name, Key=object_key)
+                
         query = "UPDATE Store SET "
         values = []
+        print("store.store_photo_cnt", store.store_photo_cnt)
 
         if store.store_address:
             query += "store_address = %s, "
@@ -224,12 +344,9 @@ def updateStore(store: StoreCreate):
         if store.store_description:
             query += "store_description = %s, "
             values.append(store.store_description)
-        if store.store_photo:
-            query += "store_photo = %s, "
-            values.append(store.store_photo)
-        if store.store_logo:
-            query += "store_logo = %s, "
-            values.append(store.store_logo)
+        if store.store_photo_cnt != -1:
+            query += "store_photo_cnt = %s, "
+            values.append(store.store_photo_cnt)
 
         query = query[:-2]  # 마지막 쉼표와 공백 제거
         query += " WHERE store_id = %s"
@@ -238,29 +355,46 @@ def updateStore(store: StoreCreate):
         cursor.execute(query, tuple(values))
         connection.commit()
 
-        print(cursor.rowcount)
-        print(cursor._rows)
+        store_photo_urls = []
+        store_photo_get_urls = []
+        
+        updated_stored_photo_cnt = store.store_photo_cnt
+        print("stored_photo_cnt", stored_photo_cnt)
+        #새로 업데이트 된 이미지 저장 
+        for i in range(1, updated_stored_photo_cnt+1):
+            if store.store_photo_cnt != -1: # 변경된 이미지가 있을 때만 저장된 이미지 put
+                s3_put_url = s3.generate_presigned_url('put_object',
+                                                        Params={'Bucket': bucket_name,
+                                                                'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                                },
+                                                    ExpiresIn=3600)
+                store_photo_urls.append(s3_put_url)
 
-        if cursor.rowcount > 0:
-            result = {
-                'statusCode': 200,
-                'msg': "success",
-                'owner_id': store_id
-            }
-        else:
-            result = {
-                'statusCode': 404,
-                'msg': "no record found",
-                'owner_id': store_id
-            }
-
+            s3_get_url = s3.generate_presigned_url('get_object',
+                                                Params={'Bucket': bucket_name,
+                                                        'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                        },
+                                                ExpiresIn=3600)
+            
+            store_photo_get_urls.append(s3_get_url)
+                
+        print("store_photo_urls", store_photo_get_urls)
+        
+        result = {
+            'statusCode': 200,
+            'msg': "success",
+            'store_photo_urls': store_photo_urls,
+            'store_photo_get_urls': store_photo_get_urls
+        }
+        
         return result
     except Exception as e:
         print(e)
         result = {
             'statusCode': 500,
             'msg': "failed update owner",
-            'owner_id': -1
+            'store_photo_urls': [],
+            'store_photo_get_urls': []
         }
     finally:
         connection.close()
@@ -556,4 +690,95 @@ def getCurrentLocationStore(item: str, lat: float, lng: float):
             'owner_id': -1
         }
     finally:
+        connection.close()
+
+@router.get("/info/{store_id}")
+def getStoreInfo(store_id: int):
+    connection = pymysql.connect(
+        host = dbinfo.db_host,
+        user = dbinfo.db_username,
+        passwd = dbinfo.db_password,
+        db = dbinfo.db_name,
+        port = dbinfo.db_port
+    ) # db 접근 하기 위한 정보 
+
+    cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
+    
+    bucket_name = "cafe-platform-bucket"
+
+    s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
+                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                      region_name='ap-northeast-2',
+                      config= Config(signature_version='s3v4'))
+                      
+    try:      
+        print("storeList 호출1")
+      
+        cursor.execute('''select 
+        owner_id,
+        store_id,
+        store_name, 
+        store_address, 
+        store_telephone,
+        store_description,
+        store_photo_cnt,
+        store_address,
+        store_lat, 
+        store_lng 
+        from Store WHERE store_id=%s ;''', (store_id, ))
+        
+        store = cursor.fetchone()
+
+
+        if store:
+            store_logo_url = s3.generate_presigned_url('get_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'logo/store_logo_{store_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+                                                  
+            print("logo url success")
+            store_photo_urls = []
+            store_photo_cnt = store['store_photo_cnt']
+
+            for i in range(1, store_photo_cnt+1):
+                s3_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                                    },
+                                                          ExpiresIn=3600)
+
+                store_photo_urls.append(s3_url) 
+            
+            store = {
+                "owner_id": store['owner_id'],
+                "store_id": store['store_id'],
+                "store_name": store['store_name'],
+                "store_logo": store_logo_url,
+                "store_telephone": store['store_telephone'],
+                "store_address": store['store_address'],
+                "store_photo_urls": store_photo_urls,
+                "store_description": store['store_description'],
+                "store_lat": store['store_lat'],
+                "store_lng": store['store_lng'],
+
+            }
+            
+            result = {
+                'store': store
+            }
+    
+        return {
+            'statusCode': 200,
+            'store': store
+        }
+    
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed get store list",
+        }
+    finally:        
+        cursor.close()
         connection.close()
