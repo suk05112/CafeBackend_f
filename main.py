@@ -11,7 +11,7 @@ from routes import store
 from routes import user
 from routes import gifticon
 from routes import menu
-
+from routes import owner
 
 #https://fastapi.tiangolo.com/ko/
 
@@ -21,6 +21,7 @@ app.include_router(store.router, prefix="/store", tags=["Store"])
 app.include_router(user.router, prefix="/user", tags=["User"])
 app.include_router(gifticon.router, prefix="/gifticon", tags=["Gifticon"])
 app.include_router(menu.router, prefix="/menu", tags=["Menu"])
+app.include_router(owner.router, prefix="/owner", tags=["Owner"])
 
 connection = pymysql.connect(
         host = dbinfo.db_host,
@@ -48,47 +49,3 @@ async def root():
 def read_item(item_id: int, q: Union[str, None] = None):
     return {"item_id": item_id, "q": q}
 
-
-
-
-
-# @app.api_route('/', methods=['PATCH'])
-@app.patch("/gifticon/use/{gifticon_id}")
-def useGifticon(gifticon_id: int):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-       
-    print("1")
-    try:
-        gifticon_id = gifticon_id
-        print("2")
-
-        cursor.execute('''UPDATE Gifticon SET use_yn=1 WHERE id=%s ;''', gifticon_id)
-        
-        print("3")
-
-        _ = cursor.fetchall()
-        print("4")
-
-        return {
-            'statusCode': 200,
-        }
-        
-    except Exception as e:
-        print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed get gifticon list",
-        }
-        return result
-    
-    finally:        
-        cursor.close()
-        connection.close()

@@ -255,3 +255,39 @@ def getGifticon(gifticon_id: int):
     finally:        
         cursor.close()
         connection.close()
+
+@router.patch("/use/{gifticon_id}")
+def useGifticon(gifticon_id: int):
+    connection = pymysql.connect(
+        host = dbinfo.db_host,
+        user = dbinfo.db_username,
+        passwd = dbinfo.db_password,
+        db = dbinfo.db_name,
+        port = dbinfo.db_port
+    ) # db 접근 하기 위한 정보 
+
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+       
+    try:
+        gifticon_id = gifticon_id
+
+        cursor.execute('''UPDATE Gifticon SET use_yn=1 WHERE id=%s ;''', gifticon_id)
+        connection.commit()
+
+        _ = cursor.fetchall()
+
+        return {
+            'statusCode': 200,
+        }
+        
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed get gifticon list",
+        }
+        return result
+    
+    finally:        
+        cursor.close()
+        connection.close()

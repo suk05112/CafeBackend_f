@@ -140,7 +140,8 @@ def getStore(owner_id: int):
         open_yn,
         store_photo_cnt,
         store_lat, 
-        store_lng 
+        store_lng,
+        store_address
         from Store where owner_id=%s ;''', owner_id)
         
         rows = cursor.fetchall()
@@ -177,7 +178,7 @@ def getStore(owner_id: int):
                 "open_yn": row[5],
                 "store_lat": row[7],
                 "store_lng": row[8],
-
+                "store_address": row[9],
             }
             storeList.append(store)
             
@@ -219,19 +220,14 @@ async def registerStore(store: StoreCreate):
                       region_name='ap-northeast-2',
                       config= Config(signature_version='s3v4'))
                           
-    # keys = event.keys()
     cursor = connection.cursor()
-
-    # print(keys) 
-    print("description")
-
+    
     try:
-        print("sujin1")
         query = """
             INSERT INTO Store (
-                owner_id, store_name, store_telephone, store_description, store_address, , store_lat, store_lng, store_photo_cnt
+                owner_id, store_name, store_telephone, store_description, store_address, store_lat, store_lng, store_photo_cnt
             ) VALUES (
-              {},'{}','{}', '{}', '{}', '{}', {}, {}, {}
+              {},'{}','{}', '{}', '{}', {}, {}, {}
             );
         """.format(
             store.owner_id,
@@ -257,7 +253,18 @@ async def registerStore(store: StoreCreate):
                                                             },
                                                   ExpiresIn=3600)
                                                   
-                              
+
+        bankBook_put_url = s3.generate_presigned_url('put_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'bankbook/bankbook_{store.owner_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+        
+        business_put_url = s3.generate_presigned_url('put_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'business_registration/business_registration_{store.owner_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)                      
     
         store_photo_urls = []
         
@@ -275,7 +282,9 @@ async def registerStore(store: StoreCreate):
             'statusCode': 200,
             'store_id': store_id,
             'store_logo_url': store_logo_url,
-            'store_photo_urls': store_photo_urls
+            'store_photo_urls': store_photo_urls,
+            'bankBook_put_url': bankBook_put_url,
+            'business_put_url': business_put_url
         }
     except Exception as e:
         print(e)
@@ -283,7 +292,9 @@ async def registerStore(store: StoreCreate):
             'statusCode': 500,
             'msg': "failed register store - " + str(e),
             'store_photo_urls': [],
-            'store_photo_get_urls': []
+            'store_photo_get_urls': [],
+            'bankbook_put_url': "",
+            'business_put_url': ""
             }
         return result
     finally:
@@ -449,6 +460,7 @@ def searchStore(item: str, lat: float, lng: float):
     db = dbinfo.db_name,
     port = dbinfo.db_port
     ) 
+
 
     bucket_name = "cafe-platform-bucket"
 
