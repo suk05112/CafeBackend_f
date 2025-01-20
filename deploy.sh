@@ -22,7 +22,9 @@ if [ -z "$IS_GREEN" ]; then
   done
 
   echo "3. Reload Nginx to use green"
-  sudo cp /etc/nginx/nginx.green.conf $DEFAULT_CONF
+  # sudo cp /etc/nginx/nginx.green.conf $DEFAULT_CONF
+  sudo rm /etc/nginx/sites-enabled/current
+  sudo ln -s /etc/nginx/sites-available/fastapi.conf /etc/nginx/sites-enabled/current
   sudo nginx -s reload
 
   echo "4. Stop blue container"
@@ -46,7 +48,9 @@ else
   done
 
   echo "3. Reload Nginx to use blue"
-  sudo cp /etc/nginx/nginx.blue.conf $DEFAULT_CONF
+  # sudo cp /etc/nginx/nginx.blue.conf $DEFAULT_CONF
+  sudo rm /etc/nginx/sites-enabled/current
+  sudo ln -s /etc/nginx/sites-available/blue.conf /etc/nginx/sites-enabled/current
   sudo nginx -s reload
 
   echo "4. Stop green container"
