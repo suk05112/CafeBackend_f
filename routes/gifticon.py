@@ -6,9 +6,10 @@ from typing import Union
 from pydantic import BaseModel
 
 import pymysql
-import dbinfo
+import app.database as database
 import boto3
 from botocore.client import Config
+from app.database import get_db_connection
 
 from models.gifticon import Gifticon
 from models.store import StoreCreate
@@ -17,14 +18,7 @@ router = APIRouter()
 
 @router.post("/purchase/{user_id}")
 def purchaseGifticon(user_id: int, gifticon: Gifticon):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor() # DB에 접속 및 DB 객체를 가져옴
 
     print("storeList 호출1")
@@ -32,8 +26,8 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
     try:      
         query = """
             INSERT INTO Gifticon (
-                user_id, type, sender, receiver, receiver_phone_number, menu_id, store_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s);
+                user_id, type, sender, receiver, receiver_phone_number, menu_id, store_id, total_price
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
         """
         cursor.execute(
             query,
@@ -45,6 +39,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
                 gifticon.receiver_phone_number,
                 gifticon.menu_id,
                 gifticon.store_id,
+                gifticon.total_price,
             )
         )
         connection.commit()
@@ -109,14 +104,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
 
 @router.get("/list/{user_id}")
 def getGifticonList(user_id: int):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     gifticonList = []
        
@@ -185,13 +173,7 @@ def getGifticonList(user_id: int):
 
 @router.get("/{gifticon_id}")
 def getGifticon(gifticon_id: int):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
 
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
@@ -216,8 +198,13 @@ def getGifticon(gifticon_id: int):
 
         print("읽어온 기프티콘", gifticon)
 
+        cursor.execute('''SELECT store_lat, store_lng
+        FROM Store
+        WHERE store_id=%s ;''', gifticon['store_id'])
+        
+        store_info = cursor.fetchone()
+        
         if gifticon:
-            print("여기는 탐")
             store_id = gifticon['store_id']
             menu_id = gifticon['menu_id']
             menu_url = s3.generate_presigned_url('get_object',
@@ -230,11 +217,14 @@ def getGifticon(gifticon_id: int):
                 "order_id": order_id['order_id'],
                 "validity": gifticon['validity'],
                 "sender": gifticon['sender'],
+                "type": gifticon['type'],
                 "use_yn": gifticon['use_yn'],
                 "availability": gifticon['availability'],
                 "menu_url" : menu_url,
                 "msg" : gifticon['msg'],
                 "created_time" : gifticon['created_time'],
+                "store_lat" : store_info["store_lat"],
+                "store_lng" : store_info["store_lng"]
             }
     
         print("gifticon", gifticon)
@@ -258,14 +248,7 @@ def getGifticon(gifticon_id: int):
 
 @router.patch("/use/{gifticon_id}")
 def useGifticon(gifticon_id: int):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:

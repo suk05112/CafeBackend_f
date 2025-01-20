@@ -2,9 +2,10 @@ from fastapi import APIRouter, HTTPException
 from fastapi import FastAPI
 
 import pymysql
-import dbinfo
+import app.database as database
 import boto3
 from botocore.client import Config
+from app.database import get_db_connection
 
 from models.menu import Menu
 
@@ -12,17 +13,10 @@ router = APIRouter()
 
 @router.get("/list/{store_id}")
 def getMenuList(store_id: int):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    )
-
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
     try:
         cursor = connection.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("select menuId, name, price, description, status from Menu where storeId=%s;", store_id)
+        cursor.execute("select menuId, name, price, description, status from Menu where storeId=%s and isDeleted=0;", store_id)
         rows = cursor.fetchall()
     
         bucket_name = "cafe-platform-bucket"
@@ -78,14 +72,7 @@ def addMenu(menu: Menu):
                       config= Config(signature_version='s3v4'))
     
     try:
-        connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-        )
-        
+        connection = get_db_connection()  # 환경에 맞는 DB 연결
         cursor = connection.cursor()
           
         query = """
@@ -137,14 +124,8 @@ def addMenu(menu: Menu):
 
 @router.post("/update/{menu_id}") 
 def updateMenu(menu_id: int, menu: Menu):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    )
-    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+
     bucket_name = "cafe-platform-bucket"
 
     s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
@@ -208,21 +189,7 @@ def updateMenu(menu_id: int, menu: Menu):
 
 @router.delete("/delete/{menu_id}") 
 def deleteeMenu(menu_id: int):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-    )
-
-    bucket_name = "cafe-platform-bucket"
-
-    s3 = boto3.client('s3',
-                      aws_access_key_id='***REMOVED_AWS_KEY***',
-                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                      region_name='ap-northeast-2',
-                      config=Config(signature_version='s3v4'))
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
 
     try:
         cursor = connection.cursor()
@@ -236,18 +203,10 @@ def deleteeMenu(menu_id: int):
                 'statusCode': 404,
                 'msg': f"Menu with id {menu_id} not found",
             }
-        store_id = row[0]  # Retrieve store_id for S3 key
 
         # Delete the menu from the database
-        cursor.execute("DELETE FROM Menu WHERE menuId = %s", (menu_id,))
+        cursor.execute("UPDATE Menu SET isDeleted=1 WHERE menuId = %s", (menu_id,))
         connection.commit()
-
-        # Delete the associated image from S3
-        try:
-            s3_key = f'menu/menu_{store_id}_{menu_id}.png'
-            s3.delete_object(Bucket=bucket_name, Key=s3_key)
-        except Exception as s3_error:
-            print(f"S3 deletion failed: {s3_error}")
 
         return {
             'statusCode': 200,

@@ -6,11 +6,14 @@ from typing import Union
 from pydantic import BaseModel
 
 import pymysql
-import dbinfo
+import app.database as database
 import boto3
 from botocore.client import Config
+from app.database import get_db_connection
 
 from models.owner import Owner
+from models.owner import OwnerFind
+from models.owner import OwnerFindPw
 from models.owner import OwnerInquiry
 from models.owner import OwnerInquiryResponse
 
@@ -20,14 +23,7 @@ router = APIRouter()
 
 @router.post("/register")
 async def registerOwner(owner: Owner):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결           
     cursor = connection.cursor()
     
     try:
@@ -64,17 +60,9 @@ async def registerOwner(owner: Owner):
     finally:
         connection.close()
 
-
 @router.get("/login/{uid}")
 async def login(uid: str):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-        ) # db 접근 하기 위한 정보 
-                          
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                      
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
@@ -112,16 +100,76 @@ async def login(uid: str):
     finally:
         connection.close()
         
+@router.post("/find_ownerId")
+async def findOwnerId(owner: OwnerFind):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                      
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute('''SELECT * FROM Owner WHERE name=%s AND phone_number=%s;''', (owner.name, owner.phone_number))
+        user = cursor.fetchone()  # 한 행만 가져옴
+        
+        # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
+        if user:  # 사용자가 존재하는 경우
+            print("user:", user)
+            return {
+                'statusCode': 200,
+                'owner_id': user['id'],
+                'created_time': user['created_time'],
+                'email': user['email'],
+
+            }
+        else:
+            return {
+                'statusCode': 200,
+                'msg': "unregistered user", 
+            }
+
+    except Exception as e:
+        print(e)
+        result = {
+            'statusCode': 500,
+            'msg': "An unexpected error occurred." + str(e),
+            'owner_id': None,
+            'name': None,
+            'phone_number': None,
+        }
+        return result
+    finally:
+        connection.close()
+        
+@router.post("/find_ownerPw")
+async def findOwnerPW(owner: OwnerFindPw):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                     
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute('''SELECT * FROM Owner WHERE email=%s AND phone_number=%s;''', (owner.email, owner.phone_number))
+        user = cursor.fetchone()  # 한 행만 가져옴
+        
+        # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
+        if user:  # 사용자가 존재하는 경우
+            print("user:", user)
+            return {
+                'msg': 'success'
+            }
+        else:
+            return {
+                'msg': "fail", 
+            }
+
+    except Exception as e:
+        print(e)
+        result = {
+            'msg': "An unexpected error occurred." + str(e),
+        }
+        return result
+    finally:
+        connection.close()
+        
 @router.post("/inquiry/{owner_id}")
 async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                
     cursor = connection.cursor()
     
     try:
@@ -156,14 +204,7 @@ async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
 #사장님용. 
 @router.get("/inquiry/{owner_id}")
 async def getInquiry(owner_id: int):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                 
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
@@ -203,14 +244,7 @@ async def getInquiry(owner_id: int):
 #관리자용. 모든 문의내역 불러오기
 @router.get("/inquiry")
 async def getInquiry():
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
@@ -250,14 +284,7 @@ async def getInquiry():
         
 @router.post("/reply/{inquiry_id}")
 async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결               
     cursor = connection.cursor()
     
     try:

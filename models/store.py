@@ -9,3 +9,8 @@ class StoreCreate(BaseModel):
     store_lat: float
     store_lng: float
     store_photo_cnt: int
+
+
+class InspectionStatusUpdate(BaseModel):
+    inspection_status: int
+    inspection_msg: str

@@ -1,0 +1,14 @@
+version: '3'
+services:
+  green:
+    container_name: green
+    build:
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000" # green은 8080 포트를 열어줍니다.
+  blue:
+    container_name: blue
+    build:
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000" #blue는 80002 포트를 열어줍니다.

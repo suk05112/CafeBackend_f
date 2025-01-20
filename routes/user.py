@@ -6,9 +6,10 @@ from typing import Union
 from pydantic import BaseModel
 
 import pymysql
-import dbinfo
+import app.database as database
 import boto3
 from botocore.client import Config
+from app.database import get_db_connection
 
 from models.user import User
 
@@ -16,14 +17,7 @@ router = APIRouter()
 
 @router.post("/register")
 async def registerUser(user: User):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                          
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                      
     cursor = connection.cursor()
 
     try:
@@ -56,14 +50,7 @@ async def registerUser(user: User):
 
 @router.get("/login/{email}")
 async def idRegisteredUser(email: str):
-    connection = pymysql.connect(
-        host = dbinfo.db_host,
-        user = dbinfo.db_username,
-        passwd = dbinfo.db_password,
-        db = dbinfo.db_name,
-        port = dbinfo.db_port
-        ) # db 접근 하기 위한 정보 
-                          
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                      
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
@@ -99,14 +86,7 @@ async def idRegisteredUser(email: str):
 
 @router.get("/isRegistered/{email}")
 async def idRegisteredUser(email: str):
-    connection = pymysql.connect(
-    host = dbinfo.db_host,
-    user = dbinfo.db_username,
-    passwd = dbinfo.db_password,
-    db = dbinfo.db_name,
-    port = dbinfo.db_port
-    ) # db 접근 하기 위한 정보 
-                          
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                     
     cursor = connection.cursor()
 
     try:
