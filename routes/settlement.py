@@ -1,11 +1,22 @@
 from fastapi import APIRouter, HTTPException
 import pymysql
 import app.database as database
+import boto3
+from botocore.client import Config
+from loguru import logger
+
 from app.database import get_db_connection
 
 from models.settlement import Account
 
 router = APIRouter()
+
+bucket_name = "cafe-platform-bucket"
+
+s3 = boto3.client('s3', aws_access_key_id='***REMOVED_AWS_KEY***',
+                  aws_secret_access_key='***REMOVED_AWS_SECRET***',
+                  region_name='ap-northeast-2',
+                  config=Config(signature_version='s3v4'))
 
 @router.post("/register/{store_id}")
 def registerAccount(store_id: int, account: Account):
@@ -97,7 +108,7 @@ def getDetailSettlements(settlement_id: int):
       
     try:   
         query = """
-            SELECT 
+            SELECT DISTINCT
                 m.name,
                 o.price,
                 g.used_time,
@@ -112,10 +123,11 @@ def getDetailSettlements(settlement_id: int):
                 Gifticon g ON og.gifticon_id = g.id  
             JOIN 
                 Menu m ON g.menu_id = m.menuId
-            WHERE s.settlement_id = %s  
+            WHERE o.settlement_id = %s  
             AND g.use_yn = 1
-            ORDER BY settlement_date desc;
+            ORDER BY g.used_time desc;
         """
+
         cursor.execute(
             query,
             (settlement_id,)
@@ -123,6 +135,8 @@ def getDetailSettlements(settlement_id: int):
         
         results = cursor.fetchall()
         settlements =  []
+        
+        print("getDetailSettlements", results)
         
         # 결과 처리
         for result in results:
@@ -145,6 +159,59 @@ def getDetailSettlements(settlement_id: int):
         msg = "failed getDetailSettlements"
         print(f"Error during getDetailSettlements: {e}")
         
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)} {msg}")
+    finally:        
+        cursor.close()
+        connection.close()
+        
+# (관리자용) 계좌정보 리턴
+@router.get("/info/{store_id}")
+def getAccount(store_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
+      
+    try:   
+        query = """
+            SELECT * 
+            FROM `Account`
+            WHERE store_id = %s;
+        """
+        cursor.execute(
+            query,
+            (store_id,)
+        )
+        
+        result = cursor.fetchone()
+        account = {}
+        
+        # 결과 처리
+        if result: 
+            bankbook = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': f'bankbook/bankbook_{store_id}.png'},
+                    ExpiresIn=3600)
+            business = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': f'business_registration/business_registration_{store_id}.png'},
+                    ExpiresIn=3600)
+            
+            account = {
+                'name': result['name'],
+                'account' : result['account'],
+                'bank' : result['bank'],
+                'bankbook': bankbook,
+                'business': business
+            }
+        print(account)
+        
+        return {
+            'account': account,
+        }
+        
+    except Exception as e:
+        msg = "failed get Account"
+        print(f"Error during getAccount: {e}")
+        logger.error(f"Error: {str(e)} {msg}")
         raise HTTPException(status_code=500, detail=f"Error: {str(e)} {msg}")
     finally:        
         cursor.close()

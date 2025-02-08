@@ -10,21 +10,13 @@ import pymysql
 import app.database as database
 import boto3
 from botocore.client import Config
+from loguru import logger
 
 from models.store import StoreCreate
 from models.store import InspectionStatusUpdate
 from app.database import get_db_connection
 from app.settings import settings
 
-
-# router = APIRouter()
-
-# prefix = "/dev" if settings.debug == True else ""
-
-# prefix = "/dev" if settings.debug == True else ""
-# router = APIRouter(prefix="prefix")
-
-# @router.get(f"{prefix}/list")
 router = APIRouter()
 
 bucket_name = "cafe-platform-bucket"
@@ -40,7 +32,6 @@ def getStoreList():
     cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
 
     try:
-        
         cursor.execute('''
         SELECT
             owner_id, 
@@ -64,11 +55,7 @@ def getStoreList():
         rows = cursor.fetchall()
         storeList = []
         
-        # print("읽어온 데이터:", rows)
-
         for row in rows:
-            print(row)
-            print("row1", row['owner_id'])
             store_id = row['store_id']
 
             # S3에서 store_logo URL 생성
@@ -112,9 +99,43 @@ def getStoreList():
         print(f"오류 발생: {str(e)}")
         print("스택 트레이스:")
         traceback.print_exc() 
-        return {"statusCode": 500, "message": "서버 오류 발생"}
+        return {"statusCode": 500, "message": f"서버 오류 발생 {str(e)}"}
 
+@router.get("/owner/list/{owner_id}")
+def getOwnerStoreList(owner_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
 
+    try:
+        cursor.execute('''
+        SELECT
+            store_id, 
+            store_name
+        FROM Store
+        WHERE owner_id = %s
+        ORDER BY updated_time DESC
+        ''', (owner_id))
+        
+        rows = cursor.fetchall()
+        storeList = []
+        
+        for row in rows:
+            print(row)
+
+            # store 데이터를 구성
+            store = {
+                "store_id": row['store_id'],
+                "store_name": row['store_name'],
+            }
+            storeList.append(store)
+
+        return {"statusCode": 200, "ownerStoreList": storeList}
+    
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        return {"statusCode": 500, "message": f"서버 오류 발생 {str(e)}"}
 
 @router.get("/list/{owner_id}")
 def getStore(owner_id: int):
@@ -249,13 +270,13 @@ async def registerStore(store: StoreCreate):
 
         bankBook_put_url = s3.generate_presigned_url('put_object',
                                                     Params={'Bucket': bucket_name,
-                                                            'Key': f'bankbook/bankbook_{store.owner_id}.png',
+                                                            'Key': f'bankbook/bankbook_{store_id}.png',
                                                             },
                                                   ExpiresIn=3600)
         
         business_put_url = s3.generate_presigned_url('put_object',
                                                     Params={'Bucket': bucket_name,
-                                                            'Key': f'business_registration/business_registration_{store.owner_id}.png',
+                                                            'Key': f'business_registration/business_registration_{store_id}.png',
                                                             },
                                                   ExpiresIn=3600)                      
     
@@ -289,7 +310,10 @@ async def registerStore(store: StoreCreate):
             'bankbook_put_url': "",
             'business_put_url': ""
             }
-        return result
+        logger.error(f"Error: {str(e)} {result}")
+        raise HTTPException(status_code=500, detail=f"Error: {str(e)} {result}")
+    
+        # return result
     finally:
         connection.close()
 
@@ -787,3 +811,4 @@ def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate
     finally:
         cursor.close()
         connection.close()
+        

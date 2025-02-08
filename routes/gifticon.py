@@ -1,15 +1,17 @@
 from fastapi import APIRouter, HTTPException
 from fastapi import FastAPI
+import traceback
 
-from fastapi import FastAPI
 from typing import Union
 from pydantic import BaseModel
+from loguru import logger
 
 import pymysql
 import app.database as database
 import boto3
 from botocore.client import Config
 from app.database import get_db_connection
+from datetime import datetime
 
 from models.gifticon import Gifticon
 from models.store import StoreCreate
@@ -26,8 +28,8 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
     try:      
         query = """
             INSERT INTO Gifticon (
-                user_id, type, sender, receiver, receiver_phone_number, menu_id, store_id, total_price
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                user_id, type, sender, receiver, receiver_phone_number, menu_id, store_id
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s);
         """
         cursor.execute(
             query,
@@ -39,7 +41,6 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
                 gifticon.receiver_phone_number,
                 gifticon.menu_id,
                 gifticon.store_id,
-                gifticon.total_price,
             )
         )
         connection.commit()
@@ -50,7 +51,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         # 2. Order 테이블에 데이터 삽입
         order_query = """
             INSERT INTO `Order` (
-                store_id, user_id, payment, total_price
+                store_id, user_id, payment, price
             ) VALUES (%s, %s, %s, %s);
         """
         cursor.execute(
@@ -91,13 +92,9 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
             'statusCode': 200,
         }
     except Exception as e:
-        print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed get store list",
-        }
         print(f"Error during purchaseGifticon: {e}")
-        return {"statusCode": 500, "msg": f"Error: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"Error during purchaseGifticon: {str(e)}")
+
     finally:        
         cursor.close()
         connection.close()
@@ -198,11 +195,17 @@ def getGifticon(gifticon_id: int):
 
         print("읽어온 기프티콘", gifticon)
 
-        cursor.execute('''SELECT store_lat, store_lng
+        cursor.execute('''SELECT store_lat, store_lng, store_name
         FROM Store
         WHERE store_id=%s ;''', gifticon['store_id'])
         
         store_info = cursor.fetchone()
+        
+        cursor.execute('''SELECT name
+        FROM Menu
+        WHERE menuId=%s ;''', gifticon['menu_id'])
+        
+        menu_name = cursor.fetchone()
         
         if gifticon:
             store_id = gifticon['store_id']
@@ -218,13 +221,15 @@ def getGifticon(gifticon_id: int):
                 "validity": gifticon['validity'],
                 "sender": gifticon['sender'],
                 "type": gifticon['type'],
+                "name": menu_name['name'],
                 "use_yn": gifticon['use_yn'],
                 "availability": gifticon['availability'],
                 "menu_url" : menu_url,
                 "msg" : gifticon['msg'],
                 "created_time" : gifticon['created_time'],
                 "store_lat" : store_info["store_lat"],
-                "store_lng" : store_info["store_lng"]
+                "store_lng" : store_info["store_lng"],
+                "store_name" : store_info["store_name"]
             }
     
         print("gifticon", gifticon)
@@ -252,25 +257,90 @@ def useGifticon(gifticon_id: int):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
-        gifticon_id = gifticon_id
+        
+        cursor.execute('''SELECT use_yn, validity From Gifticon WHERE id=%s ;''', gifticon_id)
 
-        cursor.execute('''UPDATE Gifticon SET use_yn=1 WHERE id=%s ;''', gifticon_id)
-        connection.commit()
+        gifticon = _ = cursor.fetchone()
+        
+        result = 0 #사용 성공
 
-        _ = cursor.fetchall()
+        if gifticon:
+            if gifticon['use_yn'] == 1:
+                result = 1 # 이미 사용된 기프티콘
+            elif gifticon['validity'] and gifticon['validity'] < datetime.now():
+                result = 2 # 기프티콘 유효기간 만료
+        else:
+            result = 3 #기프티콘 찾을 수 없음
+            
+        if result == 0:
+            cursor.execute('''UPDATE Gifticon SET use_yn=1, used_time = NOW() WHERE id=%s ;''', gifticon_id)
+            connection.commit()
+            _ = cursor.fetchall()
 
         return {
-            'statusCode': 200,
+            'result': result,
         }
         
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed get gifticon list",
-        }
-        return result
-    
+        traceback.print_exc() 
+        logger.error(f"failed use gifticon::  {str(e)}")
+        raise HTTPException(status_code=500, detail=f"failed use gifticon::  {str(e)}")
+
     finally:        
         cursor.close()
         connection.close()
+
+@router.get("/used/{store_id}")
+def getTodayUsedGifticon(store_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
+
+    try:
+        cursor.execute('''
+        SELECT
+            id, 
+            used_time, 
+            menu_id
+        FROM Gifticon
+        Where store_id =%s
+        AND DATE(used_time) = CURDATE()
+        ''', (store_id))
+        
+        # DB에서 데이터를 가져오기
+        rows = cursor.fetchall()
+        gifticonList = []
+        
+        for row in rows:
+            print(row)
+            menu_id = row['menu_id']
+            
+            menu_query = '''
+            SELECT
+                name,
+                price
+            FROM Menu
+            Where menuId = %s
+            '''
+    
+            cursor.execute(menu_query, (menu_id))
+    
+            # DB에서 데이터를 가져오기
+            menu = cursor.fetchone()
+            
+            # store 데이터를 구성
+            gificon = {
+                "id": row['id'],
+                "used_time": row['used_time'],
+                "menu_name": menu['name'],
+                "price": menu['price']      
+            }
+            gifticonList.append(gificon)
+
+        return {"statusCode": 200, "gifticonList": gifticonList}
+    
+    except Exception as e:
+        print(f"getTodayUsedGifticon:: {str(e)}")
+        traceback.print_exc() 
+        logger.error(f"getTodayUsedGifticon::  {str(e)}")
+        raise HTTPException(status_code=500, detail=f"getTodayUsedGifticon::  {str(e)}")

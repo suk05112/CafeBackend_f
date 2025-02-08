@@ -229,7 +229,7 @@ async def getInquiry(owner_id: int):
             inquiry_list.append(result)
                 
         return {
-            'inquiry_list': inquiry_list
+            'inquiry_list': list(reversed(inquiry_list))
         }
     except Exception as e:
         print(e)
@@ -254,7 +254,7 @@ async def getInquiry():
         inquiry_list = []
         
         for inquiry in inquiries:
-            cursor.execute('''SELECT response, created_at FROM Owner_Inquiry_response WHERE id=%s ;''', (inquiry['id'],))
+            cursor.execute('''SELECT response, created_at FROM Owner_Inquiry_response WHERE id=%s;''', (inquiry['id'],))
             response = cursor.fetchone() 
             
             result = {
@@ -270,7 +270,7 @@ async def getInquiry():
             inquiry_list.append(result)
                 
         return {
-            'inquiry_list': inquiry_list
+            'inquiry_list': list(reversed(inquiry_list))
         }
     except Exception as e:
         print(e)
