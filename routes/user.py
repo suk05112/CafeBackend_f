@@ -1,13 +1,14 @@
 import traceback
-from fastapi import APIRouter, HTTPException
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, Query, Request, APIRouter, Depends, HTTPException
+from auth.auth_dependency import verify_firebase_token
+import firebase_admin
+from firebase_admin import auth, credentials
 
-from fastapi import FastAPI
 from typing import Union
 from pydantic import BaseModel
 
 import pymysql
-import app.database as database
+import app.database as databas
 import boto3
 from botocore.client import Config
 from app.database import get_db_connection
@@ -17,6 +18,11 @@ from loguru import logger
 from models.user import User
 from models.user import Inquiry
 from models.user import InquiryResponse
+
+#상위폴더 참조
+import os
+import sys
+sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
 
 router = APIRouter()
 
@@ -52,65 +58,254 @@ async def registerUser(user: User):
         return result
     finally:
         connection.close()
+        
+def signUp(user: dict):
+    
+    uid = user.get("uid")
 
-@router.get("/login/{email}")
-async def idRegisteredUser(email: str):
+    user_record = auth.get_user(uid)
+    print("user_record\n\n")
+    print(user_record)
+    
+    print("=====user=====\n", user)
+
+    print(user_record.email)
+    print(user_record.phone_number)
+    print(user_record.display_name)
+    
+    email = user_record.email
+    name = user_record.display_name          # Firebase 토큰에 name이 없으면 None
+    phone_number = user_record.phone_number 
+    provider = user.get("firebase").get("sign_in_provider")  
+    
+    print("user", uid, email, name, phone_number, provider)
     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-
+    cursor = connection.cursor()
+    
     try:
-        cursor.execute('''SELECT * FROM User WHERE email=%s ;''', (email,))
-        user = cursor.fetchone()  # 한 행만 가져옴
+        query = """
+            INSERT INTO user (
+                name, email, phone, uid
+            ) VALUES (%s, %s, %s, %s);
+        """
+        # cursor.execute(query, ("name", "email", "phone_number"))
 
-        # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
-        if user:  # 사용자가 존재하는 경우
-            print("user:", user)
-            return {
-                'statusCode': 200,
-                'user_id': user['user_id'],
-                'name': user['name'],
-                'email': user['email'],
-                'phone_number': user['phone_number'],
-            }
-        else:
-            return {
-                'statusCode': 200,
-                'isRegistered': 0  # 이메일이 존재하지 않으면 0
-            }
+        cursor.execute(query, (name, email, phone_number, uid))
+        connection.commit()
 
+        user_id = cursor.lastrowid
+        print(user_id)
+        
+        linkAccount(uid, user_id, provider, email)
+                                                  
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed login " + str(e),
-            'store_id': -1
-        }
-        return result
+    finally:
+        connection.close()
+        
+def linkAccount(uid, user_id, provider, email):
+    print("linkAccount")
+    user_record = auth.get_user(uid)
+    print("user_record\n\n")
+    
+    # email = user_record.email
+    phone_number = user_record.phone_number 
+    # provider = user.get("firebase").get("sign_in_provider")  
+    
+    print("user", uid, email, phone_number, provider)
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                      
+    cursor = connection.cursor()
+    
+    try:
+        print(user_id)
+        
+        query = """
+            INSERT INTO user_provider (
+                user_id, email, provider
+            ) VALUES (%s, %s, %s);
+        """
+
+        cursor.execute(query, (user_id, email, provider))
+        connection.commit()
+                                                  
+    except Exception as e:
+        print(e)
     finally:
         connection.close()
 
-@router.get("/isRegistered/{email}")
-async def idRegisteredUser(email: str):
+@router.get("/login/{email}")
+async def login_user(email: str, user=Depends(verify_firebase_token)):
+    """
+    Firebase 토큰 기반 로그인.
+    클라이언트는 email을 보내지 않음.
+    서버가 직접 Firebase 토큰에서 email, uid 읽음.
+    """
+
+    print(user)
+    # email = user.get("email")
+    uid = user.get("uid")
+    provider = user.get("firebase").get("sign_in_provider")  
+    
+    user_record = auth.get_user(uid)
+    email2 = user_record.email
+
+
+    print("login_user firebase 인증 성공", email, email2, uid, provider)
+    
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    if email.endswith("@privaterelay.appleid.com"):
+        provider = "apple.priavate"
+
+    try:
+        cursor.execute("SELECT * FROM user WHERE uid=%s;", (uid,))
+        db_user = cursor.fetchone()
+   
+        cursor.execute("SELECT * FROM user_provider WHERE email=%s AND provider=%s;", (email, provider))
+        islinked = cursor.fetchone()
+        
+        if email == "apple":
+             islinked = True
+        
+        if db_user:
+            user_id = db_user["id"]
+
+            print("이미 등록 islinked", islinked)
+            # 이미 등록된 유저
+            
+            if islinked is None:
+                print("islinked false")
+                linkAccount(uid, user_id, provider, email)
+            else:
+                print("islinked true")
+
+            return {
+                "statusCode": 200,
+                "isRegistered": 1,
+                "user_id": db_user["id"],
+                "name": db_user["name"],
+                "email": db_user["email"],
+                "phone_number": db_user["phone"],
+            }
+        else:
+            print("미등록")
+
+            # 아직 등록되지 않은 유저
+            signUp(user)
+
+            return {
+                "statusCode": 200,
+                "isRegistered": 0,
+                # "uid": uid,       # 고객 uid 제공
+                "email": email,
+            }
+
+    except Exception as e:
+        print("login 오류", e)
+
+        return {
+            "statusCode": 500,
+            "msg": f"login failed {e}",
+        }
+
+    finally:
+        connection.close()
+        
+# @router.get("/login/{email}")
+# async def idRegisteredUser(email: str):
+#     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
+#     cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+#     try:
+#         cursor.execute('''SELECT * FROM User WHERE email=%s ;''', (email,))
+#         user = cursor.fetchone()  # 한 행만 가져옴
+
+#         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
+#         if user:  # 사용자가 존재하는 경우
+#             print("user:", user)
+#             return {
+#                 'statusCode': 200,
+#                 'user_id': user['user_id'],
+#                 'name': user['name'],
+#                 'email': user['email'],
+#                 'phone_number': user['phone_number'],
+#             }
+#         else:
+#             return {
+#                 'statusCode': 200,
+#                 'isRegistered': 0  # 이메일이 존재하지 않으면 0
+#             }
+
+#     except Exception as e:
+#         print(e)
+#         result = {
+#             'statusCode': 500,
+#             'msg': "failed login " + str(e),
+#             'store_id': -1
+#         }
+#         return result
+#     finally:
+#         connection.close()
+
+
+@router.get("/isRegistered")
+async def idRegisteredUser(
+    email: str = Query(...),
+    provider: str = Query(...),
+    firebase = Depends(verify_firebase_token)
+):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                     
     cursor = connection.cursor()
 
     try:
-        cursor.execute('''SELECT * FROM User WHERE email=%s ;''', (email,))
+        cursor.execute('''SELECT * FROM user_provider WHERE email=%s AND provider=%s ;''', (email, provider))
 
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
         if cursor.fetchone():
             return {
                 'statusCode': 200,
-                'isRegistered': 1  # 이메일이 존재하면 1
+                'isRegistered': True  # 이메일이 존재하면 1
             }
         else:
             return {
                 'statusCode': 200,
-                'isRegistered': 0  # 이메일이 존재하지 않으면 0
+                'isRegistered': False  # 이메일이 존재하지 않으면 0
             }
 
     except Exception as e:
-        print(e)
+        print("isRegistered 오류", e)
+        result = {
+            'statusCode': 500,
+            'msg': "failed register store - " + str(e),
+            'store_id': -1
+        }
+        return result
+    finally:
+        connection.close()
+        
+@router.get("/isRegistered/{phoneNumber}")
+async def idRegisteredAppleUser(phoneNumber: str):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결                     
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute('''SELECT * FROM user WHERE phone=%s;''', (phoneNumber))
+
+        # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
+        if cursor.fetchone():
+            return {
+                'statusCode': 200,
+                'isRegistered': True  # 이메일이 존재하면 1
+            }
+        else:
+            return {
+                'statusCode': 200,
+                'isRegistered': False  # 이메일이 존재하지 않으면 0
+            }
+
+    except Exception as e:
+        print("isRegistered 오류", e)
         result = {
             'statusCode': 500,
             'msg': "failed register store - " + str(e),
