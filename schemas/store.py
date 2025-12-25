@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Union, Optional
+from typing import Union
 
 class StoreCreate(BaseModel):
     owner_id: int
@@ -14,4 +14,4 @@ class StoreCreate(BaseModel):
 
 class InspectionStatusUpdate(BaseModel):
     inspection_status: Union[int, str]
-    inspection_msg: Optional[str] = ""
+    inspection_msg: str

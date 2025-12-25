@@ -21,18 +21,20 @@ import logging
 from datetime import datetime, timezone, timedelta
 import json
 
-from app.settings import settings
-from app.database import get_db_connection
-from app.s3_config import S3_CLIENT, BUCKET_NAME
+from core.config import settings
+from db.session import get_db_connection
+from core.s3_config import S3_CLIENT, BUCKET_NAME
 
-from routes import store
+# 기존 routes (점진적으로 api/endpoints로 이동 예정)
 from routes import user
 from routes import gifticon
-from routes import menu
 from routes import owner
-from routes import settlement
 from routes import order
-from routes import common
+# admin은 새로운 구조로 이동됨
+# from routes import admin
+
+# 새로운 구조 (api/endpoints)
+from api.endpoints import store, menu, settlement, common, admin
 
 #https://fastapi.tiangolo.com/ko/
 
@@ -78,9 +80,17 @@ cloudwatch_handler = watchtower.CloudWatchLogHandler(
     use_queues=False
 )
 
-# 로깅 포맷 설정
-formatter = logging.Formatter(
-    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+# 로깅 포맷 설정 (한국 시간대 포함)
+class KSTFormatter(logging.Formatter):
+    """한국 시간대(KST)를 사용하는 커스텀 포맷터"""
+    def formatTime(self, record, datefmt=None):
+        dt = datetime.fromtimestamp(record.created, KST)
+        if datefmt:
+            return dt.strftime(datefmt)
+        return dt.strftime('%Y-%m-%d %H:%M:%S')
+
+formatter = KSTFormatter(
+    '%(asctime)s [KST] - %(name)s - %(levelname)s - %(message)s',
     datefmt='%Y-%m-%d %H:%M:%S'
 )
 cloudwatch_handler.setFormatter(formatter)
@@ -125,14 +135,20 @@ app.add_middleware(
     allow_headers=["*"],  # 모든 헤더 허용
 )
 
+# 새로운 구조 (리팩토링된 엔드포인트) - import는 위에서 이미 했음
 app.include_router(store.router, prefix=f'/store', tags=["Store"])
+app.include_router(menu.router, prefix=f'/menu', tags=["Menu"])
+app.include_router(settlement.router, prefix='/settlement', tags=["Settlement"])
+app.include_router(common.router, prefix='', tags=["Common"])
+app.include_router(admin.router, prefix='/admin', tags=["Admin"])
+
+# 기존 routes (점진적으로 리팩토링 예정)
 app.include_router(user.router, prefix='/user', tags=["User"])
 app.include_router(gifticon.router, prefix='/gifticon', tags=["Gifticon"])
-app.include_router(menu.router, prefix=f'/menu', tags=["Menu"])
 app.include_router(owner.router, prefix='/owner', tags=["Owner"])
-app.include_router(settlement.router, prefix='/settlement', tags=["Settlement"])
 app.include_router(order.router, prefix='/order', tags=["Order"])
-app.include_router(common.router, prefix='', tags=["Common"])
+# 기존 admin 라우트는 새로운 구조로 대체됨
+# app.include_router(admin.router, prefix='/admin', tags=["Admin"])
     
 
 @app.middleware("http")
@@ -167,8 +183,8 @@ async def log_requests(request: Request, call_next):
     
     # GET 요청은 오류(status_code >= 400)인 경우에만 로깅
     # GET이 아닌 요청은 모두 로깅
-    should_log = not is_get_request or response.status_code >= 400
-    
+    # should_log = not is_get_request or response.status_code >= 400
+    should_log = True
     if should_log:
         # 로깅할 데이터 구조화
         log_data = {
@@ -185,7 +201,8 @@ async def log_requests(request: Request, call_next):
             "client_host": request.client.host if request.client else None,
         }
         
-        # CloudWatch에 JSON 형태로 로깅
+        # CloudWatch에 JSON 형태로 로깅 (한국 시간 포함)
+        current_time = get_kst_now().strftime('%Y-%m-%d %H:%M:%S')
         log_message = json.dumps(log_data, ensure_ascii=False, indent=2)
         
         if response.status_code >= 400:
@@ -193,8 +210,8 @@ async def log_requests(request: Request, call_next):
         else:
             logger.info(log_message)
         
-        # 콘솔에도 출력 (개발 편의성)
-        print(f"[{env}] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
+        # 콘솔에도 출력 (개발 편의성, 한국 시간 포함)
+        print(f"[{current_time} KST] [{env}] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
 
     return response
 

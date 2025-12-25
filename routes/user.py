@@ -387,7 +387,7 @@ async def getInquiry():
         inquiry_list = []
         
         for inquiry in inquiries:
-            cursor.execute('''SELECT response, created_at FROM inquiry_response WHERE id=%s;''', (inquiry['id'],))
+            cursor.execute('''SELECT response, created_at FROM inquiry_response WHERE inquiry_id=%s;''', (inquiry['id'],))
             response = cursor.fetchone() 
             
             result = {
@@ -439,19 +439,23 @@ async def subjectReply(inquiry_id: int, reply: InquiryResponse):
         user_id = inquiry['user_id']
         inquiry_title = inquiry['title']
         
-        # 2. 답변 저장
-        query = """
-            INSERT INTO inquiry_response (
-                inquiry_id, response
-            ) VALUES (
-              {}, '{}'
-            );
-        """.format(
-            inquiry_id,
-            reply.response,
-            )
-            
-        cursor.execute(query)
+        # 2. 기존 답변 확인
+        cursor.execute('SELECT id FROM inquiry_response WHERE inquiry_id = %s', (inquiry_id,))
+        existing_response = cursor.fetchone()
+        
+        if existing_response:
+            # 기존 답변이 있으면 UPDATE
+            cursor.execute('''
+                UPDATE inquiry_response 
+                SET response = %s, updated_at = NOW()
+                WHERE inquiry_id = %s
+            ''', (reply.response, inquiry_id))
+        else:
+            # 기존 답변이 없으면 INSERT
+            cursor.execute('''
+                INSERT INTO inquiry_response (inquiry_id, response)
+                VALUES (%s, %s)
+            ''', (inquiry_id, reply.response))
         
         # 3. inquiry 테이블의 status를 'answered'로 변경
         query_update_status = """
