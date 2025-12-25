@@ -35,7 +35,7 @@ async def registerOwner(owner: Owner):
     try:
         query = """
             INSERT INTO owner (
-                name, email, uid, phone_number
+                name, email, uid, phone
             ) VALUES (
               '{}', '{}', '{}', '{}'
             );
@@ -104,7 +104,7 @@ async def findOwnerId(owner: OwnerFind):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM owner WHERE name=%s AND phone_number=%s;''', (owner.name, owner.phone_number))
+        cursor.execute('''SELECT * FROM owner WHERE name=%s AND phone=%s;''', (owner.name, owner.phone_number))
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
@@ -134,7 +134,7 @@ async def findOwnerPW(owner: OwnerFindPw):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM owner WHERE email=%s AND phone_number=%s;''', (owner.email, owner.phone_number))
+        cursor.execute('''SELECT * FROM owner WHERE email=%s AND phone=%s;''', (owner.email, owner.phone_number))
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
@@ -202,7 +202,7 @@ async def getInquiry(owner_id: int):
         inquiry_list = []
         
         for inquiry in inquiries:
-            cursor.execute('''SELECT response, created_at FROM owner_inquiry_response WHERE id=%s ;''', (inquiry['id'],))
+            cursor.execute('''SELECT response, created_at FROM owner_inquiry_response WHERE inquiry_id=%s ;''', (inquiry['id'],))
             response = cursor.fetchone() 
             
             result = {
@@ -240,7 +240,7 @@ async def getInquiry():
         inquiry_list = []
         
         for inquiry in inquiries:
-            cursor.execute('''SELECT response, created_at FROM owner_inquiry_response WHERE id=%s;''', (inquiry['id'],))
+            cursor.execute('''SELECT response, created_at FROM owner_inquiry_response WHERE inquiry_id=%s;''', (inquiry['id'],))
             response = cursor.fetchone() 
             
             result = {
@@ -289,19 +289,23 @@ async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
         owner_id = inquiry['owner_id']
         inquiry_title = inquiry['title']
         
-        # 2. 답변 저장
-        query = """
-            INSERT INTO owner_inquiry_response (
-                inquiry_id, response
-            ) VALUES (
-              {}, '{}'
-            );
-        """.format(
-            inquiry_id,
-            reply.response,
-            )
-            
-        cursor.execute(query)
+        # 2. 기존 답변 확인
+        cursor.execute('SELECT id FROM owner_inquiry_response WHERE inquiry_id = %s', (inquiry_id,))
+        existing_response = cursor.fetchone()
+        
+        if existing_response:
+            # 기존 답변이 있으면 UPDATE
+            cursor.execute('''
+                UPDATE owner_inquiry_response 
+                SET response = %s, updated_at = NOW()
+                WHERE inquiry_id = %s
+            ''', (reply.response, inquiry_id))
+        else:
+            # 기존 답변이 없으면 INSERT
+            cursor.execute('''
+                INSERT INTO owner_inquiry_response (inquiry_id, response)
+                VALUES (%s, %s)
+            ''', (inquiry_id, reply.response))
         
         # 3. owner_inquiry 테이블의 status를 'answered'로 변경
         query_update_status = """

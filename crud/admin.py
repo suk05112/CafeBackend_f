@@ -1,0 +1,926 @@
+"""Admin CRUD operations"""
+import pymysql
+from datetime import datetime
+from typing import Optional, Dict, List
+from db.session import get_db_connection
+from core.s3_config import S3_CLIENT, BUCKET_NAME
+from botocore.exceptions import ClientError
+from crud import store as store_crud
+from crud import menu as menu_crud
+
+s3 = S3_CLIENT
+bucket_name = BUCKET_NAME
+
+
+def get_dashboard_statistics(connection) -> Dict:
+    """대시보드 통계 데이터"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        today = datetime.now().date()
+        start_of_month = today.replace(day=1)
+        
+        # 상품권 발행 수 (일)
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM gifticon
+            WHERE DATE(created_at) = %s
+        ''', (today,))
+        gift_issued_today = cursor.fetchone()['count'] or 0
+        
+        # 상품권 발행 수 (월)
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM gifticon
+            WHERE DATE(created_at) >= %s
+        ''', (start_of_month,))
+        gift_issued_month = cursor.fetchone()['count'] or 0
+        
+        # 상품권 사용금액 (일)
+        cursor.execute('''
+            SELECT COALESCE(SUM(price), 0) as total FROM gifticon
+            WHERE status = 'USED' AND DATE(used_at) = %s
+        ''', (today,))
+        gift_used_amount_today = cursor.fetchone()['total'] or 0
+        
+        # 상품권 사용금액 (월)
+        cursor.execute('''
+            SELECT COALESCE(SUM(price), 0) as total FROM gifticon
+            WHERE status = 'USED' AND DATE(used_at) >= %s
+        ''', (start_of_month,))
+        gift_used_amount_month = cursor.fetchone()['total'] or 0
+        
+        # 상품권 사용 수
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM gifticon
+            WHERE status = 'USED'
+        ''')
+        gift_used_count = cursor.fetchone()['count'] or 0
+        
+        # 정산 금액 (월)
+        cursor.execute('''
+            SELECT COALESCE(SUM(price), 0) as total FROM gifticon
+            WHERE status = 'USED' AND DATE(used_at) >= %s
+        ''', (start_of_month,))
+        settlement_amount_month = cursor.fetchone()['total'] or 0
+        
+        # 신규 매장 등록 수 (일)
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM store
+            WHERE DATE(created_at) = %s
+        ''', (today,))
+        new_stores_today = cursor.fetchone()['count'] or 0
+        
+        # 신규 매장 등록 수 (월)
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM store
+            WHERE DATE(created_at) >= %s
+        ''', (start_of_month,))
+        new_stores_month = cursor.fetchone()['count'] or 0
+        
+        # 승인 안된 매장 수
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM store
+            WHERE inspection_status != 'approved' OR inspection_status IS NULL
+        ''')
+        pending_stores = cursor.fetchone()['count'] or 0
+        
+        # 전체 매장 수
+        cursor.execute('SELECT COUNT(*) as count FROM store')
+        total_stores = cursor.fetchone()['count'] or 0
+        
+        # 신규 가입 유저 (일)
+        cursor.execute('''
+            SELECT COUNT(*) as count FROM user
+            WHERE DATE(created_at) = %s
+        ''', (today,))
+        new_users_today = cursor.fetchone()['count'] or 0
+        
+        # 전체 유저
+        cursor.execute('SELECT COUNT(*) as count FROM user')
+        total_users = cursor.fetchone()['count'] or 0
+        
+        return {
+            'gift_issued_today': gift_issued_today,
+            'gift_issued_month': gift_issued_month,
+            'gift_used_amount_today': float(gift_used_amount_today),
+            'gift_used_amount_month': float(gift_used_amount_month),
+            'gift_used_count': gift_used_count,
+            'settlement_amount_month': float(settlement_amount_month),
+            'new_stores_today': new_stores_today,
+            'new_stores_month': new_stores_month,
+            'pending_stores': pending_stores,
+            'total_stores': total_stores,
+            'new_users_today': new_users_today,
+            'total_users': total_users
+        }
+    finally:
+        cursor.close()
+
+
+def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+    """매장 리스트 (관리자용, 페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 전체 개수 조회
+        count_query = '''
+            SELECT COUNT(*) as total
+            FROM store s
+            LEFT JOIN owner o ON s.owner_id = o.id
+        '''
+        
+        count_params = []
+        if search:
+            count_query += ' WHERE s.store_name LIKE %s OR o.name LIKE %s'
+            search_pattern = f'%{search}%'
+            count_params = [search_pattern, search_pattern]
+        
+        cursor.execute(count_query, count_params)
+        total_count = cursor.fetchone()['total']
+        
+        # 페이지네이션 계산
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        
+        # 데이터 조회
+        query = '''
+            SELECT 
+                s.id,
+                s.owner_id,
+                s.store_name as name,
+                s.created_at,
+                s.inspection_status as status,
+                s.store_address as address,
+                o.name as owner_name
+            FROM store s
+            LEFT JOIN owner o ON s.owner_id = o.id
+        '''
+        
+        params = []
+        if search:
+            query += ' WHERE s.store_name LIKE %s OR o.name LIKE %s'
+            search_pattern = f'%{search}%'
+            params = [search_pattern, search_pattern]
+        
+        query += ' ORDER BY s.id ASC'
+        query += ' LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        stores = cursor.fetchall()
+        
+        result = []
+        for store in stores:
+            store['created_at'] = store['created_at'].isoformat() if store['created_at'] else None
+            store['approved'] = store['status'] == 'approved'
+            result.append(store)
+        
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages
+        }
+    finally:
+        cursor.close()
+
+
+def get_store_detail(connection, store_id: int) -> Dict:
+    """매장 상세 정보"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                s.*,
+                o.name as owner_name,
+                o.phone as owner_phone
+            FROM store s
+            LEFT JOIN owner o ON s.owner_id = o.id
+            WHERE s.id = %s
+        ''', (store_id,))
+        store = cursor.fetchone()
+        
+        if not store:
+            return None
+        
+        # 로고 URL
+        logo_key = f'store_logo/store_logo_{store_id}.png'
+        store['logo'] = None
+        try:
+            s3.head_object(Bucket=bucket_name, Key=logo_key)
+            store['logo'] = s3.generate_presigned_url('get_object',
+                Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
+        except ClientError:
+            pass
+        
+        # 매장 사진 URLs
+        store_photo_urls = []
+        store_photo_cnt = store.get('store_photo_cnt', 0) or 0
+        for i in range(1, store_photo_cnt + 1):
+            try:
+                image_key = f'store_image/store_image_{store_id}_{i}.png'
+                s3.head_object(Bucket=bucket_name, Key=image_key)
+                url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
+                store_photo_urls.append(url)
+            except ClientError:
+                pass
+        store['images'] = store_photo_urls
+        
+        # 날짜 형식 변환
+        if store.get('created_at'):
+            store['created_at'] = store['created_at'].isoformat()
+        if store.get('updated_at'):
+            store['updated_at'] = store['updated_at'].isoformat()
+        
+        return store
+    finally:
+        cursor.close()
+
+
+def get_store_menus(connection, store_id: int) -> List[Dict]:
+    """매장 메뉴 리스트"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                m.id,
+                m.menu_name as name,
+                m.price as price,
+                m.description as description,
+                m.store_id
+            FROM menu m
+            WHERE m.store_id = %s
+        ''', (store_id,))
+        
+        menus = cursor.fetchall()
+        
+        result = []
+        for menu in menus:
+            menu_id = menu['id']
+            image_key = f'menu_image/menu_image_{menu_id}.png'
+            menu['image'] = None
+            try:
+                s3.head_object(Bucket=bucket_name, Key=image_key)
+                menu['image'] = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
+            except ClientError:
+                pass
+            result.append(menu)
+        
+        return result
+    finally:
+        cursor.close()
+
+
+def get_store_giftcards(connection, store_id: int, page: int = 1, limit: int = 10) -> Dict:
+    """매장의 깊티(기프티콘) 리스트 (페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 전체 개수 조회
+        cursor.execute('''
+            SELECT COUNT(*) as total
+            FROM gifticon g
+            WHERE g.store_id = %s
+        ''', (store_id,))
+        total_count = cursor.fetchone()['total']
+        
+        # 페이지네이션 계산
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        
+        # 데이터 조회
+        cursor.execute('''
+            SELECT 
+                g.id,
+                g.created_at,
+                g.used_at,
+                g.status,
+                m.price as amount,
+                g.user_id,
+                m.menu_name as menu_name
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.store_id = %s
+            ORDER BY g.created_at DESC
+            LIMIT %s OFFSET %s
+        ''', (store_id, limit, offset))
+        
+        giftcards = cursor.fetchall()
+        
+        result = []
+        for card in giftcards:
+            card['created_at'] = card['created_at'].isoformat() if card['created_at'] else None
+            card['used_at'] = card['used_at'].isoformat() if card['used_at'] else None
+            result.append(card)
+        
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages
+        }
+    finally:
+        cursor.close()
+
+
+def get_users(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+    """유저 리스트 (관리자용, 페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 전체 개수 조회
+        count_query = 'SELECT COUNT(*) as total FROM user'
+        count_params = []
+        
+        if search:
+            count_query += ' WHERE name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                count_params = [search_pattern, search_pattern, search_pattern, search_id]
+            except ValueError:
+                count_params = [search_pattern, search_pattern, search_pattern, -1]
+        
+        cursor.execute(count_query, count_params)
+        total_count = cursor.fetchone()['total']
+        
+        # 페이지네이션 계산
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        
+        # 데이터 조회
+        query = '''
+            SELECT 
+                id,
+                name,
+                email,
+                phone,
+                created_at,
+                last_login
+            FROM user
+        '''
+        
+        params = []
+        if search:
+            query += ' WHERE name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                params = [search_pattern, search_pattern, search_pattern, search_id]
+            except ValueError:
+                params = [search_pattern, search_pattern, search_pattern, -1]
+        
+        query += ' ORDER BY id ASC'
+        query += ' LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        users = cursor.fetchall()
+        
+        result = []
+        for user in users:
+            user['created_at'] = user['created_at'].isoformat() if user.get('created_at') else None
+            user['last_login'] = user['last_login'].isoformat() if user.get('last_login') else None
+            result.append(user)
+        
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages
+        }
+    finally:
+        cursor.close()
+
+
+def get_user_detail(connection, user_id: int) -> Dict:
+    """유저 상세 정보"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                id,
+                name,
+                email,
+                phone,
+                created_at,
+                last_login
+            FROM user
+            WHERE id = %s
+        ''', (user_id,))
+        
+        user = cursor.fetchone()
+        
+        if not user:
+            return None
+        
+        if user.get('created_at'):
+            user['created_at'] = user['created_at'].isoformat()
+        if user.get('last_login'):
+            user['last_login'] = user['last_login'].isoformat()
+        
+        return user
+    finally:
+        cursor.close()
+
+
+def get_user_orders(connection, user_id: int) -> List[Dict]:
+    """유저 주문 내역"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                o.id,
+                o.created_at,
+                o.amount,
+                o.payment,
+                o.payment_key,
+                o.status
+            FROM `orders` o
+            WHERE o.user_id = %s
+            ORDER BY o.created_at DESC
+        ''', (user_id,))
+        
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            order['created_at'] = order['created_at'].isoformat() if order.get('created_at') else None
+            result.append(order)
+        
+        return result
+    finally:
+        cursor.close()
+
+
+def get_user_giftcards(connection, user_id: int) -> List[Dict]:
+    """유저 기프티콘 리스트"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                g.id,
+                m.price,
+                g.gift_code,
+                g.validity,
+                g.created_at as received_at,
+                g.used_at,
+                g.status,
+                m.menu_name
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.user_id = %s
+            ORDER BY g.created_at DESC
+        ''', (user_id,))
+        
+        giftcards = cursor.fetchall()
+        
+        result = []
+        for card in giftcards:
+            card['received_at'] = card['received_at'].isoformat() if card.get('received_at') else None
+            card['used_at'] = card['used_at'].isoformat() if card.get('used_at') else None
+            # validity 처리: datetime 객체면 isoformat, 문자열이면 그대로, None이면 None
+            if card.get('validity'):
+                if hasattr(card['validity'], 'isoformat'):
+                    card['validity'] = card['validity'].isoformat()
+                # 이미 문자열이면 그대로 유지
+            else:
+                card['validity'] = None
+            result.append(card)
+        
+        return result
+    finally:
+        cursor.close()
+
+
+def get_orders(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+    """주문 리스트 (관리자용, 페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 전체 개수 조회
+        count_query = '''
+            SELECT COUNT(*) as total
+            FROM `orders` o
+            LEFT JOIN store s ON o.store_id = s.id
+        '''
+        count_params = []
+        if search:
+            count_query += ' WHERE o.order_no LIKE %s OR o.user_id = %s'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                count_params = [search_pattern, search_id]
+            except ValueError:
+                count_params = [search_pattern, -1]
+        
+        cursor.execute(count_query, count_params)
+        total_count = cursor.fetchone()['total']
+        
+        # 페이지네이션 계산
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        
+        # 데이터 조회
+        query = '''
+            SELECT 
+                o.id,
+                o.user_id,
+                o.status,
+                o.order_no as order_number,
+                s.store_name
+            FROM `orders` o
+            LEFT JOIN store s ON o.store_id = s.id
+        '''
+        
+        params = []
+        if search:
+            query += ' WHERE o.order_no LIKE %s OR o.user_id = %s'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                params = [search_pattern, search_id]
+            except ValueError:
+                params = [search_pattern, -1]
+        
+        query += ' ORDER BY o.created_at DESC'
+        query += ' LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+        
+        cursor.execute(query, params)
+        orders = cursor.fetchall()
+        
+        result = []
+        for order in orders:
+            # order_no 컬럼을 order_number로 매핑 (SQL에서 이미 alias로 처리됨)
+            # DictCursor를 사용하므로 'order_number' 키로 이미 존재함
+            result.append(order)
+        
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages
+        }
+    finally:
+        cursor.close()
+
+
+def get_order_detail(connection, order_id: int) -> Dict:
+    """주문 상세 정보"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                o.*,
+                s.store_name
+            FROM `orders` o
+            LEFT JOIN store s ON o.store_id = s.id
+            WHERE o.id = %s
+        ''', (order_id,))
+        
+        order = cursor.fetchone()
+        
+        if not order:
+            return None
+        
+        if order.get('created_at'):
+            order['created_at'] = order['created_at'].isoformat()
+        
+        order['amount'] = order.get('amount', 0)
+        
+        return order
+    finally:
+        cursor.close()
+
+
+def get_order_giftcards(connection, order_id: int) -> List[Dict]:
+    """주문의 기프티콘 리스트"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT 
+                g.id,
+                m.price,
+                g.gift_code,
+                g.validity,
+                g.created_at as received_at,
+                g.used_at,
+                g.status,
+                m.menu_name,
+                s.store_name,
+                s.id as store_id
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            LEFT JOIN store s ON g.store_id = s.id
+            WHERE g.order_id = %s
+            ORDER BY g.created_at DESC
+        ''', (order_id,))
+        
+        giftcards = cursor.fetchall()
+        
+        result = []
+        for card in giftcards:
+            card['received_at'] = card['received_at'].isoformat() if card.get('received_at') else None
+            card['used_at'] = card['used_at'].isoformat() if card.get('used_at') else None
+            # validity 처리: datetime 객체면 isoformat, 문자열이면 그대로, None이면 None
+            if card.get('validity'):
+                if hasattr(card['validity'], 'isoformat'):
+                    card['validity'] = card['validity'].isoformat()
+                # 이미 문자열이면 그대로 유지
+            else:
+                card['validity'] = None
+            result.append(card)
+        
+        return result
+    finally:
+        cursor.close()
+
+
+def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
+    """전체 메뉴 리스트 (페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 전체 개수 조회
+        cursor.execute('SELECT COUNT(*) as total FROM menu')
+        total_count = cursor.fetchone()['total']
+        
+        # 페이지네이션 계산
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        
+        # 데이터 조회
+        cursor.execute('''
+            SELECT 
+                m.id,
+                m.menu_name as name,
+                m.price as price,
+                m.store_id,
+                s.store_name
+            FROM menu m
+            LEFT JOIN store s ON m.store_id = s.id
+            ORDER BY m.id DESC
+            LIMIT %s OFFSET %s
+        ''', (limit, offset))
+        
+        menus = cursor.fetchall()
+        
+        result = []
+        for menu in menus:
+            menu_id = menu['id']
+            image_key = f'menu_image/menu_image_{menu_id}.png'
+            menu['image'] = None
+            try:
+                s3.head_object(Bucket=bucket_name, Key=image_key)
+                menu['image'] = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
+            except ClientError:
+                pass
+            result.append(menu)
+        
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages
+        }
+    finally:
+        cursor.close()
+
+
+def get_notices(connection, target: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+    """공지사항 리스트 (페이지네이션)
+    
+    Args:
+        connection: DB 연결
+        target: 'user' 또는 'owner', None이면 둘 다
+        page: 페이지 번호
+        limit: 페이지당 항목 수
+    """
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        result = []
+        total_count = 0
+        
+        if target is None or target == 'user':
+            # 유저 공지사항 조회
+            cursor.execute('SELECT COUNT(*) as total FROM notice_user')
+            user_total = cursor.fetchone()['total']
+            total_count += user_total
+            
+            if user_total > 0:
+                offset = (page - 1) * limit
+                cursor.execute('''
+                    SELECT id, title, content, created_at, updated_at
+                    FROM notice_user
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                ''', (limit, offset))
+                
+                user_notices = cursor.fetchall()
+                for notice in user_notices:
+                    notice['target'] = 'user'
+                    notice['created_at'] = notice['created_at'].isoformat() if notice.get('created_at') else None
+                    notice['updated_at'] = notice['updated_at'].isoformat() if notice.get('updated_at') else None
+                result.extend(user_notices)
+        
+        if target is None or target == 'owner':
+            # 사장님 공지사항 조회
+            cursor.execute('SELECT COUNT(*) as total FROM notice_owner')
+            owner_total = cursor.fetchone()['total']
+            total_count += owner_total
+            
+            if owner_total > 0:
+                offset = (page - 1) * limit
+                cursor.execute('''
+                    SELECT id, title, content, created_at, updated_at
+                    FROM notice_owner
+                    ORDER BY created_at DESC
+                    LIMIT %s OFFSET %s
+                ''', (limit, offset))
+                
+                owner_notices = cursor.fetchall()
+                for notice in owner_notices:
+                    notice['target'] = 'owner'
+                    notice['created_at'] = notice['created_at'].isoformat() if notice.get('created_at') else None
+                    notice['updated_at'] = notice['updated_at'].isoformat() if notice.get('updated_at') else None
+                result.extend(owner_notices)
+        
+        # 날짜순 정렬 (최신순) - ISO 형식 문자열 비교
+        result.sort(key=lambda x: x.get('created_at', '') or '', reverse=True)
+        
+        # target=None일 때는 전체를 가져오고, 각 target별로는 페이지네이션 적용
+        # 하지만 템플릿에서 별도로 보여주므로, 일단 전체를 반환
+        # 페이지네이션은 전체 개수 기준
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+        
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages
+        }
+    finally:
+        cursor.close()
+
+
+def create_notice(connection, target: str, title: str, content: str) -> int:
+    """공지사항 생성
+    
+    Args:
+        connection: DB 연결
+        target: 'user' 또는 'owner'
+        title: 공지사항 제목
+        content: 공지사항 내용
+    
+    Returns:
+        생성된 공지사항 ID
+    """
+    cursor = connection.cursor()
+    
+    try:
+        if target == 'user':
+            query = 'INSERT INTO notice_user (title, content) VALUES (%s, %s)'
+        elif target == 'owner':
+            query = 'INSERT INTO notice_owner (title, content) VALUES (%s, %s)'
+        else:
+            raise ValueError(f"Invalid target: {target}. Must be 'user' or 'owner'")
+        
+        cursor.execute(query, (title, content))
+        connection.commit()
+        return cursor.lastrowid
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def get_notice_detail(connection, target: str, notice_id: int) -> Optional[Dict]:
+    """공지사항 상세 조회
+    
+    Args:
+        connection: DB 연결
+        target: 'user' 또는 'owner'
+        notice_id: 공지사항 ID
+    
+    Returns:
+        공지사항 정보 dict, 없으면 None
+    """
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        if target == 'user':
+            query = 'SELECT id, title, content, created_at, updated_at FROM notice_user WHERE id = %s'
+        elif target == 'owner':
+            query = 'SELECT id, title, content, created_at, updated_at FROM notice_owner WHERE id = %s'
+        else:
+            raise ValueError(f"Invalid target: {target}. Must be 'user' or 'owner'")
+        
+        cursor.execute(query, (notice_id,))
+        notice = cursor.fetchone()
+        
+        if notice:
+            notice['target'] = target
+            notice['created_at'] = notice['created_at'].isoformat() if notice.get('created_at') else None
+            notice['updated_at'] = notice['updated_at'].isoformat() if notice.get('updated_at') else None
+        
+        return notice
+    finally:
+        cursor.close()
+
+
+def update_notice(connection, target: str, notice_id: int, title: Optional[str] = None, content: Optional[str] = None) -> bool:
+    """공지사항 수정
+    
+    Args:
+        connection: DB 연결
+        target: 'user' 또는 'owner'
+        notice_id: 공지사항 ID
+        title: 공지사항 제목 (선택)
+        content: 공지사항 내용 (선택)
+    
+    Returns:
+        수정 성공 여부
+    """
+    cursor = connection.cursor()
+    
+    try:
+        updates = []
+        params = []
+        
+        if title is not None:
+            updates.append('title = %s')
+            params.append(title)
+        
+        if content is not None:
+            updates.append('content = %s')
+            params.append(content)
+        
+        if not updates:
+            return False
+        
+        if target == 'user':
+            query = f'UPDATE notice_user SET {", ".join(updates)} WHERE id = %s'
+        elif target == 'owner':
+            query = f'UPDATE notice_owner SET {", ".join(updates)} WHERE id = %s'
+        else:
+            raise ValueError(f"Invalid target: {target}. Must be 'user' or 'owner'")
+        
+        params.append(notice_id)
+        cursor.execute(query, params)
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def delete_notice(connection, target: str, notice_id: int) -> bool:
+    """공지사항 삭제
+    
+    Args:
+        connection: DB 연결
+        target: 'user' 또는 'owner'
+        notice_id: 공지사항 ID
+    
+    Returns:
+        삭제 성공 여부
+    """
+    cursor = connection.cursor()
+    
+    try:
+        if target == 'user':
+            query = 'DELETE FROM notice_user WHERE id = %s'
+        elif target == 'owner':
+            query = 'DELETE FROM notice_owner WHERE id = %s'
+        else:
+            raise ValueError(f"Invalid target: {target}. Must be 'user' or 'owner'")
+        
+        cursor.execute(query, (notice_id,))
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
