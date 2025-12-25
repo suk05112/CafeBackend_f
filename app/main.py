@@ -1,27 +1,29 @@
+#상위폴더 참조 (import 전에 실행해야 함)
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
+
 from fastapi import FastAPI, Header, Request, APIRouter, Depends, HTTPException
 from typing import Union
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 from starlette.concurrency import iterate_in_threadpool
-import firebase_init  
-from auth.auth_dependency import verify_firebase_token
-
-#상위폴더 참조
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
+from app import firebase_init  
+from app.auth.auth_dependency import verify_firebase_token
 
 import pymysql
 # import app.database as database
 import boto3
-from botocore.client import Config
 from loguru import logger
 import watchtower
 import logging
+from datetime import datetime, timezone, timedelta
+import json
 
-import settings
-from database import get_db_connection
+from app.settings import settings
+from app.database import get_db_connection
+from app.s3_config import S3_CLIENT, BUCKET_NAME
 
 from routes import store
 from routes import user
@@ -29,6 +31,8 @@ from routes import gifticon
 from routes import menu
 from routes import owner
 from routes import settlement
+from routes import order
+from routes import common
 
 #https://fastapi.tiangolo.com/ko/
 
@@ -44,28 +48,73 @@ print(env)
 # app = FastAPI(root_path=ROOT_PATH)
 # app = FastAPI(root_path="/dev")
 
-app = FastAPI()
+# S3 설정은 app.s3_config에서 가져옴
+s3 = S3_CLIENT
+bucket_name = BUCKET_NAME
+print(f"S3 Bucket Name: {bucket_name} (ENV: {env})")
+
+# CloudWatch 로깅 설정 (dev/prod 구분)
+boto3_client = boto3.client(
+    'logs',
+    aws_access_key_id='***REMOVED_AWS_KEY***',
+    aws_secret_access_key='***REMOVED_AWS_SECRET***',
+    region_name='ap-northeast-2'
+)
+
+# 한국 시간대 (KST, UTC+9)
+KST = timezone(timedelta(hours=9))
+
+def get_kst_now():
+    """한국 시간(KST)을 반환하는 헬퍼 함수"""
+    return datetime.now(KST)
+
+log_group_name = f"cafe-backend-{env}"  # cafe-backend-dev 또는 cafe-backend-prod
+log_stream_name = f"api-requests-{env}-{get_kst_now().strftime('%Y%m%d')}"  # 날짜별 스트림 (환경별, 한국 시간 기준)
+
+cloudwatch_handler = watchtower.CloudWatchLogHandler(
+    boto3_client=boto3_client,
+    log_group_name=log_group_name,
+    log_stream_name=log_stream_name,
+    use_queues=False
+)
+
+# 로깅 포맷 설정
+formatter = logging.Formatter(
+    '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+cloudwatch_handler.setFormatter(formatter)
+cloudwatch_handler.setLevel(logging.INFO)
+
+# CloudWatch 핸들러를 logger에 추가
+logger = logging.getLogger("cafe_backend")
+logger.addHandler(cloudwatch_handler)
+logger.setLevel(logging.INFO)
+
+# lifespan 함수 정의 (app 생성 전에 정의 필요)
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # 서버 시작 시 DB 연결
+    try:
+        connection = get_db_connection()  # 환경에 맞는 DB 연결
+
+        app.state.db = connection
+        print("DB 연결 완료")
+        print(f"연결된 config: db_host={settings.db_host}, db_user={settings.db_user}")
+    except Exception as e:
+        logger.error(f"❌ DB 연결 실패: {e}")
+        app.state.db = None
+        
+    yield  # 서버가 실행 중일 때
+
+    # 서버 종료 시 DB 연결 해제
+    connection.close()
+    print("DB 연결 종료")
+
+# FastAPI 앱 생성
+app = FastAPI(lifespan=lifespan)
 # app = FastAPI(redirect_slashes=False)
 # app.include_router(router)
-
-
-boto3_client = boto3.client("logs",
-                            region_name="us-east-2",
-                            aws_access_key_id="***REMOVED_AWS_KEY***",
-                            aws_secret_access_key="***REMOVED_AWS_SECRET***")
-# handler = watchtower.CloudWatchLogHandler(
-#     boto3_client=boto3_client,
-#     log_group_name="owner_prod",
-#     log_stream_name="owner_prod_stream",
-#     use_queues=False
-# )
-
-logger = logging.getLogger("uvicorn")
-formatter = logging.Formatter("[%(levelname)s] %(message)s")
-# handler.setFormatter(formatter)
-# handler.setLevel(logging.DEBUG)
-# logger.addHandler(handler)
-
 
 # CORS 미들웨어 추가
 app.add_middleware(
@@ -82,58 +131,70 @@ app.include_router(gifticon.router, prefix='/gifticon', tags=["Gifticon"])
 app.include_router(menu.router, prefix=f'/menu', tags=["Menu"])
 app.include_router(owner.router, prefix='/owner', tags=["Owner"])
 app.include_router(settlement.router, prefix='/settlement', tags=["Settlement"])
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    # 서버 시작 시 DB 연결
-    try:
-        connection = get_db_connection()  # 환경에 맞는 DB 연결
-
-        app.state.db = connection
-        print("DB 연결 완료")
-        print("연결된 config", settings.Config)
-    except Exception as e:
-        logger.error(f"❌ DB 연결 실패: {e}")
-        app.state.db = None
-        
-    yield  # 서버가 실행 중일 때
-
-    # 서버 종료 시 DB 연결 해제
-    connection.close()
-    print("DB 연결 종료")
+app.include_router(order.router, prefix='/order', tags=["Order"])
+app.include_router(common.router, prefix='', tags=["Common"])
     
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    print(f"Logging request: {request.method} {request.url}")  # 콘솔에 직접 출력
-
-    # 요청 데이터 로깅
-    logger.info(f"Received request: {request.method} {request.url}")
-    if request.method == "POST":
-        body = await request.body()
-        print(f"POST Body: {body.decode()}")  # 콘솔 출력으로 확인
-        logger.info(f"Request body: {body.decode()}")
+    start_time = get_kst_now()
+    is_get_request = request.method == "GET"
     
-    # 응답 데이터 로깅
+    # 요청 정보 수집 (GET 요청은 request_body 없음)
+    request_body = None
+    if not is_get_request and request.method in ["POST", "PUT", "PATCH"]:
+        body = await request.body()
+        request_body = body.decode('utf-8') if body else None
+    
+    # 요청 처리
     response = await call_next(request)
     
-     # 응답 데이터를 로깅하기 전에, 응답을 복사하여 로깅
-    response_body = [chunk async for chunk in response.body_iterator]  # 응답 본문을 읽고
-    # response.body_iterator = iter(response_body) 
+    # 응답 본문 읽기
+    response_body = [chunk async for chunk in response.body_iterator]
     response.body_iterator = iterate_in_threadpool(iter(response_body))
     
-    # Stringified response body object
+    response_body_str = None
     if response_body:
-        response_body = response_body[0].decode()
+        try:
+            response_body_str = response_body[0].decode('utf-8')
+        except:
+            response_body_str = "Unable to decode response body"
     else:
-        response_body = "response_body not found"
+        response_body_str = "Empty response body"
     
-    if response.status_code == 200:
-        logger.info(f"Responding with status code {response.status_code} Response body: {response_body}")
-    else:
-        logger.error(f"Responding with status code {response.status_code} Response body: {response_body}")
-
-    print(f"Response status: {response.status_code}")  # 확인용 출력
+    # 처리 시간 계산
+    process_time = (get_kst_now() - start_time).total_seconds()
+    
+    # GET 요청은 오류(status_code >= 400)인 경우에만 로깅
+    # GET이 아닌 요청은 모두 로깅
+    should_log = not is_get_request or response.status_code >= 400
+    
+    if should_log:
+        # 로깅할 데이터 구조화
+        log_data = {
+            "environment": env,
+            "method": request.method,
+            "url": str(request.url),
+            "path": request.url.path,
+            "query_params": str(request.query_params),
+            "status_code": response.status_code,
+            "process_time_seconds": round(process_time, 3),
+            "timestamp": get_kst_now().isoformat(),
+            "request_body": request_body,
+            "response_body": response_body_str[:1000] if response_body_str else None,  # 응답 본문은 최대 1000자만
+            "client_host": request.client.host if request.client else None,
+        }
+        
+        # CloudWatch에 JSON 형태로 로깅
+        log_message = json.dumps(log_data, ensure_ascii=False, indent=2)
+        
+        if response.status_code >= 400:
+            logger.error(log_message)
+        else:
+            logger.info(log_message)
+        
+        # 콘솔에도 출력 (개발 편의성)
+        print(f"[{env}] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
 
     return response
 

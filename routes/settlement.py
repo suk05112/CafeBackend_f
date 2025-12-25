@@ -1,22 +1,19 @@
 from fastapi import APIRouter, HTTPException
+import os
 import pymysql
 import app.database as database
-import boto3
-from botocore.client import Config
 from loguru import logger
 
 from app.database import get_db_connection
+from app.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.settlement import Account
 
 router = APIRouter()
 
-bucket_name = "cafe-platform-bucket"
-
-s3 = boto3.client('s3', aws_access_key_id='***REMOVED_AWS_KEY***',
-                  aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                  region_name='ap-northeast-2',
-                  config=Config(signature_version='s3v4'))
+# S3 설정은 app.s3_config에서 가져옴
+s3 = S3_CLIENT
+bucket_name = BUCKET_NAME
 
 @router.post("/register/{store_id}")
 def registerAccount(store_id: int, account: Account):
@@ -25,7 +22,7 @@ def registerAccount(store_id: int, account: Account):
       
     try:   
         query = """
-            INSERT INTO Account ( 
+            INSERT INTO account ( 
                 store_id, name, code, bank, account
                 ) VALUES (
               {}, '{}', '{}', '{}', '{}'
@@ -61,7 +58,7 @@ def getSettlementListByStore(store_id: int):
     try:   
         query = """
             SELECT * 
-            FROM `Settlement`
+            FROM `settlement`
             WHERE store_id = %s order by settlement_date desc;
         """
         cursor.execute(
@@ -114,15 +111,15 @@ def getDetailSettlements(settlement_id: int):
                 g.used_time,
                 o.commission
             FROM 
-                Settlement s
+                settlement s
             JOIN 
-                `Order` o ON s.store_id = o.store_id 
+                `orders` o ON s.store_id = o.store_id 
             JOIN 
-                Order_Gifticon og ON o.id = og.order_id  
+                orders_gifticon og ON o.id = og.order_id  
             JOIN 
-                Gifticon g ON og.gifticon_id = g.id  
+                gifticon g ON og.gifticon_id = g.id  
             JOIN 
-                Menu m ON g.menu_id = m.menuId
+                menu m ON g.menu_id = m.id
             WHERE o.settlement_id = %s  
             AND g.use_yn = 1
             ORDER BY g.used_time desc;
@@ -173,7 +170,7 @@ def getAccount(store_id: int):
     try:   
         query = """
             SELECT * 
-            FROM `Account`
+            FROM `account`
             WHERE store_id = %s;
         """
         cursor.execute(

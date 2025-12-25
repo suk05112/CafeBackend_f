@@ -1,5 +1,5 @@
 import pymysql
-from settings import settings
+from app.settings import settings
 
 def get_db_connection():
     return pymysql.connect(

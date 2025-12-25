@@ -1,83 +1,71 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status
 from fastapi import FastAPI
+from loguru import logger
+import os
 
 import pymysql
 import app.database as database
-import boto3
-from botocore.client import Config
 from app.database import get_db_connection
+from app.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.menu import Menu
 
 router = APIRouter()
+
+# S3 설정은 app.s3_config에서 가져옴
+s3 = S3_CLIENT
+bucket_name = BUCKET_NAME
 
 @router.get("/list/{store_id}")
 def getMenuList(store_id: int):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     try:
         cursor = connection.cursor(pymysql.cursors.DictCursor)
-        cursor.execute("select menuId, name, price, description, status from Menu where storeId=%s and isDeleted=0;", store_id)
+        cursor.execute("SELECT id, menu_name, price, description, status FROM menu WHERE store_id=%s AND is_deleted=0", (store_id,))
         rows = cursor.fetchall()
-    
-        bucket_name = "cafe-platform-bucket"
-    
-        s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
-                          aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                          region_name='ap-northeast-2',
-                          config= Config(signature_version='s3v4'))
          
         menuList = []
 
         for row in rows:
-            menu_id = row["menuId"]
+            menu_id = row["id"]
             menu_image_url = s3.generate_presigned_url('get_object',
                                     Params={'Bucket': bucket_name,
                                             'Key': f'menu/menu_{store_id}_{menu_id}.png',
                                             },
                                     ExpiresIn=3600)
             menu = {
-                "menu_id": row["menuId"],
+                "menu_id": row["id"],
                 "store_id": store_id,
-                "name":row["name"],
+                "name":row["menu_name"],
                 "price": row["price"],
                 "description": row["description"],
                 "status": row["status"],
                 "menu_image_url": menu_image_url
             }
             menuList.append(menu)
+            print(f"menuList: {menuList}")
         
-        return {
-            'statusCode': 200,
-            'menuList': menuList
-        }
+        return {'menuList': menuList}
         
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed find menuList",
-            'store_id': store_id
-        }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed find menuList"
+        )
     finally:
         connection.close()
         
 @router.post("/add/{store_id}") 
-def addMenu(menu: Menu):
-    bucket_name = "cafe-platform-bucket"
-
-    s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
-                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                      region_name='ap-northeast-2',
-                      config= Config(signature_version='s3v4'))
-    
+def addMenu(menu: Menu):    
     try:
         connection = get_db_connection()  # 환경에 맞는 DB 연결
         cursor = connection.cursor()
           
         query = """
-        INSERT INTO Menu (
-            storeId, name, price, description
+        INSERT INTO menu (
+            store_id, menu_name, price, description
         ) VALUES (
             {}, '{}', {}, '{}'
         );
@@ -104,19 +92,15 @@ def addMenu(menu: Menu):
                                     ExpiresIn=3600)
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed add menu - " + str(e),
-            'menu_put_url': "",
-            'menu_get_url': ""        
-            }
-        return result
-    
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed add menu: {str(e)}"
+        )
     finally:
         connection.close()
 
     return {
-        'statusCode': 200,
         'menu_id': menu_id,
         'menu_put_url': menu_put_url,
         'menu_get_url': menu_get_url
@@ -125,21 +109,14 @@ def addMenu(menu: Menu):
 @router.post("/update/{menu_id}") 
 def updateMenu(menu_id: int, menu: Menu):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
-
-    bucket_name = "cafe-platform-bucket"
-
-    s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
-                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                      region_name='ap-northeast-2',
-                      config= Config(signature_version='s3v4'))
-    
+        
     try:
         cursor = connection.cursor()
-        query = "UPDATE Menu SET "
+        query = "UPDATE menu SET "
         values = []
         
         if menu.name:
-            query += "name = %s, "
+            query += "menu_name = %s, "
             values.append(menu.name)
         if menu.price:
             query += "price = %s, "
@@ -149,7 +126,7 @@ def updateMenu(menu_id: int, menu: Menu):
             values.append(menu.description)
             
         query = query[:-2]  # 마지막 쉼표와 공백 제거
-        query += " WHERE menuId = %s"
+        query += " WHERE id = %s"
         
         values.append(menu_id)
         cursor.execute(query, tuple(values))
@@ -166,24 +143,18 @@ def updateMenu(menu_id: int, menu: Menu):
                                             'Key': f'menu/menu_{menu.store_id}_{menu_id}.png',
                                             },
                                     ExpiresIn=3600)
-        result = {
-            'statusCode': 200,
+        return {
             'msg': "success",
             'menu_put_url': menu_put_url,
             'menu_get_url': menu_get_url
         }
-        
-        return result
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed update menu - " + str(e),
-            'menu_put_url': "",
-            'menu_get_url': ""        
-            }
-        
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed update menu: {str(e)}"
+        )
     finally:
         connection.close()
 
@@ -195,30 +166,30 @@ def deleteeMenu(menu_id: int):
         cursor = connection.cursor()
 
         # Check if the menu exists
-        cursor.execute("SELECT storeId FROM Menu WHERE menuId = %s", (menu_id,))
+        cursor.execute("SELECT store_id FROM menu WHERE id = %s", (menu_id,))
         row = cursor.fetchone()
         
         if not row:
-            return {
-                'statusCode': 404,
-                'msg': f"Menu with id {menu_id} not found",
-            }
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Menu with id {menu_id} not found"
+            )
 
         # Delete the menu from the database
-        cursor.execute("UPDATE Menu SET isDeleted=1 WHERE menuId = %s", (menu_id,))
+        cursor.execute("UPDATE menu SET is_deleted=1 WHERE id = %s", (menu_id,))
         connection.commit()
 
-        return {
-            'statusCode': 200,
-            'msg': "Menu deleted successfully",
-        }
+        return {'msg': "Menu deleted successfully"}
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(e)
-        return {
-            'statusCode': 500,
-            'msg': "Failed to delete menu - " + str(e),
-        }
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to delete menu: {str(e)}"
+        )
 
     finally:
         connection.close()

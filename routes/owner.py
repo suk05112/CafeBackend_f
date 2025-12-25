@@ -1,9 +1,12 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status, Header, Depends
 from fastapi import FastAPI
 
 from fastapi import FastAPI
-from typing import Union
+from typing import Union, Optional
 from pydantic import BaseModel
+from loguru import logger
+import traceback
+import re
 
 import pymysql
 import app.database as database
@@ -16,6 +19,9 @@ from models.owner import OwnerFind
 from models.owner import OwnerFindPw
 from models.owner import OwnerInquiry
 from models.owner import OwnerInquiryResponse
+from models.push_token import PushTokenCreate, PushTokenUpdate
+from app.fcm_service import send_fcm_notification_to_owner
+from app.auth.auth_dependency import verify_firebase_token
 
 from models.user import User
 
@@ -28,7 +34,7 @@ async def registerOwner(owner: Owner):
     
     try:
         query = """
-            INSERT INTO Owner (
+            INSERT INTO owner (
                 name, email, uid, phone_number
             ) VALUES (
               '{}', '{}', '{}', '{}'
@@ -46,17 +52,14 @@ async def registerOwner(owner: Owner):
         owner_id = cursor.lastrowid
         
         print("owner_id", owner_id)
-        return {
-            'statusCode': 200,
-            'owner_id': owner_id,
-        }
+        return {'owner_id': owner_id}
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed register owner - " + str(e),
-            }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed register owner: {str(e)}"
+        )
     finally:
         connection.close()
 
@@ -66,21 +69,19 @@ async def login(uid: str):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM Owner WHERE uid=%s ;''', (uid,))
+        cursor.execute('''SELECT * FROM owner WHERE uid=%s ;''', (uid,))
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
         if user:  # 사용자가 존재하는 경우
             print("user:", user)
             return {
-                'statusCode': 200,
                 'owner_id': user['id'],
                 'name': user['name'],
                 'phone_number': user['phone_number'],
             }
         else:
             return {
-                'statusCode': 200,
                 'msg': "unregistered user",
                 'owner_id': None,
                 'name': None,
@@ -89,14 +90,11 @@ async def login(uid: str):
 
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "An unexpected error occurred.",
-            'owner_id': None,
-            'name': None,
-            'phone_number': None,
-        }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An unexpected error occurred"
+        )
     finally:
         connection.close()
         
@@ -106,35 +104,27 @@ async def findOwnerId(owner: OwnerFind):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM Owner WHERE name=%s AND phone_number=%s;''', (owner.name, owner.phone_number))
+        cursor.execute('''SELECT * FROM owner WHERE name=%s AND phone_number=%s;''', (owner.name, owner.phone_number))
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
         if user:  # 사용자가 존재하는 경우
             print("user:", user)
             return {
-                'statusCode': 200,
                 'owner_id': user['id'],
-                'created_time': user['created_time'],
+                'created_time': user['created_at'],
                 'email': user['email'],
-
             }
         else:
-            return {
-                'statusCode': 200,
-                'msg': "unregistered user", 
-            }
+            return {'msg': "unregistered user"}
 
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "An unexpected error occurred." + str(e),
-            'owner_id': None,
-            'name': None,
-            'phone_number': None,
-        }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"An unexpected error occurred: {str(e)}"
+        )
     finally:
         connection.close()
         
@@ -144,7 +134,7 @@ async def findOwnerPW(owner: OwnerFindPw):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM Owner WHERE email=%s AND phone_number=%s;''', (owner.email, owner.phone_number))
+        cursor.execute('''SELECT * FROM owner WHERE email=%s AND phone_number=%s;''', (owner.email, owner.phone_number))
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
@@ -174,7 +164,7 @@ async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
     
     try:
         query = """
-            INSERT INTO Owner_Inquiry (
+            INSERT INTO owner_inquiry (
                 owner_id, title, content
             ) VALUES (
               {}, '{}', '{}'
@@ -188,16 +178,14 @@ async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
         cursor.execute(query)
         connection.commit()
                 
-        return {
-            'statusCode': 200,
-        }
+        return {"message": "inquiry registered successfully"}
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed register inquiry - " + str(e),
-            }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed register inquiry: {str(e)}"
+        )
     finally:
         connection.close()
 
@@ -208,13 +196,13 @@ async def getInquiry(owner_id: int):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        cursor.execute('''SELECT id, title, content, status, created_at FROM Owner_Inquiry WHERE owner_id=%s ;''', (owner_id,))
+        cursor.execute('''SELECT id, title, content, status, created_at FROM owner_inquiry WHERE owner_id=%s ;''', (owner_id,))
         inquiries = cursor.fetchall()  
         
         inquiry_list = []
         
         for inquiry in inquiries:
-            cursor.execute('''SELECT response, created_at FROM Owner_Inquiry_response WHERE id=%s ;''', (inquiry['id'],))
+            cursor.execute('''SELECT response, created_at FROM owner_inquiry_response WHERE id=%s ;''', (inquiry['id'],))
             response = cursor.fetchone() 
             
             result = {
@@ -228,16 +216,14 @@ async def getInquiry(owner_id: int):
             
             inquiry_list.append(result)
                 
-        return {
-            'inquiry_list': list(reversed(inquiry_list))
-        }
+        return {'inquiry_list': list(reversed(inquiry_list))}
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed register inquiry - " + str(e),
-            }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed get inquiry: {str(e)}"
+        )
     finally:
         connection.close()
 
@@ -248,13 +234,13 @@ async def getInquiry():
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        cursor.execute('''SELECT id, title, content, status, created_at FROM Owner_Inquiry;''')
+        cursor.execute('''SELECT id, title, content, status, created_at FROM owner_inquiry;''')
         inquiries = cursor.fetchall()  
         
         inquiry_list = []
         
         for inquiry in inquiries:
-            cursor.execute('''SELECT response, created_at FROM Owner_Inquiry_response WHERE id=%s;''', (inquiry['id'],))
+            cursor.execute('''SELECT response, created_at FROM owner_inquiry_response WHERE id=%s;''', (inquiry['id'],))
             response = cursor.fetchone() 
             
             result = {
@@ -269,27 +255,43 @@ async def getInquiry():
             
             inquiry_list.append(result)
                 
-        return {
-            'inquiry_list': list(reversed(inquiry_list))
-        }
+        return {'inquiry_list': list(reversed(inquiry_list))}
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed register inquiry - " + str(e),
-            }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed get all inquiry: {str(e)}"
+        )
     finally:
         connection.close()
         
 @router.post("/reply/{inquiry_id}")
 async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
     connection = get_db_connection()  # 환경에 맞는 DB 연결               
-    cursor = connection.cursor()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
+        # 1. owner_inquiry 정보 조회 (owner_id, title 가져오기)
+        cursor.execute('''
+            SELECT owner_id, title 
+            FROM owner_inquiry 
+            WHERE id = %s
+        ''', (inquiry_id,))
+        inquiry = cursor.fetchone()
+        
+        if not inquiry:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Owner inquiry with id {inquiry_id} not found"
+            )
+        
+        owner_id = inquiry['owner_id']
+        inquiry_title = inquiry['title']
+        
+        # 2. 답변 저장
         query = """
-            INSERT INTO Owner_Inquiry_response (
+            INSERT INTO owner_inquiry_response (
                 inquiry_id, response
             ) VALUES (
               {}, '{}'
@@ -301,25 +303,274 @@ async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
             
         cursor.execute(query)
         
-        # Owner_Inquiry 테이블에서 해당 inquiry_id의 status를 'answered'로 변경하는 쿼리
+        # 3. owner_inquiry 테이블의 status를 'answered'로 변경
         query_update_status = """
-            UPDATE Owner_Inquiry
+            UPDATE owner_inquiry
             SET status = 'answered'
             WHERE id = %s;
         """
         cursor.execute(query_update_status, (inquiry_id,))
         
         # 변경 사항을 커밋
-        connection.commit()                
-        return {
-            'statusCode': 200,
-        }
+        connection.commit()
+        
+        # 4. FCM 푸시 메시지 전송
+        try:
+            send_fcm_notification_to_owner(
+                owner_id=owner_id,
+                title="문의 답변이 등록되었습니다",
+                body=f"[{inquiry_title}] 문의에 대한 답변이 등록되었습니다."
+            )
+        except Exception as fcm_error:
+            logger.error(f"Failed to send FCM notification: {str(fcm_error)}")
+            # FCM 전송 실패해도 답변은 성공한 것으로 처리
+        
+        return {"message": "reply registered successfully"}
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed register inquiry - " + str(e),
-            }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed register reply: {str(e)}"
+        )
     finally:
+        connection.close()
+
+def parse_user_agent(user_agent: Optional[str]) -> dict:
+    """
+    User-Agent 파싱: '$appName/$appVersion ($platform; $osVersion; $deviceModel)'
+    예: 'MyApp/1.0.0 (iOS; 17.0; iPhone14,2)'
+    """
+    result = {
+        'app_name': None,
+        'app_version': None,
+        'platform': None,
+        'os_version': None,
+        'device_model': None
+    }
+    
+    if not user_agent:
+        return result
+    
+    # 패턴: appName/appVersion (platform; osVersion; deviceModel)
+    pattern = r'([^/]+)/([^\s]+)\s+\(([^;]+);\s*([^;]+);\s*([^)]+)\)'
+    match = re.match(pattern, user_agent)
+    
+    if match:
+        result['app_name'] = match.group(1).strip()
+        result['app_version'] = match.group(2).strip()
+        result['platform'] = match.group(3).strip()
+        result['os_version'] = match.group(4).strip()
+        result['device_model'] = match.group(5).strip()
+    
+    return result
+
+@router.post("/push-token/{owner_id}")
+async def registerOwnerPushToken(
+    owner_id: int,
+    push_token: PushTokenCreate,
+    user_agent: Optional[str] = Header(None, alias="User-Agent")
+):
+    """
+    처음 가입 시 owner push token 정보를 저장하는 API
+    모든 컬럼값 정보를 받아서 저장
+    User-Agent 헤더에서 app_version, os_version 파싱
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # User-Agent 파싱
+        ua_info = parse_user_agent(user_agent)
+        app_version = ua_info.get('app_version')
+        os_version = ua_info.get('os_version')
+        # 기존 토큰이 있는지 확인
+        cursor.execute('''
+            SELECT id FROM owner_push_tokens 
+            WHERE owner_id = %s AND fcm_token = %s
+        ''', (owner_id, push_token.fcm_token))
+        existing = cursor.fetchone()
+        
+        if existing:
+            # 기존 토큰이 있으면 업데이트
+            cursor.execute('''
+                UPDATE owner_push_tokens 
+                SET device_type = %s,
+                    allow_service_push = %s,
+                    allow_marketing_push = %s,
+                    app_version = %s,
+                    os_version = %s
+                WHERE id = %s
+            ''', (
+                push_token.device_type.value,
+                1 if push_token.allow_service_push else 0,
+                1 if push_token.allow_marketing_push else 0,
+                app_version,
+                os_version,
+                existing['id']
+            ))
+        else:
+            # 새로 저장
+            cursor.execute('''
+                INSERT INTO owner_push_tokens (
+                    owner_id, fcm_token, device_type,
+                    allow_service_push, allow_marketing_push,
+                    app_version, os_version
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ''', (
+                owner_id,
+                push_token.fcm_token,
+                push_token.device_type.value,
+                1 if push_token.allow_service_push else 0,
+                1 if push_token.allow_marketing_push else 0,
+                app_version,
+                os_version
+            ))
+        
+        connection.commit()
+        
+        return {
+            "message": "Owner push token registered successfully",
+            "owner_id": owner_id
+        }
+        
+    except Exception as e:
+        print(f"Error during registerOwnerPushToken: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during registerOwnerPushToken: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during registerOwnerPushToken: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.patch("/push-token/{owner_id}")
+async def updateOwnerPushTokenAgreement(
+    owner_id: int,
+    push_token_update: PushTokenUpdate,
+    fcm_token: str = Header(None, alias="X-FCM-Token")
+):
+    """
+    동의 여부 변경 시 사용하는 API
+    allow_service_push, allow_marketing_push만 변경
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        if not fcm_token:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="FCM token is required in header"
+            )
+        
+        # 업데이트할 필드 구성
+        update_fields = []
+        update_values = []
+        
+        if push_token_update.allow_service_push is not None:
+            update_fields.append("allow_service_push = %s")
+            update_values.append(1 if push_token_update.allow_service_push else 0)
+            
+            # 서비스 푸시를 꺼면 마케팅 푸시도 같이 꺼짐
+            if not push_token_update.allow_service_push:
+                update_fields.append("allow_marketing_push = %s")
+                update_values.append(0)
+        
+        if push_token_update.allow_marketing_push is not None:
+            update_fields.append("allow_marketing_push = %s")
+            update_values.append(1 if push_token_update.allow_marketing_push else 0)
+        
+        if not update_fields:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="At least one agreement field must be provided"
+            )
+        
+        update_values.extend([owner_id, fcm_token])
+        
+        query = f'''
+            UPDATE owner_push_tokens 
+            SET {', '.join(update_fields)}
+            WHERE owner_id = %s AND fcm_token = %s
+        '''
+        
+        cursor.execute(query, update_values)
+        connection.commit()
+        
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Push token not found"
+            )
+        
+        return {
+            "message": "Owner push token agreement updated successfully",
+            "owner_id": owner_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during updateOwnerPushTokenAgreement: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during updateOwnerPushTokenAgreement: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during updateOwnerPushTokenAgreement: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.delete("/{owner_id}")
+async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
+    """
+    사장님 회원 탈퇴 API (Soft Delete)
+    owner_id에 해당하는 사장님 정보를 soft delete 처리
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 1. 사장님 존재 여부 확인 (이미 삭제된 것은 제외)
+        cursor.execute('SELECT id FROM owner WHERE id = %s AND (deleted_at IS NULL OR deleted_at = "")', (owner_id,))
+        owner_record = cursor.fetchone()
+        
+        if not owner_record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Owner with id {owner_id} not found or already deleted"
+            )
+        
+        # 2. 관련 데이터 삭제 (push tokens)
+        cursor.execute('DELETE FROM owner_push_tokens WHERE owner_id = %s', (owner_id,))
+        
+        # 3. Soft Delete: deleted_at에 현재 시간 설정
+        cursor.execute('UPDATE owner SET deleted_at = NOW() WHERE id = %s', (owner_id,))
+        
+        connection.commit()
+        
+        logger.info(f"Owner {owner_id} soft deleted successfully")
+        
+        return {
+            "message": "Owner deleted successfully",
+            "owner_id": owner_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during deleteOwner: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during deleteOwner: {str(e)}")
+        connection.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during deleteOwner: {str(e)}"
+        )
+    finally:
+        cursor.close()
         connection.close()
