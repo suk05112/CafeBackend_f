@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, status, Query
 from fastapi import FastAPI
 import traceback
+import os
 
 from typing import Union
 from pydantic import BaseModel
@@ -8,96 +9,27 @@ from loguru import logger
 
 import pymysql
 import app.database as database
-import boto3
-from botocore.client import Config
 from app.database import get_db_connection
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+from app.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.gifticon import Gifticon
 from models.store import StoreCreate
 
+import http.client
+
 router = APIRouter()
 
-@router.post("/purchase/{user_id}")
-def purchaseGifticon(user_id: int, gifticon: Gifticon):
-    connection = get_db_connection()  # 환경에 맞는 DB 연결
-    cursor = connection.cursor() # DB에 접속 및 DB 객체를 가져옴
+# 한국 시간대 (KST, UTC+9)
+KST = timezone(timedelta(hours=9))
 
-    print("storeList 호출1")
-      
-    try:      
-        query = """
-            INSERT INTO Gifticon (
-                user_id, type, sender, receiver, receiver_phone_number, menu_id, store_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-        """
-        cursor.execute(
-            query,
-            (
-                user_id,
-                gifticon.type,
-                gifticon.sender,
-                gifticon.receiver,
-                gifticon.receiver_phone_number,
-                gifticon.menu_id,
-                gifticon.store_id,
-            )
-        )
-        connection.commit()
-        gifticon_rows = cursor.fetchone()
-        gifticon_id = cursor.lastrowid
-        print("gifticon_rows", gifticon_rows, gifticon_id)
+def get_kst_now():
+    """한국 시간(KST)을 반환하는 헬퍼 함수"""
+    return datetime.now(KST)
 
-        # 2. Order 테이블에 데이터 삽입
-        order_query = """
-            INSERT INTO `Order` (
-                store_id, user_id, payment, price
-            ) VALUES (%s, %s, %s, %s);
-        """
-        cursor.execute(
-            order_query,
-            (
-                gifticon.store_id,
-                user_id,
-                gifticon.payment,
-                gifticon.total_price,
-            )
-        )
-        connection.commit()
-        # order_rows = cursor.fetchone()
-        # print("order_rows", order_rows)
-        order_id = cursor.lastrowid
-
-        # 3. Order_Gifticon 테이블에 데이터 삽입
-        order_gifticon_query = """
-            INSERT INTO Order_Gifticon (
-                user_id, order_id, menu_id, gifticon_id
-            ) VALUES (%s, %s, %s, %s);
-        """
-        cursor.execute(
-            order_gifticon_query,
-            (
-                user_id,
-                order_id,
-                gifticon.menu_id,
-                gifticon_id,
-            )
-        )
-        connection.commit()
-        # orderGifticonQuery_rows = cursor.fetchone()
-
-        # print("orderGifticonQuery_rows", orderGifticonQuery_rows[0])
-
-        return {
-            'statusCode': 200,
-        }
-    except Exception as e:
-        print(f"Error during purchaseGifticon: {e}")
-        raise HTTPException(status_code=500, detail=f"Error during purchaseGifticon: {str(e)}")
-
-    finally:        
-        cursor.close()
-        connection.close()
+# S3 설정은 app.s3_config에서 가져옴
+s3 = S3_CLIENT
+bucket_name = BUCKET_NAME
 
 @router.get("/list/{user_id}")
 def getGifticonList(user_id: int):
@@ -106,24 +38,33 @@ def getGifticonList(user_id: int):
     gifticonList = []
        
     try:
-        user_id = user_id
-        
-        cursor.execute('''SELECT og.order_id, Menu.*, Gifticon.*
-            FROM Order_Gifticon as og 
-            JOIN Menu ON og.menu_id  = Menu.menuId 
-            JOIN Gifticon ON og.gifticon_id  = Gifticon.id
-            WHERE og.user_id=%s ;''', user_id)
-        
-        bucket_name = "cafe-platform-bucket"
-
-        s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
-                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                      region_name='ap-northeast-2',
-                      config= Config(signature_version='s3v4'))
+        # gifticon 테이블을 기준으로 조회하여 모든 기프티콘을 가져옴
+        cursor.execute('''
+            SELECT 
+                g.id as gifticon_id,
+                g.user_id,
+                g.order_id,
+                g.type,
+                g.sender,
+                g.receiver,
+                g.receiver_phone,
+                g.validity,
+                g.status,
+                g.gift_code,
+                g.menu_id,
+                g.store_id,
+                g.created_at,
+                m.menu_name,
+                m.price,
+                m.description
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.user_id = %s AND g.status != 'UNKNOWN'
+            ORDER BY g.id DESC
+        ''', (user_id,))
                     
         rows = cursor.fetchall()
-        print("sql 실행")
-        print(rows)
+        print("sql 실행 결과:", len(rows), "개")
 
         for row in rows:
             store_id = row['store_id']
@@ -134,35 +75,31 @@ def getGifticonList(user_id: int):
                                             },
                                     ExpiresIn=3600)
             gifticon = {
-                "gifticon_id": row['id'],
-                # "order_id": row['order_id'],
-                "name": row['name'],
-                "price": row['price'],
-                "description": row['description'],
+                "gifticon_id": row['gifticon_id'],
+                "name": row.get('menu_name') or '',
+                "price": row.get('price') or 0,
+                "description": row.get('description') or '',
                 "validity": row['validity'],
                 "sender": row['sender'],
                 "receiver": row['receiver'],
-                "use_yn": row['use_yn'],
-                "availability": row['availability'],
-                "menu_url" : menu_url
+                "status": row['status'],
+                "gift_code": row.get('gift_code'),
+                "menu_url": menu_url
             }
 
             gifticonList.append(gifticon)
     
-        print("gifticonList", gifticonList)
+        print("gifticonList", len(gifticonList), "개")
     
-        return {
-            'statusCode': 200,
-            'gifticonList': gifticonList
-        }
+        return {'gifticonList': gifticonList}
         
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed get gifticon list",
-        }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed get gifticon list"
+        )
 
     finally:        
         cursor.close()
@@ -171,81 +108,92 @@ def getGifticonList(user_id: int):
 @router.get("/{gifticon_id}")
 def getGifticon(gifticon_id: int):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
-
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
-        cursor.execute('''SELECT * FROM Gifticon
+        cursor.execute('''SELECT * FROM gifticon
             WHERE id=%s ;''', gifticon_id)
-        
-        bucket_name = "cafe-platform-bucket"
-
-        s3 = boto3.client('s3',aws_access_key_id='***REMOVED_AWS_KEY***',
-                      aws_secret_access_key='***REMOVED_AWS_SECRET***',
-                      region_name='ap-northeast-2',
-                      config= Config(signature_version='s3v4'))
                     
         gifticon = cursor.fetchone()
 
-        cursor.execute('''SELECT order_id
-        FROM Order_Gifticon
-        WHERE gifticon_id=%s ;''', gifticon['id'])
-        
-        order_id = cursor.fetchone()
+        if not gifticon:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Gifticon not found"
+            )
 
         print("읽어온 기프티콘", gifticon)
 
+        # order_id 조회 (gifticon 테이블에 order_id가 있으면 직접 사용, 없으면 orders_gifticon에서 조회)
+        order_id_value = gifticon.get('order_id')
+        if not order_id_value:
+            cursor.execute('''SELECT order_id
+            FROM orders_gifticon
+            WHERE gifticon_id=%s ;''', (gifticon['id'],))
+            order_id_result = cursor.fetchone()
+            order_id_value = order_id_result['order_id'] if order_id_result else None
+
         cursor.execute('''SELECT store_lat, store_lng, store_name
-        FROM Store
-        WHERE store_id=%s ;''', gifticon['store_id'])
+        FROM store
+        WHERE id=%s ;''', (gifticon['store_id'],))
         
         store_info = cursor.fetchone()
         
-        cursor.execute('''SELECT name
-        FROM Menu
-        WHERE menuId=%s ;''', gifticon['menu_id'])
+        if not store_info:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Store not found"
+            )
         
-        menu_name = cursor.fetchone()
+        cursor.execute('''SELECT menu_name
+        FROM menu
+        WHERE id=%s ;''', (gifticon['menu_id'],))
         
-        if gifticon:
-            store_id = gifticon['store_id']
-            menu_id = gifticon['menu_id']
-            menu_url = s3.generate_presigned_url('get_object',
-                                    Params={'Bucket': bucket_name,
-                                            'Key': f'menu/menu_{store_id}_{menu_id}.png',
-                                            },
-                                    ExpiresIn=3600)
-            gifticon = {
-                "gifticon_id": gifticon['id'],
-                "order_id": order_id['order_id'],
-                "validity": gifticon['validity'],
-                "sender": gifticon['sender'],
-                "type": gifticon['type'],
-                "name": menu_name['name'],
-                "use_yn": gifticon['use_yn'],
-                "availability": gifticon['availability'],
-                "menu_url" : menu_url,
-                "msg" : gifticon['msg'],
-                "created_time" : gifticon['created_time'],
-                "store_lat" : store_info["store_lat"],
-                "store_lng" : store_info["store_lng"],
-                "store_name" : store_info["store_name"]
-            }
-    
-        print("gifticon", gifticon)
-    
-        return {
-            'statusCode': 200,
-            'gifticon': gifticon
+        menu_result = cursor.fetchone()
+        
+        if not menu_result:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Menu not found"
+            )
+        
+        store_id = gifticon['store_id']
+        menu_id = gifticon['menu_id']
+        menu_url = s3.generate_presigned_url('get_object',
+                                Params={'Bucket': bucket_name,
+                                        'Key': f'menu/menu_{store_id}_{menu_id}.png',
+                                        },
+                                ExpiresIn=3600)
+        gifticon_response = {
+            "gifticon_id": gifticon['id'],
+            "gift_code": gifticon['gift_code'],
+            "order_id": order_id_value,
+            "validity": gifticon['validity'],
+            "sender": gifticon['sender'],
+            "type": gifticon['type'],
+            "name": menu_result.get('menu_name') or menu_result.get('name'),
+            "status": gifticon.get('status'),
+            "menu_url" : menu_url,
+            "msg" : gifticon.get('msg'),
+            "created_time" : gifticon['created_at'],
+            "store_lat" : store_info["store_lat"],
+            "store_lng" : store_info["store_lng"],
+            "store_name" : store_info["store_name"]
         }
+    
+        print("\ngifticon", gifticon_response)
+    
+        return {'gifticon': gifticon_response}
         
+    except HTTPException:
+        raise
     except Exception as e:
         print(e)
-        result = {
-            'statusCode': 500,
-            'msg': "failed get gifticon",
-        }
-        return result
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed get gifticon"
+        )
 
     finally:        
         cursor.close()
@@ -257,25 +205,23 @@ def useGifticon(gifticon_id: int):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
-        
-        cursor.execute('''SELECT use_yn, validity From Gifticon WHERE id=%s ;''', gifticon_id)
+        cursor.execute('''SELECT status, validity From gifticon WHERE id=%s ;''', (gifticon_id,))
 
-        gifticon = _ = cursor.fetchone()
+        gifticon = cursor.fetchone()
         
         result = 0 #사용 성공
 
         if gifticon:
-            if gifticon['use_yn'] == 1:
-                result = 1 # 이미 사용된 기프티콘
-            elif gifticon['validity'] and gifticon['validity'] < datetime.now():
+            if gifticon['status'] == 'USED' or gifticon['status'] == 'CANCELED':
+                result = 1 # 이미 사용된 기프티콘 또는 취소된 기프티콘
+            elif gifticon['validity'] and gifticon['validity'] < get_kst_now():
                 result = 2 # 기프티콘 유효기간 만료
         else:
             result = 3 #기프티콘 찾을 수 없음
             
         if result == 0:
-            cursor.execute('''UPDATE Gifticon SET use_yn=1, used_time = NOW() WHERE id=%s ;''', gifticon_id)
+            cursor.execute('''UPDATE gifticon SET status='USED', used_time = NOW() WHERE id=%s ;''', (gifticon_id,))
             connection.commit()
-            _ = cursor.fetchall()
 
         return {
             'result': result,
@@ -285,7 +231,10 @@ def useGifticon(gifticon_id: int):
         print(e)
         traceback.print_exc() 
         logger.error(f"failed use gifticon::  {str(e)}")
-        raise HTTPException(status_code=500, detail=f"failed use gifticon::  {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed use gifticon: {str(e)}"
+        )
 
     finally:        
         cursor.close()
@@ -302,7 +251,7 @@ def getTodayUsedGifticon(store_id: int):
             id, 
             used_time, 
             menu_id
-        FROM Gifticon
+        FROM gifticon
         Where store_id =%s
         AND DATE(used_time) = CURDATE()
         ''', (store_id))
@@ -319,8 +268,8 @@ def getTodayUsedGifticon(store_id: int):
             SELECT
                 name,
                 price
-            FROM Menu
-            Where menuId = %s
+            FROM menu
+            Where id = %s
             '''
     
             cursor.execute(menu_query, (menu_id))
@@ -337,10 +286,153 @@ def getTodayUsedGifticon(store_id: int):
             }
             gifticonList.append(gificon)
 
-        return {"statusCode": 200, "gifticonList": gifticonList}
+        return {"gifticonList": gifticonList}
     
     except Exception as e:
         print(f"getTodayUsedGifticon:: {str(e)}")
         traceback.print_exc() 
         logger.error(f"getTodayUsedGifticon::  {str(e)}")
-        raise HTTPException(status_code=500, detail=f"getTodayUsedGifticon::  {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"getTodayUsedGifticon: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.patch("/{gifticon_id}/user/{user_id}")
+def updateGifticonUser(gifticon_id: int, user_id: int):
+    """
+    기프티콘의 user_id를 업데이트하는 API
+    gifticon_id에 해당하는 기프티콘의 user_id를 새로운 user_id로 변경
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 1. 기프티콘 존재 여부 확인
+        cursor.execute('SELECT id FROM gifticon WHERE id = %s', (gifticon_id,))
+        gifticon = cursor.fetchone()
+        
+        if not gifticon:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Gifticon with id {gifticon_id} not found"
+            )
+        
+        # 2. user_id 업데이트
+        cursor.execute('''
+            UPDATE gifticon 
+            SET user_id = %s 
+            WHERE id = %s
+        ''', (user_id, gifticon_id))
+        
+        connection.commit()
+        
+        logger.info(f"Gifticon {gifticon_id} user_id updated to {user_id}")
+        
+        return {
+            "message": "Gifticon user_id updated successfully",
+            "gifticon_id": gifticon_id,
+            "user_id": user_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during updateGifticonUser: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during updateGifticonUser: {str(e)}")
+        connection.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during updateGifticonUser: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+class LinkGifticonRequest(BaseModel):
+    user_id: int
+    gifticon_id: int
+    receiver_phone: str
+
+@router.post("/link")
+def linkGifticonToUser(request: LinkGifticonRequest):
+    """
+    receiver_phone으로 기프티콘을 사용자 계정에 연결하는 API
+    user_id, gifticon_id, receiver_phone을 받아서
+    gifticon 테이블의 receiver_phone이 일치하면 user_id를 업데이트
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 1. 기프티콘 존재 여부 및 receiver_phone 확인
+        cursor.execute('''
+            SELECT id, receiver_phone, user_id 
+            FROM gifticon 
+            WHERE id = %s
+        ''', (request.gifticon_id,))
+        
+        gifticon = cursor.fetchone()
+        
+        if not gifticon:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Gifticon with id {request.gifticon_id} not found"
+            )
+        
+        # 2. receiver_phone 일치 여부 확인
+        if gifticon['receiver_phone'] != request.receiver_phone:
+            print(f"receiver_phone does not match: {gifticon['receiver_phone']} != {request.receiver_phone}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Receiver phone number does not match"
+            )
+        
+        # 3. 이미 다른 user_id가 설정되어 있는지 확인 (선택사항)
+        if gifticon['user_id'] and gifticon['user_id'] != request.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Gifticon is already linked to another user"
+            )
+        
+        # 4. gifticon 테이블의 user_id 업데이트
+        cursor.execute('''
+            UPDATE gifticon 
+            SET user_id = %s 
+            WHERE id = %s
+        ''', (request.user_id, request.gifticon_id))
+        
+        # 5. orders_gifticon 테이블의 receiver_id 업데이트
+        cursor.execute('''
+            UPDATE orders_gifticon 
+            SET receiver_id = %s 
+            WHERE gifticon_id = %s
+        ''', (request.user_id, request.gifticon_id))
+        
+        connection.commit()
+        
+        logger.info(f"Gifticon {request.gifticon_id} linked to user {request.user_id}")
+        
+        return {
+            "message": "Gifticon linked to user successfully",
+            "gifticon_id": request.gifticon_id,
+            "user_id": request.user_id
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during linkGifticonToUser: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during linkGifticonToUser: {str(e)}")
+        connection.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during linkGifticonToUser: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()

@@ -8,35 +8,28 @@ async def verify_firebase_token(request: Request,
     authorization: str = Header(None),
     app_check_token: str = Header(None, alias="X-Firebase-AppCheck")):
  
+    return None
     ua = request.headers.get("User-Agent", "")
 
-    # 1) 웹은 제외
-    if "Mozilla" in ua:
-        return
+    # 웹 요청이면 인증 패스
+    if "Mozilla" in ua or not ua:
+        return None
     
     # token = authorization.headers.get("X-Firebase-AppCheck") 
     print("app_check_token", app_check_token)
     print("\n")
-    decoded = app_check.verify_token(app_check_token) # SDK or REST 
-    print("appcheck decode", decoded)
-    print("\n")
-
-
-    ua = request.headers.get("User-Agent", "")
-
-
+    
     if not authorization or not authorization.startswith("Bearer "):
-        # raise HTTPException(status_code=401, detail="Token missing")
-
+        # Bearer 토큰이 없으면 App Check 토큰 확인
         if not app_check_token:
             raise HTTPException(status_code=401, detail="Missing App Check token")
-        # if not token: 
-            # raise HTTPException(401, "Missing App Check token") 
-            # raise HTTPException(status_code=401, detail="Token missing")
         else:
             decoded = app_check.verify_token(app_check_token) # SDK or REST 
+            print("appcheck decode", decoded)
+            print("\n")
             return decoded
 
+    # Bearer 토큰이 있으면 ID 토큰 검증
     id_token = authorization.split(" ")[1]
 
     try:
@@ -44,4 +37,3 @@ async def verify_firebase_token(request: Request,
         return decoded  # uid, email, name 등
     except Exception as e:
         raise HTTPException(status_code=401, detail=str(e))
-        # raise HTTPException(401, "Invalid App Check token")

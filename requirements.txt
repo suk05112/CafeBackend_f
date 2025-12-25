@@ -9,3 +9,4 @@ boto3
 botocore
 loguru
 watchtower
+firebase-admin

@@ -1,14 +1,116 @@
 version: '3'
+
 services:
   green:
     container_name: green
     build:
+      context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000" # green은 8080 포트를 열어줍니다.
+      - "8000:8000" # green은 8000 포트를 열어줍니다.
+    environment:
+      - ENV=production
+      - PORT=8000
+      - ENV_FILE=.env.prod
+      - LOG_LEVEL=info
+    env_file:
+      - .env.prod
+    working_dir: /app
+    volumes:
+      # .env 파일을 컨테이너 내부에서도 접근 가능하도록 마운트
+      - ./.env.prod:/app/.env.prod:ro
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
   blue:
     container_name: blue
     build:
+      context: .
       dockerfile: Dockerfile
     ports:
-      - "8002:8000" #blue는 80002 포트를 열어줍니다.
+      - "8002:8000" # blue는 8002 포트를 열어줍니다.
+    environment:
+      - ENV=production
+      - PORT=8000
+      - ENV_FILE=.env.prod
+      - LOG_LEVEL=info
+    env_file:
+      - .env.prod
+    volumes:
+      # .env 파일을 컨테이너 내부에서도 접근 가능하도록 마운트
+      - ./.env.prod:/app/.env.prod:ro
+    working_dir: /app
+    networks:
+      - app-network
+    restart: unless-stopped
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:8000/health" ]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  # 개발환경 - 포트 8001
+  app-dev:
+    image: dev
+    container_name: app-dev
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      - ENV=development
+      - PORT=8000
+      - ENV_FILE=.env.dev
+      - LOG_LEVEL=debug
+    env_file:
+      - .env.dev
+    volumes:
+      # .env 파일을 컨테이너 내부에서도 접근 가능하도록 마운트
+      - ./.env.dev:/app/.env.dev:ro
+    working_dir: /app
+    networks:
+      - app-network
+    restart: unless-stopped
+
+networks:
+  app-network:
+    driver: bridge
+
+# version: '3'
+# services:
+#   green:
+#     container_name: green
+#     build:
+#       dockerfile: Dockerfile
+#     ports:
+#       - "8000:8000" # green은 8080 포트를 열어줍니다.
+#   blue:
+#     container_name: blue
+#     build:
+#       dockerfile: Dockerfile
+#     ports:
+#       - "8002:8000" #blue는 80002 포트를 열어줍니다.
+
+#   # 개발환경 - 포트 8001
+#   app-dev:
+#     image: dev
+#     container_name: app-dev
+#     ports:
+#       - "8001:8000"
+#     environment:
+#       - ENV=development
+#       - PORT=8000
+#     networks:
+#       - app-network
+#     restart: unless-stopped
+#     profiles:
+#       - dev
