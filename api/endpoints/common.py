@@ -2,9 +2,11 @@
 Common API 엔드포인트
 """
 import traceback
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel
 from typing import Literal
+import pymysql
+from botocore.exceptions import ClientError
 
 from loguru import logger
 from app.fcm_service import (
@@ -12,8 +14,14 @@ from app.fcm_service import (
     send_fcm_notification_to_all_owners,
     send_fcm_notification_to_all
 )
+from app.database import get_db_connection
+from app.s3_config import S3_CLIENT, BUCKET_NAME
 
 router = APIRouter()
+
+# S3 설정
+s3 = S3_CLIENT
+bucket_name = BUCKET_NAME
 
 
 class NotificationRequest(BaseModel):

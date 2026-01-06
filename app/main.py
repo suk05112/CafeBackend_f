@@ -15,7 +15,6 @@ from app.auth.auth_dependency import verify_firebase_token
 import pymysql
 # import app.database as database
 import boto3
-from loguru import logger
 import watchtower
 import logging
 from datetime import datetime, timezone, timedelta
@@ -26,7 +25,7 @@ from db.session import get_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 # 기존 routes (점진적으로 api/endpoints로 이동 예정)
-from routes import user
+# from routes import user  # api/endpoints로 이동됨
 from routes import gifticon
 from routes import owner
 from routes import order
@@ -34,7 +33,7 @@ from routes import order
 # from routes import admin
 
 # 새로운 구조 (api/endpoints)
-from api.endpoints import store, menu, settlement, common, admin
+from api.endpoints import store, menu, settlement, common, admin, user
 
 #https://fastapi.tiangolo.com/ko/
 
@@ -70,8 +69,10 @@ def get_kst_now():
     """한국 시간(KST)을 반환하는 헬퍼 함수"""
     return datetime.now(KST)
 
-log_group_name = f"cafe-backend-{env}"  # cafe-backend-dev 또는 cafe-backend-prod
+# log_group_name = f"cafe-backend-{env}"  # cafe-backend-dev 또는 cafe-backend-prod
+log_group_name = "cafe-backend-production" if env == "prod" else "cafe-backend-development"
 log_stream_name = f"api-requests-{env}-{get_kst_now().strftime('%Y%m%d')}"  # 날짜별 스트림 (환경별, 한국 시간 기준)
+log_stream_name = "api-requests-production" if env == "prod" else "api-requests-development"
 
 cloudwatch_handler = watchtower.CloudWatchLogHandler(
     boto3_client=boto3_client,
@@ -96,8 +97,9 @@ formatter = KSTFormatter(
 cloudwatch_handler.setFormatter(formatter)
 cloudwatch_handler.setLevel(logging.INFO)
 
-# CloudWatch 핸들러를 logger에 추가
-logger = logging.getLogger("cafe_backend")
+# CloudWatch 핸들러를 logging logger에 추가
+logger_name = "cafe-backend-production" if env == "prod" else "cafe-backend-development"
+logger = logging.getLogger(logger_name)
 logger.addHandler(cloudwatch_handler)
 logger.setLevel(logging.INFO)
 
@@ -141,9 +143,9 @@ app.include_router(menu.router, prefix=f'/menu', tags=["Menu"])
 app.include_router(settlement.router, prefix='/settlement', tags=["Settlement"])
 app.include_router(common.router, prefix='', tags=["Common"])
 app.include_router(admin.router, prefix='/admin', tags=["Admin"])
+app.include_router(user.router, prefix='/user', tags=["User"])
 
 # 기존 routes (점진적으로 리팩토링 예정)
-app.include_router(user.router, prefix='/user', tags=["User"])
 app.include_router(gifticon.router, prefix='/gifticon', tags=["Gifticon"])
 app.include_router(owner.router, prefix='/owner', tags=["Owner"])
 app.include_router(order.router, prefix='/order', tags=["Order"])
@@ -186,6 +188,9 @@ async def log_requests(request: Request, call_next):
     # should_log = not is_get_request or response.status_code >= 400
     should_log = True
     if should_log:
+        # User-Agent 헤더 가져오기
+        user_agent = request.headers.get("user-agent", None)
+        
         # 로깅할 데이터 구조화
         log_data = {
             "environment": env,
@@ -199,6 +204,7 @@ async def log_requests(request: Request, call_next):
             "request_body": request_body,
             "response_body": response_body_str[:1000] if response_body_str else None,  # 응답 본문은 최대 1000자만
             "client_host": request.client.host if request.client else None,
+            "user_agent": user_agent,
         }
         
         # CloudWatch에 JSON 형태로 로깅 (한국 시간 포함)

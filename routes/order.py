@@ -14,6 +14,7 @@ from app.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.gifticon import Gifticon, PaymentResult
 from models.store import StoreCreate
+from crud import settlement as settlement_crud
 
 import http.client
 import json
@@ -91,7 +92,7 @@ def getOrderList(user_id: int):
             SELECT DISTINCT
                 o.id AS order_id,
                 o.store_id,
-                o.id AS order_number,
+                o.order_no AS order_number,
                 g.sender,
                 o.created_at AS created_time,
                 o.amount AS price,
@@ -255,6 +256,16 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         # 5. Order_Gifticon 테이블에 데이터 삽입
         # user_id는 항상 설정, type이 2이면 receiver_id를 NULL로 설정 (선물하기인 경우)
         receiver_id = None if gifticon.type == 2 else user_id
+        
+        # receiver_id가 user_id로 설정되는 경우 (type != 2), gifticon 테이블의 receiver_id도 업데이트
+        if receiver_id is not None:
+            update_gifticon_query = """
+                UPDATE gifticon 
+                SET receiver_id = %s 
+                WHERE id = %s
+            """
+            cursor.execute(update_gifticon_query, (receiver_id, gifticon_id))
+        
         order_gifticon_query = """
             INSERT INTO orders_gifticon (
                 user_id, receiver_id, order_id, menu_id, gifticon_id
@@ -271,6 +282,21 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
             )
         )
         connection.commit()
+        
+        # 6. 정산 정보 생성/업데이트 (건별 + 월별)
+        try:
+            order_datetime = get_kst_now()  # 주문 일시 (한국 시간)
+            settlement_crud.update_settlement_on_order(
+                connection=connection,
+                order_id=order_id,
+                store_id=gifticon.store_id,
+                order_amount=float(gifticon.total_price),
+                order_date=order_datetime,
+                commission_rate=6.9  # 수수료율 6.9%
+            )
+        except Exception as settlement_error:
+            # 정산 정보 생성 실패해도 주문은 성공한 것으로 처리
+            logger.warning(f"Failed to create settlement info for order {order_id}: {str(settlement_error)}")
 
         return {
             "message": "Order registered successfully. Please proceed with payment.",
@@ -358,6 +384,25 @@ def updatePaymentResult(payment_result: PaymentResult):
                 ''', (validity_date, gifticon_id))
             
             connection.commit()
+            
+            # 5. 결제 성공 시 정산 정보도 업데이트 (주문 상태가 COMPLETED로 변경되므로)
+            try:
+                # 주문 정보 조회
+                cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (payment_result.order_id,))
+                order_info = cursor.fetchone()
+                if order_info:
+                    order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
+                    settlement_crud.update_settlement_on_order(
+                        connection=connection,
+                        order_id=payment_result.order_id,
+                        store_id=order_info['store_id'],
+                        order_amount=float(order_info['amount'] or 0),
+                        order_date=order_datetime,
+                        commission_rate=6.9  # 수수료율 6.9%
+                    )
+            except Exception as settlement_error:
+                # 정산 정보 업데이트 실패해도 결제 결과 업데이트는 성공한 것으로 처리
+                logger.warning(f"Failed to update settlement info for order {payment_result.order_id}: {str(settlement_error)}")
         
         return {
             "message": f"Payment result updated successfully",

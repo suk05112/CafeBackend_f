@@ -32,22 +32,24 @@ def getStoreList():
 
     try:
         cursor.execute('''
-        SELECT
-            owner_id, 
-            id, 
-            store_name, 
-            status, 
-            inspection_status, 
-            open_yn,
-            store_photo_cnt,
-            store_lat, 
-            store_lng,
-            updated_at,
-            store_telephone,
-            store_description,
-            store_address
-        FROM store
-        ORDER BY updated_at DESC
+        SELECT DISTINCT
+            s.owner_id, 
+            s.id, 
+            s.store_name, 
+            s.status, 
+            s.inspection_status, 
+            s.open_yn,
+            s.store_photo_cnt,
+            s.store_lat, 
+            s.store_lng,
+            s.updated_at,
+            s.store_telephone,
+            s.store_description,
+            s.store_address
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC
         ''')
         
         # DB에서 데이터를 가져오기
@@ -135,13 +137,15 @@ def getOwnerStoreList(owner_id: int):
 
     try:
         cursor.execute('''
-        SELECT
-            id, 
-            store_name
-        FROM store
-        WHERE owner_id = %s
-        ORDER BY updated_at DESC
-        ''', (owner_id))
+        SELECT DISTINCT
+            s.id, 
+            s.store_name
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.owner_id = %s
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC
+        ''', (owner_id,))
         
         rows = cursor.fetchall()
         storeList = []
@@ -185,13 +189,16 @@ def getRegionsAndDistricts():
         # GROUP BY를 사용하여 DB 레벨에서 그룹화 (성능 최적화)
         # 인덱스가 있으면 매우 빠르게 조회됨
         cursor.execute('''
-        SELECT 
-            region_code,
-            district_code
-        FROM store
-        WHERE region_code IS NOT NULL AND district_code IS NOT NULL
-        GROUP BY region_code, district_code
-        ORDER BY region_code, district_code
+        SELECT DISTINCT
+            s.region_code,
+            s.district_code
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.region_code IS NOT NULL 
+          AND s.district_code IS NOT NULL
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        GROUP BY s.region_code, s.district_code
+        ORDER BY s.region_code, s.district_code
         ''')
         
         rows = cursor.fetchall()
@@ -259,15 +266,17 @@ def getStoreListByDistrict(district_code: str):
         
         # 2. 해당 region(시/도)에 속한 모든 카페 조회 (리스트용 간단한 정보만)
         cursor.execute('''
-        SELECT
-            id, 
-            store_name, 
-            open_yn,
-            store_address,
-            store_description
-        FROM store
-        WHERE region_code = %s
-        ORDER BY updated_at DESC
+        SELECT DISTINCT
+            s.id, 
+            s.store_name, 
+            s.open_yn,
+            s.store_address,
+            s.store_description
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.region_code = %s
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC
         ''', (region_code,))
         
         # DB에서 데이터를 가져오기
@@ -336,12 +345,16 @@ def getStoreListByLocation(lat: float, lng: float):
     cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
 
     try:
-        # 1. 가장 가까운 카페의 district 코드 가져오기
+        # 1. 가장 가까운 카페의 district 코드 가져오기 (승인된 매장, 메뉴 있는 매장만)
         cursor.execute('''
-        SELECT district_code 
-        FROM store
-        WHERE store_lat IS NOT NULL AND store_lng IS NOT NULL AND district_code IS NOT NULL
-        ORDER BY (POW(store_lat - %s, 2) + POW(store_lng - %s, 2))
+        SELECT DISTINCT s.district_code 
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.store_lat IS NOT NULL 
+          AND s.store_lng IS NOT NULL 
+          AND s.district_code IS NOT NULL
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY (POW(s.store_lat - %s, 2) + POW(s.store_lng - %s, 2))
         LIMIT 1
         ''', (lat, lng))
         
@@ -357,17 +370,19 @@ def getStoreListByLocation(lat: float, lng: float):
         
         # 3. 해당 region(시/도)에 속한 모든 카페 조회 (리스트용 간단한 정보만)
         cursor.execute('''
-        SELECT
-            id, 
-            store_name, 
-            open_yn,
-            store_address,
-            store_description,
-            store_lat,
-            store_lng
-        FROM store
-        WHERE region_code = %s
-        ORDER BY updated_at DESC
+        SELECT DISTINCT
+            s.id, 
+            s.store_name, 
+            s.open_yn,
+            s.store_address,
+            s.store_description,
+            s.store_lat,
+            s.store_lng
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.region_code = %s
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC
         ''', (region_code,))
         
         # DB에서 데이터를 가져오기
@@ -441,20 +456,24 @@ def getStore(owner_id: int):
     try:
         owner_id = owner_id
             
-        cursor.execute('''select
-        owner_id, 
-        id, 
-        store_name, 
-        status, 
-        inspection_status, 
-        open_yn,
-        store_photo_cnt,
-        store_lat, 
-        store_lng,
-        store_address,
-        updated_at,
-        inspection_msg
-        from store where owner_id=%s ;''', owner_id)
+        cursor.execute('''SELECT DISTINCT
+        s.owner_id, 
+        s.id, 
+        s.store_name, 
+        s.status, 
+        s.inspection_status, 
+        s.open_yn,
+        s.store_photo_cnt,
+        s.store_lat, 
+        s.store_lng,
+        s.store_address,
+        s.updated_at,
+        s.inspection_msg
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.owner_id = %s
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC''', (owner_id,))
         
         rows = cursor.fetchall()   
         storeList = []

@@ -7,6 +7,7 @@ class User(BaseModel):
     phone_number: Optional[str] = None
     uid: Optional[str] = None
     firebase: Optional[Dict[str, Any]] = None
+    provider: Optional[str] = None
 
 class Inquiry(BaseModel):
     title: str

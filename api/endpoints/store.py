@@ -1,140 +1,1287 @@
-"""
-Store API 엔드포인트
-"""
 import traceback
-from fastapi import APIRouter, HTTPException, status
-from typing import Optional
+import os
+from fastapi import APIRouter, HTTPException, status, Query
+from typing import Optional, Union
+from pydantic import BaseModel
 
-from loguru import logger
+import pymysql
+import app.database as database
+from botocore.exceptions import ClientError
+import logging
 
-# schemas는 models를 직접 참조
-from models.store import StoreCreate, InspectionStatusUpdate
-from crud import store as store_crud
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from models.store import StoreCreate
+from models.store import InspectionStatusUpdate
+from app.database import get_db_connection
+from app.settings import settings
+from app.region_code import get_region_from_district, get_region_name, get_district_name
+from app.s3_config import S3_CLIENT, BUCKET_NAME
+
+logger = logging.getLogger("cafe_backend")
 
 router = APIRouter()
 
+# S3 설정은 app.s3_config에서 가져옴
 s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
 
+@router.get("/search")
+def searchStore(
+    query: str = Query(..., description="검색어"),
+    cursor: Optional[int] = Query(None, description="페이지네이션 커서 (마지막 store_id)"),
+    limit: int = Query(50, description="한 번에 가져올 최대 개수 (기본값: 50, 최대: 200)")
+):
+    """
+    FULLTEXT 인덱스를 사용한 매장명 검색 API
+    Cursor-based 페이지네이션을 지원합니다.
+    cursor는 마지막으로 반환된 store_id를 사용합니다.
+    """
+    # limit 최대값 제한
+    if limit > 200:
+        limit = 200
+    if limit < 1:
+        limit = 50
+    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    db_cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
+
+    try:
+        
+        # FULLTEXT 검색 쿼리 (MATCH AGAINST 사용)
+        # inspection_status는 'APPROVED'만 허용, 메뉴 1개 이상인 것만
+        # cursor가 있으면 해당 store_id보다 작은 것만 조회
+        if cursor:
+            db_cursor.execute('''
+            SELECT
+                s.owner_id, 
+                s.id, 
+                s.store_name, 
+                s.status, 
+                s.inspection_status, 
+                s.open_yn,
+                s.store_photo_cnt,
+                s.store_description,
+                s.store_address,
+                MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
+            FROM store s
+            WHERE s.inspection_status = 'APPROVED'
+              AND MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE)
+              AND s.id < %s
+              AND EXISTS (
+                  SELECT 1 FROM menu m WHERE m.store_id = s.id
+              )
+            ORDER BY relevance DESC, s.id DESC
+            LIMIT %s
+            ''', (query, query, cursor, limit))
+        else:
+            db_cursor.execute('''
+            SELECT
+                s.owner_id, 
+                s.id, 
+                s.store_name, 
+                s.status, 
+                s.inspection_status, 
+                s.open_yn,
+                s.store_photo_cnt,
+                s.store_description,
+                s.store_address,
+                MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
+            FROM store s
+            WHERE s.inspection_status = 'APPROVED'
+              AND MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE)
+              AND EXISTS (
+                  SELECT 1 FROM menu m WHERE m.store_id = s.id
+              )
+            ORDER BY relevance DESC, s.id DESC
+            LIMIT %s
+            ''', (query, query, limit))
+        
+        # DB에서 데이터를 가져오기
+        rows = db_cursor.fetchall()
+        storeList = []
+        
+        for row in rows:
+            store_id = row['id']
+
+            # S3에서 store_logo 존재 여부 확인
+            logo_key = f'store_logo/store_logo_{store_id}.png'
+            store_logo_url = None
+            
+            try:
+                s3.head_object(Bucket=bucket_name, Key=logo_key)
+                # 로고가 존재하면 로고 URL 생성
+                store_logo_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': logo_key},
+                    ExpiresIn=3600)
+            except ClientError as e:
+                # 로고가 없으면 store_image_1 사용
+                if e.response['Error']['Code'] == '404':
+                    try:
+                        image_key = f'store_image/store_image_{store_id}_1.png'
+                        s3.head_object(Bucket=bucket_name, Key=image_key)
+                        store_logo_url = s3.generate_presigned_url('get_object',
+                            Params={'Bucket': bucket_name,
+                                    'Key': image_key},
+                            ExpiresIn=3600)
+                    except ClientError:
+                        # store_image_1도 없으면 None
+                        store_logo_url = None
+                else:
+                    store_logo_url = None
+            
+            # S3에서 store_photo URLs 생성
+            store_photo_urls = []
+            store_photo_cnt = row['store_photo_cnt'] if row['store_photo_cnt'] is not None else 0
+            for i in range(1, store_photo_cnt + 1):
+                s3_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': f'store_image/store_image_{store_id}_{i}.png'},
+                    ExpiresIn=3600)
+                store_photo_urls.append(s3_url)
+
+            # store 데이터를 구성
+            store = {
+                "owner_id": row['owner_id'],
+                "store_id": row['id'],
+                "store_name": row['store_name'],
+                "store_logo": store_logo_url,
+                "status": row['status'],
+                "inspection_status": row['inspection_status'],
+                "open_yn": row['open_yn'],
+                "store_description": row['store_description'],
+                "store_address": row['store_address'],
+            }
+            storeList.append(store)
+
+        # 페이지네이션 정보 계산
+        # 다음 페이지가 있는지 확인 (반환된 데이터가 limit과 같으면 다음 페이지가 있을 가능성이 있음)
+        has_next = len(storeList) == limit
+        next_cursor = None
+        if storeList:
+            # 마지막 항목의 store_id를 다음 cursor로 사용
+            next_cursor = storeList[-1]['store_id']
+        
+        return {
+            "store": storeList,
+            "pagination": {
+                "cursor": cursor,
+                "next_cursor": next_cursor,
+                "limit": limit,
+                "has_next": has_next
+            }
+        }
+    
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서버 오류 발생: {str(e)}"
+        )
+    finally:
+        db_cursor.close()
+        connection.close()
 
 @router.get("/list")
-def get_store_list():
-    """매장 리스트 조회"""
+def getStoreList():
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
+
     try:
-        stores = store_crud.get_all_stores()
-        return {"store": stores}
+        cursor.execute('''
+        SELECT DISTINCT
+            s.owner_id, 
+            s.id, 
+            s.store_name, 
+            s.status, 
+            s.inspection_status, 
+            s.open_yn,
+            s.store_photo_cnt,
+            s.store_lat, 
+            s.store_lng,
+            s.updated_at,
+            s.store_telephone,
+            s.store_description,
+            s.store_address
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC
+        ''')
+        
+        # DB에서 데이터를 가져오기
+        rows = cursor.fetchall()
+        storeList = []
+        
+        for row in rows:
+            store_id = row['id']
+
+            # S3에서 store_logo 존재 여부 확인
+            logo_key = f'store_logo/store_logo_{store_id}.png'
+            store_logo_url = None
+            
+            try:
+                s3.head_object(Bucket=bucket_name, Key=logo_key)
+                # 로고가 존재하면 로고 URL 생성
+                store_logo_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': logo_key},
+                    ExpiresIn=3600)
+            except ClientError as e:
+                # 로고가 없으면 store_image_1 사용
+                if e.response['Error']['Code'] == '404':
+                    try:
+                        image_key = f'store_image/store_image_{store_id}_1.png'
+                        s3.head_object(Bucket=bucket_name, Key=image_key)
+                        store_logo_url = s3.generate_presigned_url('get_object',
+                            Params={'Bucket': bucket_name,
+                                    'Key': image_key},
+                            ExpiresIn=3600)
+                    except ClientError:
+                        # store_image_1도 없으면 None
+                        store_logo_url = None
+                else:
+                    store_logo_url = None
+            
+            # S3에서 store_photo URLs 생성
+            store_photo_urls = []
+            store_photo_cnt = row['store_photo_cnt'] if row['store_photo_cnt'] is not None else 0
+            for i in range(1, store_photo_cnt + 1):  # row[6]은 store_photo_cnt
+                s3_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': f'store_image/store_image_{store_id}_{i}.png'},
+                    ExpiresIn=3600)
+                store_photo_urls.append(s3_url)
+
+            # store 데이터를 구성
+            store = {
+                "owner_id": row['owner_id'],
+                "store_id": row['id'],
+                "store_name": row['store_name'],
+                "store_logo": store_logo_url,
+                "store_photo_urls": store_photo_urls,
+                "status": row['status'],
+                "inspection_status": row['inspection_status'],
+                "open_yn": row['open_yn'],
+                "store_lat": row['store_lat'],
+                "store_lng": row['store_lng'],
+                "updated_time": row['updated_at'],
+                "store_telephone": row['store_telephone'],
+                "store_description": row['store_description'],
+                "store_address": row['store_address'],
+            }
+            storeList.append(store)
+
+        return {"store": storeList}
+    
     except Exception as e:
-        logger.error(f"Error in get_store_list: {traceback.format_exc()}")
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"서버 오류 발생: {str(e)}"
         )
-
+    finally:
+        cursor.close()
+        connection.close()
 
 @router.get("/owner/list/{owner_id}")
-def get_owner_store_list(owner_id: int):
-    """오너별 매장 리스트 조회"""
+def getOwnerStoreList(owner_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
+
     try:
-        stores = store_crud.get_stores_by_owner(owner_id)
-        return {"ownerStoreList": stores}
+        cursor.execute('''
+        SELECT DISTINCT
+            s.id, 
+            s.store_name
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.owner_id = %s
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC
+        ''', (owner_id,))
+        
+        rows = cursor.fetchall()
+        storeList = []
+        
+        for row in rows:
+            print(row)
+
+            # store 데이터를 구성
+            store = {
+                "store_id": row['id'],
+                "store_name": row['store_name'],
+            }
+            storeList.append(store)
+
+        return {"ownerStoreList": storeList}
+    
     except Exception as e:
-        logger.error(f"Error in get_owner_store_list: {traceback.format_exc()}")
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"서버 오류 발생: {str(e)}"
         )
+    finally:
+        cursor.close()
+        connection.close()
 
+@router.get("/regions-districts")
+def getRegionsAndDistricts(offset: Optional[int] = Query(0, description="페이지네이션 오프셋"), limit: int = Query(50, description="한 번에 가져올 최대 개수")):
+    """
+    현재 존재하는 매장의 region과 district 코드 및 이름을 반환합니다.
+    region별로 그룹화하여 반환합니다.
+    성능 최적화: GROUP BY를 사용하여 DB 레벨에서 그룹화 (DISTINCT보다 효율적)
+    """
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    db_cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
 
-@router.get("/info/{store_id}")
-def get_store_info(store_id: int):
-    """매장 상세 정보 조회"""
     try:
-        store = store_crud.get_store_by_id(store_id)
-        if not store:
-            raise HTTPException(status_code=404, detail="Store not found")
-        return store
-    except HTTPException:
-        raise
+        # GROUP BY를 사용하여 DB 레벨에서 그룹화 (성능 최적화)
+        # 인덱스가 있으면 매우 빠르게 조회됨
+        # offset과 limit을 사용한 페이지네이션
+        db_cursor.execute('''
+        SELECT DISTINCT
+            s.region_code,
+            s.district_code
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.region_code IS NOT NULL 
+          AND s.district_code IS NOT NULL
+          AND s.inspection_status = 'APPROVED'
+        GROUP BY s.region_code, s.district_code
+        HAVING COUNT(m.id) >= 1
+        ORDER BY s.region_code, s.district_code
+        LIMIT %s OFFSET %s
+        ''', (limit, offset))
+        
+        rows = db_cursor.fetchall()
+        
+        # region별로 그룹화
+        region_dict = {}
+        for row in rows:
+            region_code = row['region_code']
+            district_code = row['district_code']
+            
+            if region_code not in region_dict:
+                region_dict[region_code] = []
+            
+            # district 정보를 딕셔너리로 저장 (코드와 이름)
+            district_info = {
+                "district_code": district_code,
+                "district_name": get_district_name(district_code)
+            }
+            
+            # 중복 체크 (같은 district_code가 이미 있는지 확인)
+            existing = [d for d in region_dict[region_code] if d["district_code"] == district_code]
+            if not existing:
+                region_dict[region_code].append(district_info)
+        
+        # 리스트 형태로 변환
+        region_list = []
+        for region_code, districts in region_dict.items():
+            # district_code 기준으로 정렬
+            sorted_districts = sorted(districts, key=lambda x: int(x["district_code"]))
+            region_list.append({
+                "region_code": region_code,
+                "region_name": get_region_name(region_code),
+                "districts": sorted_districts
+            })
+        
+        # region_code 기준으로 정렬
+        region_list.sort(key=lambda x: int(x["region_code"]))
+        
+        return {"regions": region_list}
+    
     except Exception as e:
-        logger.error(f"Error in get_store_info: {traceback.format_exc()}")
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"서버 오류 발생: {str(e)}"
         )
+    finally:
+        db_cursor.close()
+        connection.close()
 
+@router.get("/list/by-district/{district_code}")
+def getStoreListByDistrict(
+    district_code: str, 
+    cursor: Optional[str] = Query(None, description="페이지네이션 커서 (updated_at,store_id 형식)"),
+    limit: int = Query(50, description="한 번에 가져올 최대 개수 (기본값: 50, 최대: 200)")
+):
+    """
+    지역별 매장 목록 조회 API
+    Cursor-based 페이지네이션을 지원합니다.
+    cursor 형식: "updated_at,store_id" (예: "2025-01-01 00:00:00,123")
+    """
+    # limit 최대값 제한
+    if limit > 200:
+        limit = 200
+    if limit < 1:
+        limit = 50
+    
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    db_cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
 
+    try:
+        # 1. district 코드에서 region(시/도) 코드 추출 (DB 조회 없이)
+        region_code = get_region_from_district(district_code)
+        
+        if not region_code:
+            return {
+                "store": [],
+                "pagination": {
+                    "cursor": cursor,
+                    "next_cursor": None,
+                    "limit": limit,
+                    "has_next": False
+                }
+            }
+        
+        # cursor 파싱 (updated_at,store_id 형식)
+        cursor_updated_at = None
+        cursor_store_id = None
+        if cursor:
+            try:
+                parts = cursor.split(',')
+                if len(parts) == 2:
+                    cursor_updated_at = parts[0]
+                    cursor_store_id = int(parts[1])
+            except (ValueError, IndexError):
+                # 잘못된 cursor 형식이면 무시하고 처음부터 조회
+                cursor_updated_at = None
+                cursor_store_id = None
+        
+        # 2. 해당 region(시/도)에 속한 모든 카페 조회 (리스트용 간단한 정보만)
+        # inspection_status는 'APPROVED'만, 메뉴 1개 이상인 것만, cursor 기반 페이지네이션
+        if cursor_updated_at and cursor_store_id:
+            db_cursor.execute('''
+            SELECT DISTINCT
+                s.id, 
+                s.store_name, 
+                s.open_yn,
+                s.store_address,
+                s.store_description,
+                s.updated_at
+            FROM store s
+            INNER JOIN menu m ON s.id = m.store_id
+            WHERE s.region_code = %s
+              AND s.inspection_status = 'APPROVED'
+              AND (
+                  s.updated_at < %s
+                  OR (s.updated_at = %s AND s.id < %s)
+              )
+            GROUP BY s.id
+            HAVING COUNT(m.id) >= 1
+            ORDER BY s.updated_at DESC, s.id DESC
+            LIMIT %s
+            ''', (region_code, cursor_updated_at, cursor_updated_at, cursor_store_id, limit))
+        else:
+            db_cursor.execute('''
+            SELECT DISTINCT
+                s.id, 
+                s.store_name, 
+                s.open_yn,
+                s.store_address,
+                s.store_description,
+                s.updated_at
+            FROM store s
+            INNER JOIN menu m ON s.id = m.store_id
+            WHERE s.region_code = %s
+              AND s.inspection_status = 'APPROVED'
+            GROUP BY s.id
+            HAVING COUNT(m.id) >= 1
+            ORDER BY s.updated_at DESC, s.id DESC
+            LIMIT %s
+            ''', (region_code, limit))
+        
+        # DB에서 데이터를 가져오기
+        rows = db_cursor.fetchall()
+        storeList = []
+        
+        for row in rows:
+            store_id = row['id']
+
+            # S3에서 store_logo 존재 여부 확인
+            logo_key = f'store_logo/store_logo_{store_id}.png'
+            store_logo_url = None
+            
+            try:
+                s3.head_object(Bucket=bucket_name, Key=logo_key)
+                # 로고가 존재하면 로고 URL 생성
+                store_logo_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': logo_key},
+                    ExpiresIn=3600)
+            except ClientError as e:
+                # 로고가 없으면 store_image_1 사용
+                if e.response['Error']['Code'] == '404':
+                    try:
+                        image_key = f'store_image/store_image_{store_id}_1.png'
+                        s3.head_object(Bucket=bucket_name, Key=image_key)
+                        store_logo_url = s3.generate_presigned_url('get_object',
+                            Params={'Bucket': bucket_name,
+                                    'Key': image_key},
+                            ExpiresIn=3600)
+                    except ClientError:
+                        # store_image_1도 없으면 None
+                        store_logo_url = None
+                else:
+                    store_logo_url = None
+
+            # 리스트용 간단한 store 데이터 구성
+            store = {
+                "store_id": store_id,
+                "store_name": row['store_name'],
+                "store_logo": store_logo_url,
+                "open_yn": row['open_yn'],
+                "store_address": row['store_address'],
+                "store_description": row['store_description'],
+            }
+            storeList.append(store)
+
+        # 페이지네이션 정보 계산
+        has_next = len(storeList) == limit
+        next_cursor = None
+        if storeList:
+            # 마지막 항목의 updated_at과 store_id를 조합하여 다음 cursor 생성
+            last_item = storeList[-1]
+            # updated_at은 쿼리 결과에서 가져오기
+            last_updated_at = None
+            for row in rows:
+                if row['id'] == last_item['store_id']:
+                    last_updated_at = row.get('updated_at')
+                    if last_updated_at:
+                        # datetime을 문자열로 변환
+                        if hasattr(last_updated_at, 'strftime'):
+                            last_updated_at = last_updated_at.strftime('%Y-%m-%d %H:%M:%S')
+                        else:
+                            last_updated_at = str(last_updated_at)
+                    break
+            
+            if last_updated_at:
+                next_cursor = f"{last_updated_at},{last_item['store_id']}"
+        
+        return {
+            "store": storeList,
+            "pagination": {
+                "cursor": cursor,
+                "next_cursor": next_cursor,
+                "limit": limit,
+                "has_next": has_next
+            }
+        }
+    
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서버 오류 발생: {str(e)}"
+        )
+    finally:
+        db_cursor.close()
+        connection.close()
+
+@router.get("/list/by-location")
+def getStoreListByLocation(lat: float, lng: float):
+    """
+    지도 중심 3KM 반경 내의 매장 조회
+    inspection_status는 'APPROVED'만, 메뉴 1개 이상인 것만 반환
+    """
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
+
+    try:
+        # 지도 중심 3KM 반경 내의 매장 조회 (Haversine 공식 사용)
+        # inspection_status는 'APPROVED'만, 메뉴 1개 이상인 것만
+        cursor.execute('''
+        SELECT DISTINCT
+            s.id, 
+            s.store_name, 
+            s.open_yn,
+            s.store_address,
+            s.store_description,
+            s.store_lat,
+            s.store_lng,
+            (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) * 
+                COS(RADIANS(s.store_lng) - RADIANS(%s)) + 
+                SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) AS distance
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.store_lat IS NOT NULL 
+          AND s.store_lng IS NOT NULL
+          AND s.inspection_status = 'APPROVED'
+        GROUP BY s.id
+        HAVING COUNT(m.id) >= 1
+          AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) * 
+                COS(RADIANS(s.store_lng) - RADIANS(%s)) + 
+                SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) <= 3
+        ORDER BY distance ASC
+        ''', (lat, lng, lat, lat, lng, lat))
+        
+        # DB에서 데이터를 가져오기
+        rows = cursor.fetchall()
+        storeList = []
+        
+        for row in rows:
+            store_id = row['id']
+
+            # S3에서 store_logo 존재 여부 확인
+            logo_key = f'store_logo/store_logo_{store_id}.png'
+            store_logo_url = None
+            
+            try:
+                s3.head_object(Bucket=bucket_name, Key=logo_key)
+                # 로고가 존재하면 로고 URL 생성
+                store_logo_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name,
+                            'Key': logo_key},
+                    ExpiresIn=3600)
+            except ClientError as e:
+                # 로고가 없으면 store_image_1 사용
+                if e.response['Error']['Code'] == '404':
+                    try:
+                        image_key = f'store_image/store_image_{store_id}_1.png'
+                        s3.head_object(Bucket=bucket_name, Key=image_key)
+                        store_logo_url = s3.generate_presigned_url('get_object',
+                            Params={'Bucket': bucket_name,
+                                    'Key': image_key},
+                            ExpiresIn=3600)
+                    except ClientError:
+                        # store_image_1도 없으면 None
+                        store_logo_url = None
+                else:
+                    store_logo_url = None
+
+            # 리스트용 간단한 store 데이터 구성
+            store = {
+                "store_id": store_id,
+                "store_name": row['store_name'],
+                "store_logo": store_logo_url,
+                "open_yn": row['open_yn'],
+                "store_address": row['store_address'],
+                "store_description": row['store_description'],
+                "store_lat": row['store_lat'],
+                "store_lng": row['store_lng'],
+            }
+            storeList.append(store)
+            print(storeList)
+
+        return {"store": storeList}
+    
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서버 오류 발생: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.get("/list/{owner_id}")
+def getStore(owner_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
+                      
+    try:
+        owner_id = owner_id
+            
+        cursor.execute('''SELECT DISTINCT
+        s.owner_id, 
+        s.id, 
+        s.store_name, 
+        s.status, 
+        s.inspection_status, 
+        s.open_yn,
+        s.store_photo_cnt,
+        s.store_lat, 
+        s.store_lng,
+        s.store_address,
+        s.updated_at,
+        s.inspection_msg
+        FROM store s
+        INNER JOIN menu m ON s.id = m.store_id
+        WHERE s.owner_id = %s
+          AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+        ORDER BY s.updated_at DESC''', (owner_id,))
+        
+        rows = cursor.fetchall()   
+        storeList = []
+        
+        for row in rows:
+            store_id = row['id']
+
+            store_logo_url = s3.generate_presigned_url('get_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'store_logo/store_logo_{store_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+                                                  
+            store_photo_urls = []
+        
+            store_photo_cnt = row['store_photo_cnt'] if row['store_photo_cnt'] is not None else 0
+            for i in range(1, store_photo_cnt+1):
+                s3_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                                    },
+                                                          ExpiresIn=3600)
+
+                store_photo_urls.append(s3_url) 
+            
+            store = {
+                "owner_id": row['owner_id'],
+                "store_id": row['id'],
+                "store_name": row['store_name'],
+                "store_logo": store_logo_url,
+                "store_photo_urls": store_photo_urls,
+                "status": row['status'],
+                "inspection_status": row['inspection_status'],
+                "open_yn": row['open_yn'],
+                "store_lat": row['store_lat'],
+                "store_lng": row['store_lng'],
+                "store_address": row['store_address'],
+                "updated_time": row['updated_at'],
+                "inspection_msg": row['inspection_msg'],
+            }
+            storeList.append(store)
+        
+        return {"store": storeList}
+    except Exception as e:
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc() 
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed get store list"
+        )
+    finally:        
+        cursor.close()
+        connection.close()
+    
 @router.post("/register")
-async def register_store(store: StoreCreate):
-    """매장 등록"""
+async def registerStore(store: StoreCreate):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+                          
+    cursor = connection.cursor()
+    
     try:
-        store_id = store_crud.create_store(store)
-        s3_urls = store_crud.generate_store_s3_urls(store_id, store.store_photo_cnt)
+        query = """
+            INSERT INTO store (
+                owner_id, store_name, store_telephone, store_description, store_address, store_lat, store_lng, store_photo_cnt
+            ) VALUES (
+              {},'{}','{}', '{}', '{}', {}, {}, {}
+            );
+        """.format(
+            store.owner_id,
+            store.store_name,
+            store.store_telephone,
+            store.store_description,
+            store.store_address,
+            store.store_lat,
+            store.store_lng,
+            store.store_photo_cnt,
+            )
+            
+        cursor.execute(query)
+        connection.commit()
+
+        store_id = cursor.lastrowid
+        print(store_id)
+
+        store_logo_url = s3.generate_presigned_url('put_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'store_logo/store_logo_{store_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+                                                  
+
+        bankBook_put_url = s3.generate_presigned_url('put_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'bankbook/bankbook_{store_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+        
+        business_put_url = s3.generate_presigned_url('put_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'business_registration/business_registration_{store_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)                      
+    
+        store_photo_urls = []
+        
+        store_photo_cnt = store.store_photo_cnt if store.store_photo_cnt is not None else 0
+        for i in range(1, store_photo_cnt+1):
+            s3_url = s3.generate_presigned_url('put_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+
+            store_photo_urls.append(s3_url)
+    
         
         return {
             'store_id': store_id,
-            'store_logo_url': s3_urls['store_logo_url'],
-            'store_photo_urls': s3_urls['store_photo_urls'],
-            'bankBook_put_url': s3_urls['bankBook_put_url'],
-            'business_put_url': s3_urls['business_put_url']
+            'store_logo_url': store_logo_url,
+            'store_photo_urls': store_photo_urls,
+            'bankBook_put_url': bankBook_put_url,
+            'business_put_url': business_put_url
         }
     except Exception as e:
-        logger.error(f"Error in register_store: {traceback.format_exc()}")
+        print(e)
+        logger.error(f"Error: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed register store: {str(e)}"
         )
+    
+    finally:
+        connection.close()
 
-
+#store.store_photo_cnt이 -1이면 이미지 변경은 없다는 의미
 @router.post("/update/{store_id}")
-def update_store(store_id: int, store: StoreCreate):
-    """매장 정보 업데이트"""
+def updateStore(store_id: int, store: StoreCreate):
+    connection = get_db_connection()  # 환경에 맞는 DB 연
+    
     try:
-        success = store_crud.update_store(store_id, store)
-        if not success:
-            raise HTTPException(status_code=404, detail="Store not found")
+        cursor = connection.cursor()
         
-        # S3 URLs 생성 (업데이트 후에도 필요할 수 있음)
-        s3_urls = store_crud.generate_store_s3_urls(store_id, store.store_photo_cnt)
+        #기존에 저장된 이미지 삭제
+        cursor.execute('''select
+        store_photo_cnt
+        from store where id=%s ;''', (store_id,))
+        
+        stored_photo_cnt = cursor.fetchone()
+        print('stored_photo_cnt', stored_photo_cnt)
+             
+        if store.store_photo_cnt != -1: # 변경된 이미지가 있을 때만 저장된 이미지 삭제
+            if stored_photo_cnt or stored_photo_cnt != 0:  # 조회 결과가 있는지 확인
+                stored_photo_cnt = stored_photo_cnt[0] 
+                for i in range(1, stored_photo_cnt+1):
+                    object_key =  f'store_image/store_image_{store_id}_{i}.png'
+                    s3.delete_object(Bucket=bucket_name, Key=object_key)
+                
+        query = "UPDATE store SET "
+        values = []
+        print("store.store_photo_cnt", store.store_photo_cnt)
+
+        if store.store_address:
+            query += "store_address = %s, "
+            values.append(store.store_address)
+        if store.store_telephone:
+            query += "store_telephone = %s, "
+            values.append(store.store_telephone)
+        if store.store_description:
+            query += "store_description = %s, "
+            values.append(store.store_description)
+        if store.store_photo_cnt != -1:
+            query += "store_photo_cnt = %s, "
+            values.append(store.store_photo_cnt)
+            
+        query += "inspection_status = %s, "
+        values.append(0)
+
+        query = query[:-2]  # 마지막 쉼표와 공백 제거
+        query += " WHERE id = %s"
+        values.append(store_id)
+
+        cursor.execute(query, tuple(values))
+        connection.commit()
+
+        store_photo_urls = []
+        store_photo_get_urls = []
+        
+        updated_stored_photo_cnt = store.store_photo_cnt if store.store_photo_cnt is not None and store.store_photo_cnt != -1 else 0
+        print("stored_photo_cnt", stored_photo_cnt)
+        #새로 업데이트 된 이미지 저장 
+        for i in range(1, updated_stored_photo_cnt+1):
+            if store.store_photo_cnt != -1: # 변경된 이미지가 있을 때만 저장된 이미지 put
+                s3_put_url = s3.generate_presigned_url('put_object',
+                                                        Params={'Bucket': bucket_name,
+                                                                'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                                },
+                                                    ExpiresIn=3600)
+                store_photo_urls.append(s3_put_url)
+
+            s3_get_url = s3.generate_presigned_url('get_object',
+                                                Params={'Bucket': bucket_name,
+                                                        'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                        },
+                                                ExpiresIn=3600)
+            
+            store_photo_get_urls.append(s3_get_url)
+                
+        print("store_photo_urls", store_photo_get_urls)
         
         return {
-            'store_id': store_id,
-            'store_logo_url': s3_urls['store_logo_url'],
-            'store_photo_urls': s3_urls['store_photo_urls'],
-            'bankBook_put_url': s3_urls['bankBook_put_url'],
-            'business_put_url': s3_urls['business_put_url']
+            'msg': "success",
+            'store_photo_urls': store_photo_urls,
+            'store_photo_get_urls': store_photo_get_urls
         }
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Error in update_store: {traceback.format_exc()}")
+        print(e)
+        logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed update store: {str(e)}"
+            detail="failed update store"
         )
-
+    finally:
+        connection.close()
 
 @router.post("/delete/{store_id}")
-def delete_store(store_id: int):
-    """매장 삭제"""
+def deleteStore(store_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결 
     try:
-        success = store_crud.delete_store(store_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Store not found")
-        return {"success": True, "message": "Store deleted successfully"}
+        cursor = connection.cursor()
+        query = "DELETE FROM store WHERE id = %s"
+
+        cursor.execute(query, (store_id,))
+        connection.commit()
+        
+        if cursor.rowcount > 0:
+            return {
+                'msg': "success",
+                'store_id': store_id
+            }
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="no record found"
+            )
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in delete_store: {traceback.format_exc()}")
+        print(e)
+        logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed delete store: {str(e)}"
+            detail="failed delete store"
         )
+    finally:
+        connection.close()
+
+@router.get("/search/{item}/{lat}/{lng}")
+def searchStore(item: str, lat: float, lng: float):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+
+    try:
+        cursor = connection.cursor()
+        storeList = []
+
+        itemQuery = '''select
+        owner_id, 
+        id, 
+        store_name, 
+        status, 
+        inspection_status, 
+        open_yn,
+        store_photo_cnt,
+        store_lat, 
+        store_lng 
+        from store'''
+
+        if item and item.strip():
+            itemQuery += " WHERE store_name LIKE %s"
+            item_param = f"%{item}%"
+            cursor.execute(itemQuery, (item_param,))
+        
+            rows = cursor.fetchall()
+            # row = rows[0]
+
+            print("검색된 리스트", rows)
+
+            if rows:
+                for row in rows:
+                    print(row)
+                    store_logo_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_logo/store_logo_{row[1]}.png',
+                                                                    },
+                                                        ExpiresIn=3600)
+                                                                            
+                    store = {
+                        # "owner_id": row[0],
+                        "store_id": row[1],
+                        "store_name": row[2],
+                        "store_logo": store_logo_url,
+                        # "status": row[3],
+                        # "inspection_status": row[4],
+                        # "open_yn": row[5],
+                        "store_lat": row[7],
+                        "store_lng": row[8],
+                    }
+                    storeList.append(store)
+
+                geoQuery = '''SELECT
+                    owner_id,
+                    id,
+                    store_name,
+                    status,
+                    inspection_status,
+                    open_yn,
+                    store_photo_cnt,
+                    store_lat,
+                    store_lng,
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
+                FROM
+                    store
+                WHERE
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
+                ORDER BY distance ASC;'''
+
+                cursor.execute(geoQuery, (lat, lng, lat, lat, lng, lat))
+                rows = cursor.fetchall()
+
+                for row in rows:
+                    store_logo_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_logo/store_logo_{row[1]}.png',
+                                                                    },
+                                                        ExpiresIn=3600)
+                    store = {
+                        # "owner_id": row[0],
+                        "store_id": row[1],
+                        "store_name": row[2],
+                        "store_logo": store_logo_url,
+                        # "status": row[3],
+                        # "inspection_status": row[4],
+                        # "open_yn": row[5],
+                        # "store_photo_cnt": row[6],
+                        "store_lat": row[7],
+                        "store_lng": row[8],
+                        # "distance": row[9],  # Include the calculated distance
+                    }
+                    storeList.append(store)
+
+                # storeList에서 store_id 기준으로 중복 제거
+                unique_store_dict = {store["store_id"]: store for store in storeList}
+
+                # 중복 제거된 storeList 생성
+                storeList = list(unique_store_dict.values())
+
+                return {"storeList": storeList}
+            else:
+                return {"storeList": []}  
+        else:
+            geoQuery = '''SELECT
+                    owner_id,
+                    id,
+                    store_name,
+                    status,
+                    inspection_status,
+                    open_yn,
+                    store_photo_cnt,
+                    store_lat,
+                    store_lng,
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
+                FROM
+                    store
+                WHERE
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
+                ORDER BY distance ASC;'''
+
+            cursor.execute(geoQuery, (lat, lng, lat, lat, lng, lat))
+            rows = cursor.fetchall()
+
+            for row in rows:
+                store_logo_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_logo/store_logo_{row[1]}.png',
+                                                                    },
+                                                        ExpiresIn=3600)
+                store = {
+                    # "owner_id": row[0],
+                    "store_id": row[1],
+                    "store_name": row[2],
+                    "store_logo": store_logo_url,
+
+                    # "status": row[3],
+                    # "inspection_status": row[4],
+                    # "open_yn": row[5],
+                    # "store_photo_cnt": row[6],
+                    "store_lat": row[7],
+                    "store_lng": row[8],
+                    # "distance": row[9],  # Include the calculated distance
+                }
+                storeList.append(store)
+                
+            # storeList에서 store_id 기준으로 중복 제거
+            unique_store_dict = {store["store_id"]: store for store in storeList}
+
+            # 중복 제거된 storeList 생성
+            storeList = list(unique_store_dict.values())
+
+            return {"storeList": storeList}
+    except Exception as e:
+        print(e)
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed search store"
+        )
+    finally:
+        connection.close()
+        
+@router.get("/search/{lat}/{lng}")
+def getCurrentLocationStore(item: str, lat: float, lng: float):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+
+    try:
+        cursor = connection.cursor()
+        storeList = []
+
+        geoQuery = '''SELECT
+                    owner_id,
+                    id,
+                    store_name,
+                    status,
+                    inspection_status,
+                    open_yn,
+                    store_photo_cnt,
+                    store_lat,
+                    store_lng,
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
+                FROM
+                    store
+                WHERE
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
+                ORDER BY distance ASC;'''
+
+        cursor.execute(geoQuery, (lat, lng, lat, lat, lng, lat))
+        rows = cursor.fetchall()
+
+        for row in rows:
+            store = {
+                "owner_id": row[0],
+                "store_id": row[1],
+                "store_name": row[2],
+                "status": row[3],
+                "inspection_status": row[4],
+                "open_yn": row[5],
+                "store_photo_cnt": row[6],
+                "store_lat": row[7],
+                "store_lng": row[8],
+                "distance": row[9],  # Include the calculated distance
+            }
+            storeList.append(store)
+
+        return {"storeList": storeList}
+    except Exception as e:
+        print(e)
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed get current location store"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+@router.get("/info/{store_id}")
+def getStoreInfo(store_id: int):
+    connection = get_db_connection()  # 환경에 맞는 DB 연결
+    cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
+
+                      
+    try:      
+        print("storeList 호출1")
+      
+        cursor.execute('''select 
+        owner_id,
+        id,
+        store_name, 
+        store_address, 
+        store_telephone,
+        store_description,
+        store_photo_cnt,
+        store_address,
+        store_lat, 
+        store_lng,
+        updated_at,
+        inspection_status,
+        inspection_msg
+        from store WHERE id=%s ;''', (store_id, ))
+        
+        store = cursor.fetchone()
 
 
-@router.patch("/{store_id}/inspection")
-def update_inspection_status(store_id: int, status_update: InspectionStatusUpdate):
-    """매장 승인 상태 업데이트"""
+        if store:
+            store_logo_url = s3.generate_presigned_url('get_object',
+                                                    Params={'Bucket': bucket_name,
+                                                            'Key': f'store_logo/store_logo_{store_id}.png',
+                                                            },
+                                                  ExpiresIn=3600)
+                                                  
+            store_photo_urls = []
+            store_photo_cnt = store['store_photo_cnt'] if store['store_photo_cnt'] is not None else 0
+
+            for i in range(1, store_photo_cnt+1):
+                s3_url = s3.generate_presigned_url('get_object',
+                                                            Params={'Bucket': bucket_name,
+                                                                    'Key': f'store_image/store_image_{store_id}_{i}.png',
+                                                                    },
+                                                          ExpiresIn=3600)
+
+                store_photo_urls.append(s3_url) 
+            
+            store = {
+                "owner_id": store['owner_id'],
+                "store_id": store['id'],
+                "store_name": store['store_name'],
+                "store_logo": store_logo_url,
+                "store_telephone": store['store_telephone'],
+                "store_address": store['store_address'],
+                "store_photo_urls": store_photo_urls,
+                "store_description": store['store_description'],
+                "store_lat": store['store_lat'],
+                "store_lng": store['store_lng'],
+                "updated_time": store['updated_at'],
+                "inspection_status": store['inspection_status'],
+                "inspection_msg": store['inspection_msg']
+            }
+    
+        if not store:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Store not found"
+            )
+        return {"store": store}
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(e)
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="failed get store info"
+        )
+    finally:        
+        cursor.close()
+        connection.close()
+
+@router.patch("/{storeId}/inspection")
+def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate):
     # inspection_status를 문자열로 변환 (정수인 경우)
     status_value = status_update.inspection_status
     
@@ -168,17 +1315,57 @@ def update_inspection_status(store_id: int, status_update: InspectionStatusUpdat
             detail=f"Invalid inspection status type: {type(status_value)}. Must be int or str"
         )
     
+    connection = None
+    cursor = None
+    
     try:
-        # inspection_msg는 Optional이므로 None이면 빈 문자열로 처리
-        inspection_msg = status_update.inspection_msg if status_update.inspection_msg else ""
+        connection = get_db_connection()  # 환경에 맞는 DB 연결
+        cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
         
-        success = store_crud.update_inspection_status(store_id, status_value, inspection_msg)
-        if not success:
-            raise HTTPException(status_code=404, detail=f"Store with id {store_id} not found or status not updated")
-        return {"message": f"Store {store_id} inspection status updated to {status_value}"}
+        # 먼저 store가 존재하는지 확인
+        cursor.execute('''SELECT id FROM store WHERE id = %s''', (storeId,))
+        store = cursor.fetchone()
+        
+        if not store:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Store with id {storeId} not found"
+            )
+        
+        # SQL 쿼리 수정: 상태와 메시지를 함께 업데이트
+        update_query = """
+            UPDATE store
+            SET inspection_status = %s, inspection_msg = %s
+            WHERE id = %s
+        """
+        
+        # 쿼리 실행
+        cursor.execute(update_query, (status_value, status_update.inspection_msg, storeId))
+        connection.commit()
+
+        # 상태 변경 성공 확인
+        if cursor.rowcount > 0:
+            return {"message": f"Store {storeId} inspection status updated to {status_value}"}
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to update inspection status"
+            )
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in update_inspection_status: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=f"Failed to update inspection status: {str(e)}")
+        print(f"오류 발생: {str(e)}")
+        print("스택 트레이스:")
+        traceback.print_exc()
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to update inspection status: {str(e)}"
+        )
 
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()

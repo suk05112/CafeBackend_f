@@ -1,3 +1,6 @@
+"""
+User API 엔드포인트
+"""
 import traceback
 from fastapi import FastAPI, Header, Query, Request, APIRouter, Depends, HTTPException, status
 from typing import Optional
@@ -15,7 +18,8 @@ import boto3
 from botocore.client import Config
 from app.database import get_db_connection
 
-from loguru import logger
+import logging
+logger = logging.getLogger("cafe_backend")
 
 from models.user import User
 from models.user import Inquiry
@@ -23,41 +27,7 @@ from models.user import InquiryResponse
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from app.fcm_service import send_fcm_notification_to_user
 
-#상위폴더 참조
-import os
-import sys
-sys.path.append(os.path.dirname(os.path.abspath(os.path.dirname(__file__))))
-
 router = APIRouter()
-
-# @router.post("/register")
-# async def registerUser(user: User):
-#     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
-#     cursor = connection.cursor()
-
-#     try:
-#         query = """
-#             INSERT INTO user (
-#                 name, email, phone_number
-#             ) VALUES (%s, %s, %s);
-#         """
-
-#         cursor.execute(query, (user.name, user.email, user.phone_number))
-#         connection.commit()
-
-#         user_id = cursor.lastrowid
-#         print(user_id)
-                                                  
-#         return {'user_id': user_id}
-#     except Exception as e:
-#         print(e)
-#         logger.error(f"서버 오류 발생: {str(e)}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail=f"failed register user: {str(e)}"
-#         )
-#     finally:
-#         connection.close()
 
 @router.post("/register")
 def signUp(user: User):
@@ -68,18 +38,23 @@ def signUp(user: User):
     print("user_record\n\n")
     print(user_record)
     
-    print("=====user=====\n", user)
+    # user_record의 모든 속성 출력
+    print("\n=== user_record 모든 속성 ===")
+    for attr in dir(user_record):
+        if not attr.startswith('_'):
+            try:
+                value = getattr(user_record, attr)
+                if not callable(value):
+                    print(f"{attr}: {value}")
+            except Exception as e:
+                print(f"{attr}: (에러: {e})")
 
-    print(user_record.email)
-    print(user_record.phone_number)
-    print(user_record.display_name)
-    
     email = user_record.email
     # 요청으로 받은 name을 사용, 없으면 Firebase의 display_name 사용
     name = user.name or user_record.display_name
     phone_number = user_record.phone_number 
     # provider는 User 모델에서 직접 가져오거나, firebase에서 가져오기
-    provider = user.provider or (user.firebase.get("sign_in_provider") if user.firebase else None)  
+    provider = user.provider
     
     print("user", uid, email, name, phone_number, provider)
     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
@@ -100,9 +75,12 @@ def signUp(user: User):
         print(user_id)
         
         linkAccount(uid, user_id, provider, email)
+        
+        return {"user_id": user_id}
                                                   
     except Exception as e:
         print(e)
+        raise
     finally:
         connection.close()
         
@@ -172,18 +150,29 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
     
     # email = user.get("email")
     uid = user.get("uid")
-    if not uid:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="UID not found in token"
-        )
-    
     # firebase 정보 안전하게 가져오기
     firebase_info = user.get("firebase") or {}
     provider = firebase_info.get("sign_in_provider") if firebase_info else None
     
-    user_record = auth.get_user(uid)
-    email2 = user_record.email
+    # provider가 "phone"이면 "email"로 치환
+    if provider == "phone":
+        provider = "email"
+    
+    # provider가 None인 경우 기본값 설정
+    if provider is None:
+        provider = "unknown"
+    
+    try:
+        user_record = auth.get_user(uid)
+        email2 = user_record.email
+    except Exception as e:
+        # Firebase에 사용자가 없거나 다른 에러 발생
+        error_msg = f"Firebase user not found or error: {str(e)}"
+        logger.error(error_msg)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=error_msg
+        )
 
 
     print("login_user firebase 인증 성공", email, email2, uid, provider)
@@ -193,10 +182,6 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
     
     if email.endswith("@privaterelay.appleid.com"):
         provider = "apple.priavate"
-    
-    # provider가 None인 경우 기본값 설정
-    if provider is None:
-        provider = "unknown"
 
     try:
         cursor.execute("SELECT * FROM user WHERE uid=%s;", (uid,))
@@ -231,12 +216,7 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
             print("미등록")
 
             # 아직 등록되지 않은 유저
-            # user 딕셔너리를 User 객체로 변환
-            user_obj = User(
-                uid=uid,
-                firebase=firebase_info
-            )
-            signUp(user_obj)
+            signUp(user)
 
             return {
                 "isRegistered": 0,
@@ -246,8 +226,7 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
 
     except Exception as e:
         print("login 오류", e)
-        error_traceback = traceback.format_exc()
-        logger.error(f"서버 오류 발생: {str(e)}\n{error_traceback}")
+        logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"login failed: {str(e)}"
@@ -255,42 +234,6 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
 
     finally:
         connection.close()
-        
-# @router.get("/login/{email}")
-# async def idRegisteredUser(email: str):
-#     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
-#     cursor = connection.cursor(pymysql.cursors.DictCursor)
-
-#     try:
-#         cursor.execute('''SELECT * FROM User WHERE email=%s ;''', (email,))
-#         user = cursor.fetchone()  # 한 행만 가져옴
-
-#         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
-#         if user:  # 사용자가 존재하는 경우
-#             print("user:", user)
-#             return {
-#                 'statusCode': 200,
-#                 'user_id': user['user_id'],
-#                 'name': user['name'],
-#                 'email': user['email'],
-#                 'phone_number': user['phone_number'],
-#             }
-#         else:
-#             return {
-#                 'statusCode': 200,
-#                 'isRegistered': 0  # 이메일이 존재하지 않으면 0
-#             }
-
-#     except Exception as e:
-#         print(e)
-#         result = {
-#             'statusCode': 500,
-#             'msg': "failed login " + str(e),
-#             'store_id': -1
-#         }
-#         return result
-#     finally:
-#         connection.close()
 
 
 @router.get("/isRegistered")
@@ -816,3 +759,4 @@ async def deleteUser(user_id: int, user=Depends(verify_firebase_token)):
     finally:
         cursor.close()
         connection.close()
+

@@ -59,7 +59,7 @@ def getGifticonList(user_id: int):
                 m.description
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.user_id = %s AND g.status != 'UNKNOWN'
+            WHERE g.receiver_id = %s AND g.status != 'UNKNOWN'
             ORDER BY g.id DESC
         ''', (user_id,))
                     
