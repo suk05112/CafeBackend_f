@@ -7,10 +7,9 @@ from pydantic import BaseModel
 from loguru import logger
 
 import pymysql
-import app.database as database
-from app.database import get_db_connection
+from db.session import get_db_connection
 from datetime import datetime, timedelta, date, timezone
-from app.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.gifticon import Gifticon, PaymentResult
 from models.store import StoreCreate

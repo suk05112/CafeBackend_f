@@ -24,21 +24,15 @@ from core.config import settings
 from db.session import get_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
-# 기존 routes (점진적으로 api/endpoints로 이동 예정)
-# from routes import user  # api/endpoints로 이동됨
-from routes import gifticon
-from routes import owner
-from routes import order
-# admin은 새로운 구조로 이동됨
-# from routes import admin
-
-# 새로운 구조 (api/endpoints)
-from api.endpoints import store, menu, settlement, common, admin, user
+# 모든 엔드포인트는 api/endpoints로 통합됨
+from api.endpoints import store, menu, settlement, common, admin, user, gifticon, owner, order
 
 #https://fastapi.tiangolo.com/ko/
 
-env = os.getenv("ENV", "dev")  # ENV=dev or ENV=prod
-prefix = "/dev" if env == "dev" else "/prod"
+env = os.getenv("ENV", "dev")  # ENV=dev, development, prod, production
+# 개발 환경: dev, development → /dev
+# 운영 환경: prod, production → /prod
+prefix = "/dev" if env in ["dev", "development"] else "/prod"
 
 print(env)
 # router = APIRouter(prefix=prefix)
@@ -69,10 +63,14 @@ def get_kst_now():
     """한국 시간(KST)을 반환하는 헬퍼 함수"""
     return datetime.now(KST)
 
-# log_group_name = f"cafe-backend-{env}"  # cafe-backend-dev 또는 cafe-backend-prod
-log_group_name = "cafe-backend-production" if env == "prod" else "cafe-backend-development"
-log_stream_name = f"api-requests-{env}-{get_kst_now().strftime('%Y%m%d')}"  # 날짜별 스트림 (환경별, 한국 시간 기준)
-log_stream_name = "api-requests-production" if env == "prod" else "api-requests-development"
+# CloudWatch 로그 그룹 및 스트림 설정 (환경별 구분)
+# ENV 값에 따라: dev, development → development, prod, production → production
+if env in ["dev", "development"]:
+    log_group_name = "cafe-backend-development"
+    log_stream_name = "api-requests-development"
+else:
+    log_group_name = "cafe-backend-production"
+    log_stream_name = "api-requests-production"
 
 cloudwatch_handler = watchtower.CloudWatchLogHandler(
     boto3_client=boto3_client,
@@ -97,8 +95,11 @@ formatter = KSTFormatter(
 cloudwatch_handler.setFormatter(formatter)
 cloudwatch_handler.setLevel(logging.INFO)
 
-# CloudWatch 핸들러를 logging logger에 추가
-logger_name = "cafe-backend-production" if env == "prod" else "cafe-backend-development"
+# CloudWatch 핸들러를 logging logger에 추가 (환경별 구분)
+if env in ["dev", "development"]:
+    logger_name = "cafe-backend-development"
+else:
+    logger_name = "cafe-backend-production"
 logger = logging.getLogger(logger_name)
 logger.addHandler(cloudwatch_handler)
 logger.setLevel(logging.INFO)
@@ -137,20 +138,19 @@ app.add_middleware(
     allow_headers=["*"],  # 모든 헤더 허용
 )
 
-# 새로운 구조 (리팩토링된 엔드포인트) - import는 위에서 이미 했음
-app.include_router(store.router, prefix=f'/store', tags=["Store"])
-app.include_router(menu.router, prefix=f'/menu', tags=["Menu"])
-app.include_router(settlement.router, prefix='/settlement', tags=["Settlement"])
-app.include_router(common.router, prefix='', tags=["Common"])
-app.include_router(admin.router, prefix='/admin', tags=["Admin"])
-app.include_router(user.router, prefix='/user', tags=["User"])
-
-# 기존 routes (점진적으로 리팩토링 예정)
-app.include_router(gifticon.router, prefix='/gifticon', tags=["Gifticon"])
-app.include_router(owner.router, prefix='/owner', tags=["Owner"])
-app.include_router(order.router, prefix='/order', tags=["Order"])
-# 기존 admin 라우트는 새로운 구조로 대체됨
-# app.include_router(admin.router, prefix='/admin', tags=["Admin"])
+# 모든 엔드포인트 (api/endpoints로 통합됨)
+# prefix를 사용하여 환경별 경로 구분: /dev 또는 /prod
+app.include_router(store.router, prefix=f'{prefix}/store', tags=["Store"])
+app.include_router(menu.router, prefix=f'{prefix}/menu', tags=["Menu"])
+app.include_router(settlement.router, prefix=f'{prefix}/settlement', tags=["Settlement"])
+# common.router는 prefix 있음과 없음 둘 다 등록 (하위 호환성)
+app.include_router(common.router, prefix=prefix, tags=["Common"])
+app.include_router(common.router, prefix='', tags=["Common"])  # prefix 없이도 접근 가능
+app.include_router(admin.router, prefix=f'{prefix}/admin', tags=["Admin"])
+app.include_router(user.router, prefix=f'{prefix}/user', tags=["User"])
+app.include_router(gifticon.router, prefix=f'{prefix}/gifticon', tags=["Gifticon"])
+app.include_router(owner.router, prefix=f'{prefix}/owner', tags=["Owner"])
+app.include_router(order.router, prefix=f'{prefix}/order', tags=["Order"])
     
 
 @app.middleware("http")
@@ -193,10 +193,10 @@ async def log_requests(request: Request, call_next):
         
         # 로깅할 데이터 구조화
         log_data = {
-            "environment": env,
+            "env": env,
+            "path": request.url.path,
             "method": request.method,
             "url": str(request.url),
-            "path": request.url.path,
             "query_params": str(request.query_params),
             "status_code": response.status_code,
             "process_time_seconds": round(process_time, 3),

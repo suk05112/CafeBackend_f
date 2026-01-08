@@ -9,10 +9,9 @@ import traceback
 import re
 
 import pymysql
-import app.database as database
 import boto3
 from botocore.client import Config
-from app.database import get_db_connection
+from db.session import get_db_connection
 
 from models.owner import Owner
 from models.owner import OwnerFind

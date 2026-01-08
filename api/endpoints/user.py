@@ -25,6 +25,7 @@ from models.user import User
 from models.user import Inquiry
 from models.user import InquiryResponse
 from models.push_token import PushTokenCreate, PushTokenUpdate
+from models.notice import NoticeResponse
 from app.fcm_service import send_fcm_notification_to_user
 
 router = APIRouter()
@@ -760,3 +761,45 @@ async def deleteUser(user_id: int, user=Depends(verify_firebase_token)):
         cursor.close()
         connection.close()
 
+
+@router.get("/notice")
+def get_user_notice():
+    """
+    유저 공지사항 전체 조회 API
+    notice_user 테이블에서 모든 공지사항을 읽어옵니다.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute('''
+            SELECT id, title, content, created_at, updated_at
+            FROM notice_user
+            ORDER BY created_at DESC
+        ''')
+        
+        notices = cursor.fetchall()
+        
+        # 날짜 형식 변환
+        for notice in notices:
+            if notice.get('created_at'):
+                notice['created_at'] = notice['created_at'].isoformat()
+            if notice.get('updated_at'):
+                notice['updated_at'] = notice['updated_at'].isoformat()
+        
+        return {
+            "notices": notices,
+            "total": len(notices)
+        }
+        
+    except Exception as e:
+        print(f"Error during get_user_notice: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during get_user_notice: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during get_user_notice: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
