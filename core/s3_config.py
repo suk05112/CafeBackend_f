@@ -18,5 +18,5 @@ S3_CLIENT = boto3.client(
     aws_access_key_id='***REMOVED***',
     aws_secret_access_key='***REMOVED***',
     region_name='ap-northeast-2',
-    config=Config(signature_version='s3v4')
+    config=Config(signature_version='s3v4', region_name='ap-northeast-2')
 )

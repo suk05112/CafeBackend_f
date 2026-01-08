@@ -8,10 +8,9 @@ from pydantic import BaseModel
 from loguru import logger
 
 import pymysql
-import app.database as database
-from app.database import get_db_connection
+from db.session import get_db_connection
 from datetime import datetime, timezone, timedelta
-from app.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.gifticon import Gifticon
 from models.store import StoreCreate
@@ -133,7 +132,7 @@ def getGifticon(gifticon_id: int):
             order_id_result = cursor.fetchone()
             order_id_value = order_id_result['order_id'] if order_id_result else None
 
-        cursor.execute('''SELECT store_lat, store_lng, store_name
+        cursor.execute('''SELECT store_lat, store_lng, store_name, store_address
         FROM store
         WHERE id=%s ;''', (gifticon['store_id'],))
         
@@ -178,7 +177,9 @@ def getGifticon(gifticon_id: int):
             "created_time" : gifticon['created_at'],
             "store_lat" : store_info["store_lat"],
             "store_lng" : store_info["store_lng"],
-            "store_name" : store_info["store_name"]
+            "store_name" : store_info["store_name"],
+            "store_address" : store_info["store_address"]
+
         }
     
         print("\ngifticon", gifticon_response)
@@ -370,7 +371,7 @@ def linkGifticonToUser(request: LinkGifticonRequest):
     try:
         # 1. 기프티콘 존재 여부 및 receiver_phone 확인
         cursor.execute('''
-            SELECT id, receiver_phone, user_id 
+            SELECT id, receiver_phone, user_id, receiver_id
             FROM gifticon 
             WHERE id = %s
         ''', (request.gifticon_id,))
@@ -391,17 +392,18 @@ def linkGifticonToUser(request: LinkGifticonRequest):
                 detail="Receiver phone number does not match"
             )
         
-        # 3. 이미 다른 user_id가 설정되어 있는지 확인 (선택사항)
-        if gifticon['user_id'] and gifticon['user_id'] != request.user_id:
+        # 3. 이미 다른 user_id가 설정되어 있는지 확인
+        # receiver_id가 None이 아니고, 요청한 user_id와 다를 때만 에러 발생
+        if gifticon['receiver_id'] and gifticon['receiver_id'] != request.user_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Gifticon is already linked to another user"
+                detail=f"Gifticon is already linked to another user. Current: {gifticon['receiver_id']}, Requested: {request.user_id}"
             )
         
         # 4. gifticon 테이블의 user_id 업데이트
         cursor.execute('''
             UPDATE gifticon 
-            SET user_id = %s 
+            SET receiver_id = %s 
             WHERE id = %s
         ''', (request.user_id, request.gifticon_id))
         
