@@ -15,7 +15,7 @@ from app.fcm_service import (
     send_fcm_notification_to_all_owners,
     send_fcm_notification_to_all
 )
-from app.database import get_db_connection
+from app.database import get_db_connection, close_db_connection
 from app.s3_config import S3_CLIENT, BUCKET_NAME
 import boto3
 from botocore.client import Config
@@ -54,10 +54,11 @@ def health_check():
     Health check 엔드포인트
     실패 시에만 AWS CloudWatch에 로깅합니다.
     """
+    connection = None
     try:
         # DB 연결 확인
         connection = get_db_connection()
-        connection.close()
+        connection.ping(reconnect=False)
         
         return {"status": "healthy", "message": "Service is running"}
     except Exception as e:
@@ -72,6 +73,9 @@ def health_check():
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=error_message
         )
+    finally:
+        if connection:
+            close_db_connection(connection)
 
 
 @router.get("/business-info")

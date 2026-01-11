@@ -77,7 +77,7 @@ services:
       # .env 파일을 컨테이너 내부에서도 접근 가능하도록 마운트
       - ./.env.dev:/app/.env.dev:ro
     working_dir: /app
-    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--env-file", ".env.dev", "--log-level", "debug"]
+    command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--env-file", ".env.dev", "--log-level", "debug" ]
     networks:
       - app-network
     restart: unless-stopped

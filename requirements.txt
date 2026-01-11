@@ -10,3 +10,6 @@ botocore
 loguru
 watchtower
 firebase-admin
+httpx
+PyJWT
+cryptography

@@ -87,6 +87,7 @@ def getOrderList(user_id: int):
       
     try:
         # orders 테이블과 store, gifticon, menu를 조인하여 주문 목록 조회
+        # status가 COMPLETED 또는 REFUNDED인 것만 조회
         query = """
             SELECT DISTINCT
                 o.id AS order_id,
@@ -105,6 +106,7 @@ def getOrderList(user_id: int):
             LEFT JOIN gifticon g ON og.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
             WHERE o.user_id = %s
+            AND o.status IN ('COMPLETED', 'REFUNDED')
             ORDER BY o.created_at DESC
         """
         
