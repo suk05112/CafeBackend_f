@@ -11,7 +11,10 @@ RUN apt-get update && \
 
 # requirements.txt 복사 및 의존성 설치
 COPY requirements.txt .
-RUN pip3 install --no-cache-dir -r requirements.txt
+RUN pip3 install --no-cache-dir -r requirements.txt && \
+    find /usr/local/lib/python3.11 -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true && \
+    find /usr/local/lib/python3.11 -name "*.pyc" -delete 2>/dev/null || true && \
+    pip3 cache purge 2>/dev/null || true
 
 # 애플리케이션 코드 복사 (모든 파일)
 COPY . .

@@ -76,7 +76,7 @@ cloudwatch_handler = watchtower.CloudWatchLogHandler(
     boto3_client=boto3_client,
     log_group_name=log_group_name,
     log_stream_name=log_stream_name,
-    use_queues=False
+    use_queues=True  # 비동기 큐 사용으로 성능 향상
 )
 
 # 로깅 포맷 설정 (한국 시간대 포함)
@@ -121,7 +121,9 @@ async def lifespan(app: FastAPI):
     yield  # 서버가 실행 중일 때
 
     # 서버 종료 시 DB 연결 해제
-    connection.close()
+    from db.session import close_db_connection
+    if connection:
+        close_db_connection(connection)
     print("DB 연결 종료")
 
 # FastAPI 앱 생성
@@ -158,66 +160,94 @@ async def log_requests(request: Request, call_next):
     start_time = get_kst_now()
     is_get_request = request.method == "GET"
     
-    # 요청 정보 수집 (GET 요청은 request_body 없음)
+    # 헬스체크는 실패 시에만 로깅, login은 성공/실패 상관없이 항상 로깅
+    is_health_check = (
+        request.url.path in ["/health", "/dev/health", "/prod/health"] 
+        or request.url.path.endswith("/health")
+    )
+    is_login_endpoint = (
+        "/login" in request.url.path 
+        or request.url.path.endswith("/login")
+    )
+    
+    is_isRegistered_endpoint = (
+        "/isRegistered" in request.url.path 
+        or request.url.path.endswith("/isRegistered")
+    )
+    
+    # 요청 본문 읽기 (POST/PUT/PATCH만, 최대 10KB로 제한)
     request_body = None
     if not is_get_request and request.method in ["POST", "PUT", "PATCH"]:
-        body = await request.body()
-        request_body = body.decode('utf-8') if body else None
+        try:
+            body = await request.body()
+            if body:
+                request_body = body.decode('utf-8', errors='ignore')[:10000]
+        except:
+            request_body = None
     
     # 요청 처리
     response = await call_next(request)
     
-    # 응답 본문 읽기
-    response_body = [chunk async for chunk in response.body_iterator]
-    response.body_iterator = iterate_in_threadpool(iter(response_body))
-    
-    response_body_str = None
-    if response_body:
-        try:
-            response_body_str = response_body[0].decode('utf-8')
-        except:
-            response_body_str = "Unable to decode response body"
-    else:
-        response_body_str = "Empty response body"
-    
     # 처리 시간 계산
     process_time = (get_kst_now() - start_time).total_seconds()
     
-    # GET 요청은 오류(status_code >= 400)인 경우에만 로깅
-    # GET이 아닌 요청은 모두 로깅
-    # should_log = not is_get_request or response.status_code >= 400
-    should_log = True
+    # 로깅 판단
+    # 헬스체크: 실패 시에만 로깅
+    # login: 성공/실패 상관없이 항상 로깅
+    # 그 외 GET: 오류 시에만 로깅
+    # 그 외: 모두 로깅
+    if is_health_check:
+        should_log = response.status_code >= 400
+    elif is_login_endpoint or is_isRegistered_endpoint:
+        should_log = True  # login은 항상 로깅
+    elif is_get_request:
+        should_log = response.status_code >= 400
+    else:
+        should_log = True
+    
+    # 응답 본문 읽기 (로깅이 필요한 경우 모두, 최대 1000자로 제한)
+    response_body_str = None
+    if should_log:
+        try:
+            response_body = [chunk async for chunk in response.body_iterator]
+            response.body_iterator = iterate_in_threadpool(iter(response_body))
+            if response_body:
+                response_body_str = response_body[0].decode('utf-8', errors='ignore')[:1000]
+        except:
+            response_body_str = None
+    
     if should_log:
         # User-Agent 헤더 가져오기
         user_agent = request.headers.get("user-agent", None)
         
-        # 로깅할 데이터 구조화
+        # 로깅할 데이터 구조화 (실패 여부와 상관없이 모든 필수 정보 포함)
         log_data = {
             "env": env,
             "path": request.url.path,
             "method": request.method,
-            "url": str(request.url),
-            "query_params": str(request.query_params),
             "status_code": response.status_code,
             "process_time_seconds": round(process_time, 3),
             "timestamp": get_kst_now().isoformat(),
+            "url": str(request.url),
+            "query_params": str(request.query_params),
             "request_body": request_body,
-            "response_body": response_body_str[:1000] if response_body_str else None,  # 응답 본문은 최대 1000자만
+            "response_body": response_body_str,  # 최대 1000자로 제한됨
             "client_host": request.client.host if request.client else None,
             "user_agent": user_agent,
         }
         
-        # CloudWatch에 JSON 형태로 로깅 (한국 시간 포함)
+        # CloudWatch에 JSON 형태로 로깅
         current_time = get_kst_now().strftime('%Y-%m-%d %H:%M:%S')
-        log_message = json.dumps(log_data, ensure_ascii=False, indent=2)
+        log_message = json.dumps(log_data, ensure_ascii=False)
         
         if response.status_code >= 400:
             logger.error(log_message)
         else:
             logger.info(log_message)
         
-        # 콘솔에도 출력 (개발 편의성, 한국 시간 포함)
-        print(f"[{current_time} KST] [{env}] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
+        # 느린 요청(1초 이상) 또는 에러만 콘솔 출력 (성능 최적화)
+        if process_time > 1.0 or response.status_code >= 400:
+            print(f"[{current_time} KST] [{env}] {request.method} {request.url.path} - {response.status_code} ({process_time:.3f}s)")
 
     return response
 

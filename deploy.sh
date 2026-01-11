@@ -120,6 +120,12 @@ HEALTHY=false
 while [ $WAITED -lt $MAX_WAIT ]; do
     HEALTH_STATUS=$(sudo docker inspect --format='{{.State.Health.Status}}' "$NEW_ENV" 2>/dev/null || echo "none")
     
+    # health 엔드포인트 테스트 (prefix 포함)
+    if curl -f http://127.0.0.1:${NEW_PORT}/prod/health > /dev/null 2>&1; then
+        HEALTHY=true
+        break
+    fi
+    # prefix 없이도 테스트 (하위 호환성)
     if curl -f http://127.0.0.1:${NEW_PORT}/health > /dev/null 2>&1; then
         HEALTHY=true
         break
@@ -154,7 +160,9 @@ echo -e "${GREEN}✅ Health check 통과!${NC}"
 echo -e "${YELLOW}[3/5] Nginx 설정 확인 및 reload 중...${NC}"
 
 # Nginx 설정 파일 변경 감지 (선택사항)
-NGINX_CONFIG="/etc/nginx/sites-available/default"
+# NGINX_CONFIG="/etc/nginx/sites-available/default"
+# NGINX_CONFIG="/etc/nginx/sites-available/default"
+NGINX_CONFIG="/etc/nginx/sites-available/502company"
 NGINX_CONFIG_BACKUP="/tmp/nginx_config_backup_$(date +%Y%m%d_%H%M%S)"
 
 # Nginx 설정 테스트
@@ -208,7 +216,7 @@ fi
 
 # 4. 트래픽 전환 대기
 echo -e "${YELLOW}[4/5] 트래픽 전환 대기 중 (30초)...${NC}"
-sleep 30
+sleep 10
 
 # 5. 기존 환경 중지
 echo -e "${YELLOW}[5/5] 기존 ${CURRENT_ENV} 환경 중지 중...${NC}"

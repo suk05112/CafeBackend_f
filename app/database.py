@@ -1,17 +1,5 @@
-import pymysql
-from app.settings import settings
+# app/database.py는 db/session.py의 연결 풀을 사용하도록 리다이렉트
+from db.session import get_db_connection, close_db_connection
 
-def get_db_connection():
-    return pymysql.connect(
-    # return await aiomysql.create_pool(
-        host=settings.db_host,
-        user=settings.db_user,
-        passwd=settings.db_password,
-        db=settings.db_name,
-        port=settings.db_port,
-        cursorclass=pymysql.cursors.DictCursor,
-        connect_timeout=180,   # 기본 10초
-        autocommit=True
-        # minsize=1,
-        # maxsize=10
-    )
+# 하위 호환성을 위해 close_db_connection도 export
+__all__ = ['get_db_connection', 'close_db_connection']

@@ -13,77 +13,383 @@ from typing import Union
 from pydantic import BaseModel
 
 import pymysql
+import pymysql.err
 import app.database as databas
 import boto3
 from botocore.client import Config
 from app.database import get_db_connection
+from db.session import close_db_connection
 
 import logging
+import httpx
+import os
+import time
+import json
+import jwt
+
 logger = logging.getLogger("cafe_backend")
 
 from models.user import User
 from models.user import Inquiry
 from models.user import InquiryResponse
+from models.user import FindAccountRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from models.notice import NoticeResponse
 from app.fcm_service import send_fcm_notification_to_user
+from core.config import settings
 
 router = APIRouter()
 
+
+def generate_apple_client_secret():
+    """
+    Apple Client Secret 생성 (JWT 형식)
+    .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 사용하여 JWT 토큰 생성
+    
+    Apple Developer에서 필요한 정보:
+    - Team ID
+    - Key ID
+    - Client ID (Service ID)
+    - Private Key (-----BEGIN PRIVATE KEY----- 부터 -----END PRIVATE KEY----- 까지)
+    """
+    try:
+        if not settings.apple_client_id or not settings.apple_team_id or not settings.apple_key_id:
+            error_msg = "Apple 설정이 없습니다. Apple revoke를 수행할 수 없습니다."
+            logger.error(f"Apple Client Secret 생성 실패: {error_msg}")
+            return None
+        
+        # .env 파일에서 여러 줄로 나눠진 Private Key 합치기
+        private_key = settings.get_apple_private_key()
+        
+        if not private_key or not private_key.strip():
+            error_msg = "Apple Private Key가 설정되지 않았습니다. APPLE_PRIVATE_KEY_LINE1~6을 확인하세요."
+            logger.error(f"Apple Client Secret 생성 실패: {error_msg}")
+            return None
+        
+        # Private Key 형식 검증 (BEGIN과 END가 있는지 확인)
+        if "-----BEGIN PRIVATE KEY-----" not in private_key or "-----END PRIVATE KEY-----" not in private_key:
+            error_msg = "Apple Private Key 형식이 올바르지 않습니다. -----BEGIN PRIVATE KEY----- 와 -----END PRIVATE KEY----- 가 포함되어야 합니다."
+            logger.error(f"Apple Client Secret 생성 실패: {error_msg}")
+            return None
+        
+        headers = {
+            "alg": "ES256",
+            "kid": settings.apple_key_id
+        }
+        
+        payload = {
+            "iss": settings.apple_team_id,  # Team ID
+            "iat": int(time.time()),
+            "exp": int(time.time()) + 3600,  # 1시간 유효
+            "aud": "https://appleid.apple.com",
+            "sub": settings.apple_client_id  # Client ID (Service ID)
+        }
+        
+        # ES256 알고리즘으로 JWT 서명 (cryptography 패키지 필요)
+        # Private Key는 \n을 포함한 원본 형식 그대로 사용
+        client_secret = jwt.encode(
+            payload,
+            private_key,
+            algorithm="ES256",
+            headers=headers
+        )
+        
+        return client_secret
+    except Exception as e:
+        error_msg = f"Apple Client Secret 생성 중 예외 발생: {type(e).__name__}: {str(e)}"
+        logger.error(f"Apple Client Secret 생성 실패: {error_msg}")
+        traceback.print_exc()
+        return None
+
+
+async def get_apple_refresh_token(authorization_code: str):
+    """
+    Apple authorization code를 사용하여 refresh_token과 access_token 획득
+    
+    Args:
+        authorization_code: Apple에서 받은 authorization code
+    
+    Returns:
+        dict: {"refresh_token": str, "access_token": str, "id_token": str} 또는 None
+    """
+    try:
+        if not authorization_code:
+            error_msg = "Apple authorization_code가 제공되지 않았습니다."
+            logger.error(f"Apple token 획득 실패: {error_msg}")
+            return None
+        
+        if not settings.apple_client_id:
+            error_msg = f"Apple Client ID가 설정되지 않았습니다. (apple_client_id: {settings.apple_client_id})"
+            logger.error(f"Apple token 획득 실패: {error_msg}")
+            return None
+        
+        client_secret = generate_apple_client_secret()
+        if not client_secret:
+            error_msg = "Apple Client Secret 생성 실패 (Private Key 파일 확인 필요)"
+            logger.error(f"Apple token 획득 실패: {error_msg}")
+            return None
+        
+        # Apple token API 엔드포인트
+        token_url = "https://appleid.apple.com/auth/token"
+        
+        # 요청 파라미터 구성 (redirect_uri는 Mobile 앱의 경우 선택적)
+        data = {
+            "client_id": settings.apple_client_id,
+            "client_secret": client_secret,
+            "code": authorization_code,
+            "grant_type": "authorization_code"
+        }
+        
+        # redirect_uri가 설정되어 있으면 추가 (Web 앱의 경우 필요, Mobile 앱은 선택적)
+        if settings.apple_redirect_uri:
+            data["redirect_uri"] = settings.apple_redirect_uri
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                token_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            
+            if response.status_code == 200:
+                token_data = response.json()
+                refresh_token = token_data.get("refresh_token")
+                access_token = token_data.get("access_token")
+                
+                if refresh_token:
+                    logger.info(f"Apple token 획득 성공: refresh_token 있음")
+                    return {
+                        "refresh_token": refresh_token,
+                        "access_token": access_token,
+                        "id_token": token_data.get("id_token")
+                    }
+                elif access_token:
+                    # refresh_token이 없지만 access_token이 있는 경우
+                    # 이는 이미 로그인한 사용자의 경우일 수 있음
+                    # 하지만 revoke를 위해서는 refresh_token이 필요하므로 실패로 처리
+                    error_msg = f"Apple token API 응답 성공(200)했지만 refresh_token이 없고 access_token만 있습니다. 이는 이미 로그인한 사용자의 재로그인인 경우일 수 있습니다. 탈퇴를 위해서는 첫 로그인 시 받은 refresh_token이 필요합니다. token_data: {json.dumps({k: v for k, v in token_data.items() if k != 'access_token'}, ensure_ascii=False)}"
+                    logger.error(f"Apple token 획득 실패: {error_msg}")
+                    print(f"Apple token 획득: refresh_token 없음 (access_token만 있음)")
+                    return None
+                else:
+                    # token_data에 refresh_token도 access_token도 없는 경우
+                    error_msg = f"Apple token API 응답 성공(200)했지만 refresh_token과 access_token이 모두 없습니다. token_data: {json.dumps(token_data, ensure_ascii=False)}"
+                    logger.error(f"Apple token 획득 실패: {error_msg}")
+                    print(f"Apple token 획득: refresh_token과 access_token 모두 없음, token_data: {token_data}")
+                    return None
+            else:
+                error_text = response.text
+                try:
+                    error_json = response.json()
+                    error_detail = json.dumps(error_json, ensure_ascii=False)
+                except:
+                    error_detail = error_text
+                
+                error_msg = f"Apple token API 호출 실패 - status_code: {response.status_code}, response: {error_detail}, client_id: {settings.apple_client_id}, authorization_code: {authorization_code[:20]}..."
+                logger.error(f"Apple token 획득 실패: {error_msg}")
+                print(f"Apple token 획득 실패: {response.status_code} - {error_detail}")
+                return None
+                
+    except httpx.TimeoutException as e:
+        error_msg = f"Apple token API 호출 타임아웃: {str(e)}"
+        logger.error(f"Apple token 획득 실패: {error_msg}")
+        traceback.print_exc()
+        return None
+    except Exception as e:
+        error_msg = f"Apple token 획득 중 예외 발생: {type(e).__name__}: {str(e)}"
+        logger.error(f"Apple token 획득 실패: {error_msg}")
+        traceback.print_exc()
+        return None
+
+
+async def revoke_apple_token(refresh_token: str):
+    """
+    Apple 토큰 철회 (revoke) 함수
+    refresh_token을 사용하여 Apple revoke API 호출
+    
+    Args:
+        refresh_token: Apple refresh_token (필수)
+    
+    Returns:
+        bool: revoke 성공 여부
+    """
+    try:
+        if not refresh_token:
+            error_msg = "Apple refresh_token이 제공되지 않았습니다."
+            logger.error(f"Apple revoke 실패: {error_msg}")
+            return False
+        
+        if not settings.apple_client_id:
+            error_msg = f"Apple Client ID가 설정되지 않았습니다. (apple_client_id: {settings.apple_client_id})"
+            logger.error(f"Apple revoke 실패: {error_msg}")
+            return False
+        
+        client_secret = generate_apple_client_secret()
+        if not client_secret:
+            error_msg = "Apple Client Secret 생성 실패 (Private Key 파일 확인 필요)"
+            logger.error(f"Apple revoke 실패: {error_msg}")
+            return False
+        
+        # Apple revoke API 엔드포인트
+        revoke_url = "https://appleid.apple.com/auth/revoke"
+        
+        # 요청 파라미터 구성 (Apple revoke API는 refresh_token이 필수)
+        data = {
+            "client_id": settings.apple_client_id,
+            "client_secret": client_secret,
+            "token": refresh_token,
+            "token_type_hint": "refresh_token"
+        }
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            response = await client.post(
+                revoke_url,
+                data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"}
+            )
+            
+            if response.status_code == 200:
+                logger.info("Apple 토큰 revoke 성공")
+                return True
+            else:
+                error_text = response.text
+                error_msg = f"Apple revoke API 호출 실패 - status_code: {response.status_code}, response: {error_text}, client_id: {settings.apple_client_id}, refresh_token: {refresh_token[:20]}..."
+                logger.error(f"Apple revoke 실패: {error_msg}")
+                print(f"Apple revoke 실패: {response.status_code} - {error_text}")
+                return False
+                
+    except httpx.TimeoutException as e:
+        error_msg = f"Apple revoke API 호출 타임아웃: {type(e).__name__}: {str(e)}, refresh_token: {refresh_token[:20]}..."
+        logger.error(f"Apple revoke 실패: {error_msg}")
+        traceback.print_exc()
+        return False
+    except Exception as e:
+        error_msg = f"Apple revoke 중 예외 발생: {type(e).__name__}: {str(e)}, refresh_token: {refresh_token[:20]}..."
+        logger.error(f"Apple revoke 실패: {error_msg}")
+        traceback.print_exc()
+        return False
+
 @router.post("/register")
 def signUp(user: User):
+    """
+    회원가입/링크 로직:
+    - provider가 email이면 user 테이블의 fb_email 컬럼에 request의 email 저장
+    - 그 외면 user 테이블의 email 컬럼에 request의 email 저장
+    - user 테이블에 존재하는 phone이 있으면 user_provider 추가, 없으면 신규가입
+    """
     
     uid = user.uid
+    email = user.email  # request에서 받은 email
+    provider = user.provider  # request에서 받은 provider
+    phone_number = user.phone_number  # request에서 받은 phone
+    
+    if not email or not provider or not phone_number:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="email, provider, and phone_number are required"
+        )
 
     user_record = auth.get_user(uid)
-    print("user_record\n\n")
-    print(user_record)
-    
-    # user_record의 모든 속성 출력
-    print("\n=== user_record 모든 속성 ===")
-    for attr in dir(user_record):
-        if not attr.startswith('_'):
-            try:
-                value = getattr(user_record, attr)
-                if not callable(value):
-                    print(f"{attr}: {value}")
-            except Exception as e:
-                print(f"{attr}: (에러: {e})")
-
-    email = user_record.email
     # 요청으로 받은 name을 사용, 없으면 Firebase의 display_name 사용
     name = user.name or user_record.display_name
-    phone_number = user_record.phone_number 
-    # provider는 User 모델에서 직접 가져오거나, firebase에서 가져오기
-    provider = user.provider
     
-    print("user", uid, email, name, phone_number, provider)
+    print("signUp request:", uid, email, name, phone_number, provider)
     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
-    cursor = connection.cursor()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        query = """
+        # 1. user 테이블에서 phone으로 기존 사용자 확인
+        cursor.execute("SELECT * FROM user WHERE phone = %s LIMIT 1", (phone_number,))
+        existing_user = cursor.fetchone()
+        
+        if existing_user:
+            # 기존 사용자가 있는 경우 (등록된 경우) - user_provider 추가
+            user_id = existing_user["id"]
+            existing_email = existing_user.get("email") or ""
+            existing_fb_email = existing_user.get("fb_email") or ""
+            existing_uid = existing_user.get("uid") or ""
+            
+            print(f"기존 사용자 발견: user_id={user_id}, email={existing_email}, fb_email={existing_fb_email}, uid={existing_uid}")
+            
+            # user_provider 추가 로직
+            is_sns_provider = provider != "email" and not provider.startswith("email")
+            
+            update_fields = []
+            update_values = []
+            
+            # user 테이블 email이 비어있고 provider = sns 로그인이면 email 컬럼에 값 추가
+            if not existing_email and is_sns_provider:
+                update_fields.append("email = %s")
+                update_values.append(email)
+                print(f"user 테이블 email 업데이트 (SNS 로그인): {email}")
+            
+            # user 테이블 email이 있고 provider = sns 로그인이면 provider만 추가 (user_provider 테이블에만)
+            # user 테이블 fb_email이 비어있고 provider = email 로그인이면 fb_email 컬럼에 값 추가
+            if provider == "email" and not existing_fb_email:
+                update_fields.append("fb_email = %s")
+                update_values.append(email)
+                print(f"user 테이블 fb_email 업데이트 (email 로그인): {email}")
+            
+            # uid가 없으면 업데이트
+            if not existing_uid:
+                update_fields.append("uid = %s")
+                update_values.append(uid)
+                print(f"user 테이블 uid 업데이트: {uid}")
+            
+            # user 테이블 업데이트
+            if update_fields:
+                update_values.append(user_id)
+                update_query = f"UPDATE user SET {', '.join(update_fields)} WHERE id = %s"
+                cursor.execute(update_query, tuple(update_values))
+                connection.commit()
+            
+            # user_provider 추가
+            linkAccount(uid, user_id, provider, email)
+            
+            return {"user_id": user_id, "message": "user_provider added to existing user"}
+        else:
+            # 신규 가입
+            print("신규 가입 진행")
+            
+            # provider가 email이면 user 테이블의 fb_email 컬럼에 request의 email 저장
+            # 그 외면 user 테이블의 email 컬럼에 request의 email 저장
+            if provider == "email":
+                insert_query = """
+                    INSERT INTO user (
+                        name, fb_email, phone, uid
+                    ) VALUES (%s, %s, %s, %s);
+                """
+                cursor.execute(insert_query, (name, email, phone_number, uid))
+                print(f"신규 사용자 생성 (email 로그인): fb_email={email}")
+            else:
+                insert_query = """
             INSERT INTO user (
                 name, email, phone, uid
             ) VALUES (%s, %s, %s, %s);
         """
-        # cursor.execute(query, ("name", "email", "phone_number"))
+                cursor.execute(insert_query, (name, email, phone_number, uid))
+                print(f"신규 사용자 생성 (SNS 로그인): email={email}")
 
-        cursor.execute(query, (name, email, phone_number, uid))
         connection.commit()
-
         user_id = cursor.lastrowid
-        print(user_id)
+        print(f"신규 사용자 생성 완료: user_id={user_id}, provider={provider}")
         
+        # user_provider 추가
         linkAccount(uid, user_id, provider, email)
         
-        return {"user_id": user_id}
+        return {"user_id": user_id, "message": "new user registered"}
                                                   
     except Exception as e:
-        print(e)
-        raise
+        print(f"signUp 오류: {e}")
+        traceback.print_exc()
+        connection.rollback()
+        logger.error(f"signUp 오류: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"signUp failed: {str(e)}"
+        )
     finally:
-        connection.close()
+        close_db_connection(connection)
         
 def linkAccount(uid, user_id, provider, email):
     print("linkAccount")
@@ -106,38 +412,72 @@ def linkAccount(uid, user_id, provider, email):
         print(user_id)
         
         # 중복 체크: 이미 같은 user_id, email, provider 조합이 존재하는지 확인
+        # Apple private relay 이메일의 경우 apple.com과 apple.priavate를 동일한 것으로 취급
         check_query = """
             SELECT * FROM user_provider 
-            WHERE user_id = %s AND email = %s AND provider = %s;
+            WHERE user_id = %s AND email = %s AND provider = %s
+            FOR UPDATE;
         """
         cursor.execute(check_query, (user_id, email, provider))
         existing = cursor.fetchone()
         
+        # Apple private relay 이메일의 경우 apple.com과 apple.priavate를 동일한 것으로 취급
+        if not existing and email.endswith("@privaterelay.appleid.com"):
+            if provider == "apple.priavate":
+                # apple.priavate로 저장하려는데 apple.com이 이미 있는지 확인
+                cursor.execute(check_query, (user_id, email, "apple.com"))
+                existing = cursor.fetchone()
+            elif provider == "apple.com":
+                # apple.com으로 저장하려는데 apple.priavate가 이미 있는지 확인
+                cursor.execute(check_query, (user_id, email, "apple.priavate"))
+                existing = cursor.fetchone()
+        
         if existing:
             print(f"이미 등록된 user_provider: user_id={user_id}, email={email}, provider={provider}")
+            connection.rollback()
             return
         
+        # INSERT IGNORE를 사용하여 중복 시 무시 (추가 안전장치)
         query = """
-            INSERT INTO user_provider (
+            INSERT IGNORE INTO user_provider (
                 user_id, email, provider
             ) VALUES (%s, %s, %s);
         """
 
         cursor.execute(query, (user_id, email, provider))
+        
+        # 영향받은 행이 0이면 이미 존재 (INSERT IGNORE가 작동한 경우)
+        if cursor.rowcount == 0:
+            print(f"이미 존재하는 user_provider (INSERT IGNORE): user_id={user_id}, email={email}, provider={provider}")
+            connection.rollback()
+            return
+        
         connection.commit()
                                                   
+    except pymysql.err.IntegrityError as e:
+        # 고유 제약 조건 위반 시 (중복 키 에러)
+        error_code, error_msg = e.args
+        print(f"중복된 user_provider (IntegrityError): user_id={user_id}, email={email}, provider={provider}, error={error_msg}")
+        connection.rollback()
+        return  # 중복이므로 정상 종료
     except Exception as e:
         print(e)
+        connection.rollback()
         raise
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/login/{email}")
-async def login_user(email: str, user=Depends(verify_firebase_token)):
+async def login_user(
+    email: str, 
+    provider: str = Query(..., description="로그인 provider (예: email, oidc.kakao, oidc.apple 등)"),
+    user=Depends(verify_firebase_token)
+):
     """
     Firebase 토큰 기반 로그인.
-    클라이언트는 email을 보내지 않음.
-    서버가 직접 Firebase 토큰에서 email, uid 읽음.
+    클라이언트는 email과 provider를 전달해야 합니다.
+    서버가 Firebase 토큰에서 uid를 읽어 DB 조회에 활용합니다.
+    provider는 DB 쿼리에 직접 사용됩니다.
     """
 
     print(user)
@@ -149,19 +489,16 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
             detail="Authentication required"
         )
     
-    # email = user.get("email")
     uid = user.get("uid")
-    # firebase 정보 안전하게 가져오기
-    firebase_info = user.get("firebase") or {}
-    provider = firebase_info.get("sign_in_provider") if firebase_info else None
     
-    # provider가 "phone"이면 "email"로 치환
-    if provider == "phone":
-        provider = "email"
+    # provider 유효성 검사
+    if not provider or provider.strip() == "":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="provider is required"
+        )
     
-    # provider가 None인 경우 기본값 설정
-    if provider is None:
-        provider = "unknown"
+    provider = provider.strip()
     
     try:
         user_record = auth.get_user(uid)
@@ -175,32 +512,53 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
             detail=error_msg
         )
 
-
     print("login_user firebase 인증 성공", email, email2, uid, provider)
     
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
+    # Apple private relay 이메일 처리 (provider 변환은 조회 전에만 수행)
+    original_provider = provider
     if email.endswith("@privaterelay.appleid.com"):
         provider = "apple.priavate"
 
     try:
-        cursor.execute("SELECT * FROM user WHERE uid=%s;", (uid,))
-        db_user = cursor.fetchone()
-   
-        cursor.execute("SELECT * FROM user_provider WHERE email=%s AND provider=%s;", (email, provider))
-        islinked = cursor.fetchone()
+        # provider를 활용한 DB 쿼리 (N+1 쿼리 문제 해결)
+        # 변환된 provider로 user_provider 테이블 조회
+        cursor.execute("""
+            SELECT u.*, 
+                   u.fb_email,
+                   CASE WHEN up.id IS NOT NULL THEN 1 ELSE 0 END as islinked
+            FROM user u
+            LEFT JOIN user_provider up ON u.id = up.user_id 
+                AND up.email = %s 
+                AND up.provider = %s
+            WHERE u.uid = %s
+            LIMIT 1;
+        """, (email, provider, uid))
+        
+        result = cursor.fetchone()
         
         if email == "apple":
              islinked = True
+        elif result:
+            islinked = result.get("islinked", 0) == 1
+        else:
+            islinked = None
         
-        if db_user:
-            user_id = db_user["id"]
+        if result:
+            user_id = result["id"]
+            
+            # provider가 email이면 fb_email을 반환, 그 외면 email 반환
+            if provider == "email":
+                user_email = result.get("fb_email") or result.get("email") or None
+            else:
+                user_email = result.get("email") or None
 
             print("이미 등록 islinked", islinked)
             # 이미 등록된 유저
             
-            if islinked is None:
+            if not islinked:
                 print("islinked false")
                 linkAccount(uid, user_id, provider, email)
             else:
@@ -208,16 +566,26 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
 
             return {
                 "isRegistered": 1,
-                "user_id": db_user["id"],
-                "name": db_user["name"],
-                "email": db_user["email"],
-                "phone_number": db_user["phone"],
+                "user_id": result["id"],
+                "name": result["name"],
+                "email": user_email,
+                "phone_number": result["phone"],
             }
         else:
             print("미등록")
 
             # 아직 등록되지 않은 유저
-            signUp(user)
+            # Firebase에서 phone_number 가져오기
+            phone_number = user_record.phone_number if hasattr(user_record, 'phone_number') and user_record.phone_number else None
+            
+            # 받은 provider를 사용하여 User 객체 생성
+            signup_user = User(
+                uid=uid,
+                provider=provider,
+                email=email,
+                phone_number=phone_number  # Firebase에서 가져온 phone_number 사용
+            )
+            signUp(signup_user)
 
             return {
                 "isRegistered": 0,
@@ -228,33 +596,93 @@ async def login_user(email: str, user=Depends(verify_firebase_token)):
     except Exception as e:
         print("login 오류", e)
         logger.error(f"서버 오류 발생: {str(e)}")
+        connection.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"login failed: {str(e)}"
         )
 
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/isRegistered")
 async def idRegisteredUser(
-    email: str = Query(...),
     provider: str = Query(...),
+    email: str = Query(None, description="SNS 가입 유저 확인용 (email, provider로 조회)"),
+    phone: str = Query(None, description="Email 가입 유저 확인용 (phone, provider로 조회)"),
     firebase = Depends(verify_firebase_token)
 ):
+    """
+    등록 여부 검사
+    - provider는 필수
+    - email이 제공되면: email + provider로 조회 (SNS 가입 유저 확인)
+    - phone이 제공되면: phone + provider로 조회 (email 가입 유저 확인)
+    - email과 phone 모두 제공되면 둘 다 확인 (OR 조건)
+    - phone만 제공되어도 조회 가능
+    """
     connection = get_db_connection()  # 환경에 맞는 DB 연결                     
-    cursor = connection.cursor()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM user_provider WHERE email=%s AND provider=%s ;''', (email, provider))
+        # email과 phone이 모두 없는 경우 에러
+        if not email and not phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="email or phone is required"
+            )
+        
+        # Apple private relay 이메일 처리
+        if email and email.endswith("@privaterelay.appleid.com"):
+            provider = "apple.priavate"
+        
+        result = None
+        
+        # SNS 가입 유저 확인: email + provider로 조회
+        if email:
+            cursor.execute("""
+                SELECT up.* 
+                FROM user_provider up
+                WHERE up.email = %s AND up.provider = %s
+                LIMIT 1;
+            """, (email, provider))
+            result = cursor.fetchone()
+            if result:
+                print(f"SNS 가입 유저 확인됨: email={email}, provider={provider}")
+                return {'isRegistered': True}
+        
+        # Email 가입 유저 확인: phone + provider로 조회
+        # phone만 있어도 조회 가능
+        if phone:
+            cursor.execute("""
+                SELECT up.* 
+                FROM user_provider up
+                INNER JOIN user u ON up.user_id = u.id
+                WHERE u.phone = %s AND up.provider = %s
+                LIMIT 1;
+            """, (phone, provider))
+            result = cursor.fetchone()
+            if result:
+                print(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
+                logger.info(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
+                return {'isRegistered': True}
+            else:
+                # 디버깅을 위해 phone으로 user가 있는지 확인
+                cursor.execute("SELECT id, phone FROM user WHERE phone = %s LIMIT 1", (phone,))
+                user_check = cursor.fetchone()
+                if user_check:
+                    # user는 있는데 해당 provider가 없는 경우 - 디버깅 로그
+                    cursor.execute("SELECT provider FROM user_provider WHERE user_id = %s", (user_check['id'],))
+                    existing_providers = cursor.fetchall()
+                    provider_list = [p['provider'] for p in existing_providers] if existing_providers else []
+                    print(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
+                    logger.info(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
+        
+        # 결과 확인 (일치하는 값이 없으면 등록 안됨)
+        return {'isRegistered': False}
 
-        # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
-        if cursor.fetchone():
-            return {'isRegistered': True}
-        else:
-            return {'isRegistered': False}
-
+    except HTTPException:
+        raise
     except Exception as e:
         print("isRegistered 오류", e)
         logger.error(f"서버 오류 발생: {str(e)}")
@@ -263,7 +691,7 @@ async def idRegisteredUser(
             detail=f"failed check registration: {str(e)}"
         )
     finally:
-        cursor.close()
+        close_db_connection(connection)
         
 @router.get("/isRegistered/phone")
 async def idRegisteredUserByPhone(
@@ -697,20 +1125,31 @@ async def updatePushTokenAgreement(
         connection.close()
 
 @router.delete("/{user_id}")
-async def deleteUser(user_id: int, user=Depends(verify_firebase_token)):
+async def deleteUser(
+    user_id: int, 
+    authorization_code: Optional[str] = Query(None, description="Apple authorization_code (Apple 유저인 경우 탈퇴 직전에 발급받은 code 필수)"),
+    user=Depends(verify_firebase_token)
+):
     """
     회원 탈퇴 API (Soft Delete)
     user_id에 해당하는 사용자 정보를 soft delete 처리
+    - Apple 유저인 경우 authorization_code를 받아서 서버에서 refresh_token을 획득한 후 Apple revoke API 호출
     - user_provider 테이블에서 user_id 삭제
     - user 테이블에서 email, phone, name 삭제 (빈 값으로 설정)
     - user 테이블에서 is_deleted = 1 설정
+    
+    참고: Firebase 탈퇴는 서버에서 별도로 처리합니다.
+    
+    Query Parameters:
+    - authorization_code: Apple 유저인 경우 탈퇴 직전에 발급받은 authorization_code를 전달해야 합니다.
+                         서버에서 이 code로 refresh_token을 획득하고 revoke를 수행합니다.
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
         # 1. 사용자 존재 여부 확인 (이미 삭제된 것은 제외)
-        cursor.execute('SELECT id FROM user WHERE id = %s AND (is_deleted IS NULL OR is_deleted = 0)', (user_id,))
+        cursor.execute('SELECT id, uid FROM user WHERE id = %s AND (is_deleted IS NULL OR is_deleted = 0)', (user_id,))
         user_record = cursor.fetchone()
         
         if not user_record:
@@ -719,19 +1158,87 @@ async def deleteUser(user_id: int, user=Depends(verify_firebase_token)):
                 detail=f"User with id {user_id} not found or already deleted"
             )
         
-        # 2. 관련 데이터 삭제
+        user_uid = user_record.get("uid")
+        
+        # 2. Apple 유저 확인 및 revoke 처리
+        cursor.execute('''
+            SELECT provider, email
+            FROM user_provider 
+            WHERE user_id = %s AND (
+                provider LIKE '%%apple%%' OR 
+                provider = 'oidc.apple' OR
+                provider = 'apple' OR
+                provider = 'apple.priavate'
+            )
+        ''', (user_id,))
+        apple_providers = cursor.fetchall()
+        
+        apple_revoked = False
+        revoke_error_message = None
+        
+        if apple_providers:
+            if not authorization_code:
+                error_msg = f"Apple user {user_id}인데 authorization_code가 제공되지 않았습니다. Apple revoke를 건너뜁니다."
+                logger.error(f"Apple revoke 실패: {error_msg}")
+                revoke_error_message = error_msg
+                print(f"Apple user {user_id}: authorization_code 없음, Apple revoke 건너뜀")
+            else:
+                try:
+                    logger.info(f"Apple user {user_id} revoke 시도: authorization_code로 refresh_token 획득 시도")
+                    print(f"Apple user {user_id} revoke 시도: authorization_code 사용")
+                    
+                    # authorization_code로 refresh_token 획득
+                    token_data = await get_apple_refresh_token(authorization_code)
+                    
+                    if token_data and token_data.get("refresh_token"):
+                        apple_refresh_token = token_data.get("refresh_token")
+                        logger.info(f"Apple user {user_id}: refresh_token 획득 성공")
+                        print(f"Apple refresh_token 획득 성공")
+                        
+                        # Apple revoke API 호출
+                        logger.info(f"Apple user {user_id}: refresh_token으로 revoke API 호출")
+                        print(f"Apple revoke API 호출 시작")
+                        
+                        apple_revoked = await revoke_apple_token(apple_refresh_token)
+                        
+                        if apple_revoked:
+                            logger.info(f"Apple user {user_id} (uid: {user_uid}) revoked successfully")
+                            print(f"Apple user {user_id} revoked successfully")
+                        else:
+                            error_msg = f"Apple user {user_id} revoke API 호출 실패. refresh_token은 획득했지만 revoke API 호출이 실패했습니다. (상세 내용은 위 로그 참조)"
+                            logger.error(f"Apple revoke 실패: {error_msg}")
+                            revoke_error_message = error_msg
+                            print(f"Apple revoke 실패 (탈퇴는 계속 진행)")
+                    else:
+                        # authorization_code로 refresh_token 획득 실패
+                        # 이는 authorization_code가 이미 사용되었거나, 만료되었거나, 유효하지 않거나, 이미 로그인한 사용자의 재로그인인 경우일 수 있음
+                        error_msg = f"Apple user {user_id}의 refresh_token 획득 실패. authorization_code로 token API를 호출했지만 refresh_token을 얻지 못했습니다. 가능한 원인: 1) authorization_code가 이미 사용됨, 2) authorization_code 만료, 3) authorization_code가 유효하지 않음, 4) 이미 로그인한 사용자의 재로그인(이 경우 refresh_token 없이 access_token만 제공됨). 탈퇴를 위해서는 첫 로그인 시 받은 refresh_token이 필요합니다. (상세 내용은 위 로그 참조)"
+                        logger.error(f"Apple revoke 실패: {error_msg}")
+                        revoke_error_message = error_msg
+                        print(f"Apple refresh_token 획득 실패 (탈퇴는 계속 진행)")
+                    
+                except Exception as e:
+                    error_msg = f"Apple user {user_id} revoke 처리 중 예외 발생: {type(e).__name__}: {str(e)}"
+                    logger.error(f"Apple revoke 실패: {error_msg}")
+                    revoke_error_message = error_msg
+                    traceback.print_exc()
+                    print(f"Apple revoke 오류 (탈퇴는 계속 진행): {str(e)}")
+        
+        # 3. 관련 데이터 삭제
         # user_provider 테이블에서 user_id 삭제
         cursor.execute('DELETE FROM user_provider WHERE user_id = %s', (user_id,))
         
         # push tokens 삭제
         cursor.execute('DELETE FROM user_push_tokens WHERE user_id = %s', (user_id,))
         
-        # 3. user 테이블 업데이트: 개인정보 삭제, is_deleted = 1, deleted_at = 현재시간 설정
+        # 4. user 테이블 업데이트: 개인정보 삭제, is_deleted = 1, deleted_at = 현재시간 설정
         cursor.execute('''
             UPDATE user 
             SET email = '', 
                 phone = '', 
                 name = '', 
+                fb_email = '',
+                uid = '',
                 is_deleted = 1,
                 deleted_at = NOW()
             WHERE id = %s
@@ -741,10 +1248,17 @@ async def deleteUser(user_id: int, user=Depends(verify_firebase_token)):
         
         logger.info(f"User {user_id} soft deleted successfully")
         
-        return {
+        response_data = {
             "message": "User deleted successfully",
-            "user_id": user_id
+            "user_id": user_id,
+            "apple_revoked": apple_revoked
         }
+        
+        # Apple revoke 실패 시 에러 메시지 추가 (AWS CloudWatch에도 상세 로깅됨)
+        if apple_providers and not apple_revoked and revoke_error_message:
+            response_data["apple_revoke_error"] = revoke_error_message
+        
+        return response_data
         
     except HTTPException:
         raise
@@ -758,8 +1272,7 @@ async def deleteUser(user_id: int, user=Depends(verify_firebase_token)):
             detail=f"Error during deleteUser: {str(e)}"
         )
     finally:
-        cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/notice")
@@ -799,6 +1312,118 @@ def get_user_notice():
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during get_user_notice: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@router.post("/find-account")
+def find_account(request: FindAccountRequest):
+    """
+    아이디 찾기 / 비밀번호 찾기 검증 API
+    
+    - type이 "find_id"인 경우: 이름과 전화번호가 맞으면 이메일(아이디) 반환
+    - type이 "find_password"인 경우: 이름과 전화번호가 맞는지 검증만 수행
+    
+    Firebase 이메일 가입 유저만 지원합니다.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 1. DB에서 이름과 전화번호로 유저 조회
+        cursor.execute('''
+            SELECT id, name, email, phone, uid
+            FROM user
+            WHERE name = %s AND phone = %s
+        ''', (request.name, request.phone_number))
+        
+        user = cursor.fetchone()
+        
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="입력하신 정보와 일치하는 계정을 찾을 수 없습니다."
+            )
+        
+        # 2. Firebase에서 해당 uid의 유저 정보 확인
+        try:
+            user_record = auth.get_user(user['uid'])
+            
+            # Firebase 이메일 가입 유저인지 확인
+            if not user_record.email:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이메일로 가입한 계정만 조회할 수 있습니다."
+                )
+            
+            # 이메일 가입 방식인지 확인 (provider가 password인지 확인)
+            providers = [provider.provider_id for provider in user_record.provider_data]
+            if 'password' not in providers:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이메일로 가입한 계정만 조회할 수 있습니다."
+                )
+            
+        except firebase_admin.exceptions.NotFoundError:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Firebase에서 해당 계정을 찾을 수 없습니다."
+            )
+        except Exception as e:
+            logger.error(f"Firebase user lookup error: {traceback.format_exc()}")
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"계정 확인 중 오류가 발생했습니다: {str(e)}"
+            )
+        
+        # 3. type에 따라 응답 반환
+        if request.type == "find_id":
+            # 아이디 찾기: 이메일 반환 (일부 마스킹)
+            email = user_record.email
+            # 이메일 마스킹 처리 (예: abc@example.com -> ab***@example.com)
+            if '@' in email:
+                local_part, domain = email.split('@', 1)
+                if len(local_part) > 2:
+                    masked_email = local_part[:2] + '*' * (len(local_part) - 2) + '@' + domain
+                else:
+                    masked_email = '*' * len(local_part) + '@' + domain
+            else:
+                masked_email = email
+            
+            return {
+                "success": True,
+                "type": "find_id",
+                "email": masked_email,  # 마스킹된 이메일
+                "full_email": email,  # 전체 이메일 (필요시)
+                "message": "아이디를 찾았습니다."
+            }
+        
+        elif request.type == "find_password":
+            # 비밀번호 찾기: 검증만 수행 (성공 여부만 반환)
+            return {
+                "success": True,
+                "type": "find_password",
+                "verified": True,
+                "message": "입력하신 정보가 확인되었습니다. 비밀번호를 재설정할 수 있습니다."
+            }
+        
+        else:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="type은 'find_id' 또는 'find_password'여야 합니다."
+            )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error during find_account: {e}")
+        traceback.print_exc()
+        logger.error(f"Error during find_account: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"계정 찾기 중 오류가 발생했습니다: {str(e)}"
         )
     finally:
         cursor.close()
