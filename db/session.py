@@ -13,11 +13,11 @@ class ConnectionPool:
         
     def _create_connection(self):
         return pymysql.connect(
-            host=settings.db_host,
-            user=settings.db_user,
-            passwd=settings.db_password,
-            db=settings.db_name,
-            port=settings.db_port,
+        host=settings.db_host,
+        user=settings.db_user,
+        passwd=settings.db_password,
+        db=settings.db_name,
+        port=settings.db_port,
             cursorclass=DictCursor,
             connect_timeout=10,
             autocommit=False,

@@ -16,7 +16,7 @@ from app.fcm_service import (
     send_fcm_notification_to_all
 )
 from app.database import get_db_connection, close_db_connection
-from app.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME
 import boto3
 from botocore.client import Config
 
@@ -85,7 +85,7 @@ def get_business_info():
         "business_number": '479-03-03427',
         "online_sales_number": '2025-서울강서-3226',
         "address": '서울특별시 강서구 공항대로 543',
-        "telephone": '02-1111-1111'
+        "telephone": '010-2544-6458'
     }
 
 

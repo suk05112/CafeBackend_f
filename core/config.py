@@ -44,11 +44,13 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
     )
+    
 
-
-# ENV 환경 변수에 따라 .env.dev 또는 .env.prod 파일 로드
+# ENV 환경 변수에 따라 .env.dev, .env.prod, 또는 .env.local 파일 로드
 env = os.getenv("ENV", "dev")
-if env in ["dev", "development"]:
+if env in ["local"]:
+    env_file = ".env.local"
+elif env in ["dev", "development"]:
     env_file = ".env.dev"
 elif env in ["prod", "production"]:
     env_file = ".env.prod"

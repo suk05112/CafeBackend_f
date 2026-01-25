@@ -10,6 +10,7 @@ class StoreCreate(BaseModel):
     store_lat: float
     store_lng: float
     store_photo_cnt: int
+    district_code: Optional[str] = None  # 군/구 코드 (예: "23" = 강남구)
 
 
 class InspectionStatusUpdate(BaseModel):

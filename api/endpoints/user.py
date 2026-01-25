@@ -199,7 +199,7 @@ async def get_apple_refresh_token(authorization_code: str):
         error_msg = f"Apple token 획득 중 예외 발생: {type(e).__name__}: {str(e)}"
         logger.error(f"Apple token 획득 실패: {error_msg}")
         traceback.print_exc()
-        return None
+    return None
 
 
 async def revoke_apple_token(refresh_token: str):
@@ -430,7 +430,7 @@ def linkAccount(uid, user_id, provider, email):
             elif provider == "apple.com":
                 # apple.com으로 저장하려는데 apple.priavate가 이미 있는지 확인
                 cursor.execute(check_query, (user_id, email, "apple.priavate"))
-                existing = cursor.fetchone()
+        existing = cursor.fetchone()
         
         if existing:
             print(f"이미 등록된 user_provider: user_id={user_id}, email={email}, provider={provider}")
@@ -665,8 +665,8 @@ async def idRegisteredUser(
             if result:
                 print(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
                 logger.info(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
-                return {'isRegistered': True}
-            else:
+            return {'isRegistered': True}
+        else:
                 # 디버깅을 위해 phone으로 user가 있는지 확인
                 cursor.execute("SELECT id, phone FROM user WHERE phone = %s LIMIT 1", (phone,))
                 user_check = cursor.fetchone()

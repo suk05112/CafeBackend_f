@@ -36,15 +36,19 @@ def get_dashboard_statistics(connection) -> Dict:
         
         # 상품권 사용금액 (일)
         cursor.execute('''
-            SELECT COALESCE(SUM(price), 0) as total FROM gifticon
-            WHERE status = 'USED' AND DATE(used_at) = %s
+            SELECT COALESCE(SUM(m.price), 0) as total 
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.status = 'USED' AND DATE(g.used_at) = %s
         ''', (today,))
         gift_used_amount_today = cursor.fetchone()['total'] or 0
         
         # 상품권 사용금액 (월)
         cursor.execute('''
-            SELECT COALESCE(SUM(price), 0) as total FROM gifticon
-            WHERE status = 'USED' AND DATE(used_at) >= %s
+            SELECT COALESCE(SUM(m.price), 0) as total 
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.status = 'USED' AND DATE(g.used_at) >= %s
         ''', (start_of_month,))
         gift_used_amount_month = cursor.fetchone()['total'] or 0
         
@@ -57,8 +61,10 @@ def get_dashboard_statistics(connection) -> Dict:
         
         # 정산 금액 (월)
         cursor.execute('''
-            SELECT COALESCE(SUM(price), 0) as total FROM gifticon
-            WHERE status = 'USED' AND DATE(used_at) >= %s
+            SELECT COALESCE(SUM(m.price), 0) as total 
+            FROM gifticon g
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.status = 'USED' AND DATE(g.used_at) >= %s
         ''', (start_of_month,))
         settlement_amount_month = cursor.fetchone()['total'] or 0
         
