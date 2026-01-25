@@ -14,6 +14,7 @@ from core.s3_config import S3_CLIENT, BUCKET_NAME
 from models.gifticon import Gifticon, PaymentResult
 from models.store import StoreCreate
 from crud import settlement as settlement_crud
+from crud import promotion as promotion_crud
 
 import http.client
 import json
@@ -152,9 +153,47 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
     결제는 아직 진행되지 않았으므로 status는 PENDING으로 설정
     """
     connection = get_db_connection()  # 환경에 맞는 DB 연결
-    cursor = connection.cursor() # DB에 접속 및 DB 객체를 가져옴
+    cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
       
-    try:      
+    try:
+        # 0. 중복 주문 체크 (같은 user_id + 같은 store_id + 같은 menu_id + 같은 total_price + 같은 receiver + 최근 5분 내)
+        five_minutes_ago = get_kst_now() - timedelta(minutes=5)
+        cursor.execute('''
+            SELECT o.id, o.order_no, o.created_at
+            FROM orders o
+            JOIN gifticon g ON o.id = g.order_id
+            WHERE o.user_id = %s
+            AND o.store_id = %s
+            AND g.menu_id = %s
+            AND g.total_price = %s
+            AND g.receiver = %s
+            AND g.receiver_phone = %s
+            AND o.status = 'PENDING'
+            AND o.created_at >= %s
+            ORDER BY o.created_at DESC
+            LIMIT 1
+        ''', (
+            user_id,
+            gifticon.store_id,
+            gifticon.menu_id,
+            gifticon.total_price,
+            gifticon.receiver,
+            gifticon.receiver_phone_number,
+            five_minutes_ago
+        ))
+        
+        existing_order = cursor.fetchone()
+        
+        if existing_order:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="중복된 주문입니다. 최근 5분 내 동일한 주문이 존재합니다."
+            )
+        
+        # 커서를 일반 cursor로 변경 (DictCursor는 조회용)
+        cursor.close()
+        cursor = connection.cursor()
+        
         # 1. 주문번호 생성
         order_no = generate_order_no(connection)
         
@@ -179,11 +218,17 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         connection.commit()
         order_id = cursor.lastrowid
 
-        # 3. Gifticon 테이블에 데이터 삽입 (order_id 포함, gift_code는 나중에 업데이트)
+        # 3. 현재 수수료율 조회 (기본 수수료율, 프로모션은 사용 시점에 적용)
+        # 생성 시점에는 기본 수수료율 저장
+        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+        config = cursor.fetchone()
+        current_fee_rate = float(config['base_fee_rate']) if config else 3.00
+        
+        # 4. Gifticon 테이블에 데이터 삽입 (order_id 포함, gift_code는 나중에 업데이트, applied_fee_rate 저장)
         query = """
             INSERT INTO gifticon (
-                user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, total_price, applied_fee_rate
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         cursor.execute(
             query,
@@ -196,6 +241,8 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
                 gifticon.menu_id,
                 gifticon.store_id,
                 order_id,  # order_id 추가
+                gifticon.total_price,  # total_price 저장
+                current_fee_rate,  # applied_fee_rate 저장
             )
         )
         connection.commit()

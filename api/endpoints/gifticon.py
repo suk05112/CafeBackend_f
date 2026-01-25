@@ -206,7 +206,7 @@ def useGifticon(gifticon_id: int):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
-        cursor.execute('''SELECT status, validity From gifticon WHERE id=%s ;''', (gifticon_id,))
+        cursor.execute('''SELECT status, validity, store_id, order_id, total_price From gifticon WHERE id=%s ;''', (gifticon_id,))
 
         gifticon = cursor.fetchone()
         
@@ -221,7 +221,31 @@ def useGifticon(gifticon_id: int):
             result = 3 #기프티콘 찾을 수 없음
             
         if result == 0:
-            cursor.execute('''UPDATE gifticon SET status='USED', used_time = NOW() WHERE id=%s ;''', (gifticon_id,))
+            # 기프티콘 사용 시점에 프로모션 확인 및 applied_fee_rate 업데이트
+            from crud import promotion as promotion_crud
+            from datetime import date
+            
+            used_date = date.today()
+            store_id = gifticon['store_id']
+            order_id = gifticon['order_id']
+            
+            # 기프티콘 최초 사용 시점 기준으로 30일 이내 프로모션 확인
+            fee_rate = promotion_crud.get_fee_rate_for_gifticon(store_id, used_date)
+            
+            # order_history에 사용 기록 추가
+            if order_id:
+                cursor.execute('''
+                    INSERT INTO order_history (order_id, action_type, amount, status_to)
+                    SELECT %s, 'PAYMENT', total_amount, 'PAID'
+                    FROM orders WHERE id = %s
+                ''', (order_id, order_id))
+            
+            # 기프티콘 상태 업데이트 및 applied_fee_rate 업데이트 (프로모션이 있으면)
+            cursor.execute('''
+                UPDATE gifticon 
+                SET status='USED', used_at = NOW(), applied_fee_rate = %s
+                WHERE id=%s
+            ''', (fee_rate, gifticon_id))
             connection.commit()
 
         return {

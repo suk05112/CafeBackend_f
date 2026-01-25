@@ -435,3 +435,185 @@ def create_test_menu(store_id: int, menu: Menu):
             detail=f"failed add menu: {str(e)}"
         )
 
+
+@router.post("/promotions/{store_id}")
+def create_fee_promotion(store_id: int, promotion: dict):
+    """매장 프로모션 추가
+    
+    Body:
+        - promo_fee_rate: 프로모션 수수료율 (%)
+        - start_date: 시작일 (YYYY-MM-DD)
+        - end_date: 종료일 (YYYY-MM-DD)
+    """
+    connection = get_db_connection()
+    try:
+        from crud import promotion as promotion_crud
+        from datetime import datetime
+        
+        promo_fee_rate = promotion.get('promo_fee_rate')
+        start_date_str = promotion.get('start_date')
+        end_date_str = promotion.get('end_date')
+        
+        if not promo_fee_rate or not start_date_str or not end_date_str:
+            raise HTTPException(status_code=400, detail="promo_fee_rate, start_date, end_date are required")
+        
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        
+        promo_id = promotion_crud.create_fee_promotion(store_id, float(promo_fee_rate), start_date, end_date)
+        return {'message': 'Promotion created successfully', 'promo_id': promo_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error in create_fee_promotion: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/promotions/{store_id}")
+def get_fee_promotions(store_id: int):
+    """매장 프로모션 리스트 조회"""
+    connection = get_db_connection()
+    try:
+        from crud import promotion as promotion_crud
+        promotions = promotion_crud.get_fee_promotions_by_store(store_id)
+        return {'promotions': promotions}
+    except Exception as e:
+        print(f"Error in get_fee_promotions: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/statistics/gifticons")
+def get_admin_gifticon_statistics():
+    """관리자 통계 데이터 조회 (전체 발행 수, 사용 수, 미사용 수)"""
+    connection = get_db_connection()
+    try:
+        from crud import stats as stats_crud
+        result = stats_crud.get_admin_statistics()
+        return result
+    except Exception as e:
+        print(f"Error in get_admin_gifticon_statistics: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/statistics/settlement")
+def get_admin_settlement_statistics(
+    start_date: Optional[str] = Query(None, description="시작일 (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="종료일 (YYYY-MM-DD)")
+):
+    """관리자 정산 데이터 조회 (정산금액, 플랫폼 수수료 매출)"""
+    connection = get_db_connection()
+    try:
+        from crud import stats as stats_crud
+        from datetime import datetime
+        
+        start = None
+        end = None
+        
+        if start_date:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date()
+        if end_date:
+            end = datetime.strptime(end_date, '%Y-%m-%d').date()
+        
+        result = stats_crud.get_admin_settlement_data(start, end)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+    except Exception as e:
+        print(f"Error in get_admin_settlement_statistics: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/settlement/cycles")
+def get_settlement_cycles(
+    status: Optional[str] = Query(None, description="'OPEN' 또는 'CLOSED', None이면 전체")
+):
+    """정산 주기 리스트 조회"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement_cycle as cycle_crud
+        cycles = cycle_crud.get_settlement_cycles(status)
+        return {'cycles': cycles}
+    except Exception as e:
+        print(f"Error in get_settlement_cycles: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/settlement/cycles/{cycle_id}")
+def get_settlement_cycle(cycle_id: int):
+    """정산 주기 상세 조회"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement_cycle as cycle_crud
+        cycle = cycle_crud.get_settlement_cycle_by_id(cycle_id)
+        if not cycle:
+            raise HTTPException(status_code=404, detail="Settlement cycle not found")
+        return cycle
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_settlement_cycle: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.post("/settlement/cycles/generate")
+def generate_settlement_cycles(
+    start_date: Optional[str] = Query(None, description="시작일 (YYYY-MM-DD), 기본값: 오늘"),
+    months: int = Query(12, ge=1, le=24, description="생성할 개월 수 (1-24)")
+):
+    """정산 주기 데이터 생성 (1년치)"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement_cycle as cycle_crud
+        from datetime import date, datetime
+        
+        if start_date:
+            start = datetime.strptime(start_date, '%Y-%m-%d').date()
+        else:
+            start = date.today()
+        
+        count = cycle_crud.generate_settlement_cycles(start, months)
+        return {
+            'message': f'{count}개의 정산 주기가 생성되었습니다.',
+            'count': count,
+            'start_date': start.isoformat()
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid date format: {str(e)}")
+    except Exception as e:
+        print(f"Error in generate_settlement_cycles: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.post("/settlement/create/{cycle_id}")
+def create_settlement_data(cycle_id: int):
+    """정산 데이터 생성 (정산 주기별)
+    
+    cycle_id는 /admin/settlement/cycles API로 조회 가능합니다.
+    """
+    connection = get_db_connection()
+    try:
+        from crud import stats as stats_crud
+        result = stats_crud.create_settlement_data(cycle_id)
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error in create_settlement_data: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+

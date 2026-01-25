@@ -3,9 +3,9 @@ Settlement CRUD 로직
 """
 import pymysql
 from typing import List, Dict, Optional
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from models.settlement import Account
 
@@ -295,6 +295,167 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
             })
         
         return details
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_account(store_id: int, account: Account) -> bool:
+    """계좌 정보 변경"""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    
+    try:
+        # 기존 계좌 정보 확인
+        cursor.execute("SELECT id FROM account WHERE store_id = %s", (store_id,))
+        existing = cursor.fetchone()
+        
+        if existing:
+            # 업데이트
+            query = """
+                UPDATE account 
+                SET name = %s, code = %s, bank = %s, account = %s, updated_at = NOW()
+                WHERE store_id = %s
+            """
+            cursor.execute(query, (
+                account.name,
+                account.code,
+                account.bank,
+                account.account,
+                store_id
+            ))
+        else:
+            # 신규 등록
+            query = """
+                INSERT INTO account (store_id, name, code, bank, account)
+                VALUES (%s, %s, %s, %s, %s)
+            """
+            cursor.execute(query, (
+                store_id,
+                account.name,
+                account.code,
+                account.bank,
+                account.account
+            ))
+        
+        connection.commit()
+        return True
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_store_statistics(store_id: int) -> Dict:
+    """매장 통계 데이터 조회 (발행 수, 사용 수, 미사용 수)"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        # 전체 발행 수
+        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s", (store_id,))
+        total_issued = cursor.fetchone()['total'] or 0
+        
+        # 사용 수
+        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s AND status = 'USED'", (store_id,))
+        total_used = cursor.fetchone()['total'] or 0
+        
+        # 미사용 수
+        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s AND status != 'USED'", (store_id,))
+        total_unused = cursor.fetchone()['total'] or 0
+        
+        return {
+            'total_issued': total_issued,
+            'total_used': total_used,
+            'total_unused': total_unused
+        }
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_owner_settlement_data(store_id: int) -> List[Dict]:
+    """사장님 정산 데이터 조회 (정산 주기별)"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                s.settlement_id,
+                s.cycle_id,
+                s.period_start,
+                s.period_end,
+                s.total_sales_amount,
+                s.total_fee_amount,
+                s.net_payout_amount,
+                s.status,
+                s.payout_date,
+                sc.payout_date as expected_payout_date
+            FROM settlement s
+            LEFT JOIN settlement_cycles sc ON s.cycle_id = sc.cycle_id
+            WHERE s.store_id = %s
+            ORDER BY s.period_start DESC
+        """, (store_id,))
+        
+        settlements = cursor.fetchall()
+        result = []
+        
+        for settlement in settlements:
+            result.append({
+                'settlement_id': settlement['settlement_id'],
+                'cycle_id': settlement['cycle_id'],
+                'period_start': settlement['period_start'].isoformat() if settlement['period_start'] else None,
+                'period_end': settlement['period_end'].isoformat() if settlement['period_end'] else None,
+                'expected_amount': float(settlement['net_payout_amount'] or 0),
+                'fee_amount': float(settlement['total_fee_amount'] or 0),
+                'expected_payout_date': settlement['expected_payout_date'].isoformat() if settlement.get('expected_payout_date') else None,
+                'status': settlement['status'],
+                'payout_date': settlement['payout_date'].isoformat() if settlement['payout_date'] else None
+            })
+        
+        return result
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_owner_settlement_detail(settlement_id: int) -> List[Dict]:
+    """사장님 정산 상세 내역 조회"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                sd.id,
+                sd.gifticon_id,
+                sd.sales_amount,
+                sd.fee_amount,
+                sd.settlement_amount,
+                s.status as settlement_status
+            FROM settlement_details sd
+            JOIN settlement s ON sd.settlement_id = s.settlement_id
+            WHERE sd.settlement_id = %s
+            ORDER BY sd.id DESC
+        """, (settlement_id,))
+        
+        details = cursor.fetchall()
+        result = []
+        
+        for detail in details:
+            result.append({
+                'id': detail['id'],
+                'gifticon_id': detail['gifticon_id'],
+                'amount': float(detail['sales_amount'] or 0),
+                'fee_amount': float(detail['fee_amount'] or 0),
+                'settlement_amount': float(detail['settlement_amount'] or 0),
+                'status': detail['settlement_status']
+            })
+        
+        return result
     finally:
         cursor.close()
         connection.close()

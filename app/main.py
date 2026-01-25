@@ -29,10 +29,10 @@ from api.endpoints import store, menu, settlement, common, admin, user, gifticon
 
 #https://fastapi.tiangolo.com/ko/
 
-env = os.getenv("ENV", "dev")  # ENV=dev, development, prod, production
-# 개발 환경: dev, development → /dev
+env = os.getenv("ENV", "dev")  # ENV=dev, development, local, prod, production
+# 개발 환경: dev, development, local → /dev
 # 운영 환경: prod, production → /prod
-prefix = "/dev" if env in ["dev", "development"] else "/prod"
+prefix = "/dev" if env in ["dev", "development", "local"] else "/prod"
 
 print(env)
 # router = APIRouter(prefix=prefix)

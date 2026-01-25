@@ -11,7 +11,9 @@ import re
 import pymysql
 import boto3
 from botocore.client import Config
-from db.session import get_db_connection
+from botocore.exceptions import ClientError
+from db.session import get_db_connection, close_db_connection
+from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.owner import Owner
 from models.owner import OwnerFind
@@ -77,7 +79,7 @@ async def login(uid: str):
             return {
                 'owner_id': user['id'],
                 'name': user['name'],
-                'phone_number': user['phone_number'],
+                'phone_number': user['phone'],
             }
         else:
             return {
@@ -90,12 +92,13 @@ async def login(uid: str):
     except Exception as e:
         print(e)
         logger.error(f"서버 오류 발생: {str(e)}")
+        logger.error(f"Traceback: {traceback.format_exc()}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="An unexpected error occurred"
+            detail=f"An unexpected error occurred: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
         
 @router.post("/find_ownerId")
 async def findOwnerId(owner: OwnerFind):
@@ -574,6 +577,193 @@ async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during deleteOwner: {str(e)}"
         )
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@router.get("/statistics/{store_id}")
+def get_store_statistics(store_id: int):
+    """매장 통계 데이터 조회 (발행 수, 사용 수, 미사용 수)"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement as settlement_crud
+        result = settlement_crud.get_store_statistics(store_id)
+        return result
+    except Exception as e:
+        print(f"Error in get_store_statistics: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.put("/account/{store_id}")
+def update_account(store_id: int, account: dict):
+    """계좌 정보 변경"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement as settlement_crud
+        from models.settlement import Account
+        
+        account_obj = Account(
+            name=account.get('name'),
+            code=account.get('code'),
+            bank=account.get('bank'),
+            account=account.get('account')
+        )
+        
+        settlement_crud.update_account(store_id, account_obj)
+        return {'message': 'Account updated successfully'}
+    except Exception as e:
+        print(f"Error in update_account: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/settlement/{store_id}")
+def get_owner_settlement_data(store_id: int):
+    """사장님 정산 데이터 조회 (정산 주기별)"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement as settlement_crud
+        settlements = settlement_crud.get_owner_settlement_data(store_id)
+        return {'settlements': settlements}
+    except Exception as e:
+        print(f"Error in get_owner_settlement_data: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/settlement/detail/{settlement_id}")
+def get_owner_settlement_detail(settlement_id: int):
+    """사장님 정산 상세 내역 조회"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement as settlement_crud
+        details = settlement_crud.get_owner_settlement_detail(settlement_id)
+        return {'details': details}
+    except Exception as e:
+        print(f"Error in get_owner_settlement_detail: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/list/{owner_id}")
+def get_owner_store_list(owner_id: int):
+    """사장님의 매장 리스트 조회
+    
+    owner_id로 해당 사장님의 모든 매장 리스트를 반환합니다.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    # S3 설정
+    s3 = S3_CLIENT
+    bucket_name = BUCKET_NAME
+    
+    try:
+        # owner_id 존재 확인
+        cursor.execute('SELECT id FROM owner WHERE id = %s', (owner_id,))
+        owner = cursor.fetchone()
+        
+        if not owner:
+            raise HTTPException(status_code=404, detail="Owner not found")
+        
+        # 해당 owner_id의 모든 매장 조회
+        cursor.execute('''
+            SELECT 
+                s.id,
+                s.owner_id,
+                s.store_name,
+                s.store_telephone,
+                s.store_description,
+                s.store_address,
+                s.store_lat,
+                s.store_lng,
+                s.store_photo_cnt,
+                s.region_code,
+                s.district_code,
+                s.inspection_status,
+                s.inspection_msg,
+                s.status,
+                s.open_yn,
+                s.created_at,
+                s.updated_at
+            FROM store s
+            WHERE s.owner_id = %s
+            ORDER BY s.created_at DESC
+        ''', (owner_id,))
+        
+        stores = cursor.fetchall()
+        
+        # 결과 포맷팅 (S3 이미지 URL 포함)
+        store_list = []
+        for store in stores:
+            store_id_item = store['id']
+            
+            # S3에서 store_logo URL 생성 (존재 여부 확인)
+            logo_key = f'store_logo/store_logo_{store_id_item}.png'
+            store_logo_url = None
+            
+            try:
+                s3.head_object(Bucket=bucket_name, Key=logo_key)
+                # 로고가 존재하면 presigned URL 생성
+                store_logo_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': logo_key},
+                    ExpiresIn=3600)
+            except ClientError:
+                # 로고가 없으면 None
+                store_logo_url = None
+            
+            # S3에서 store_photo URLs 생성 (store_photo_cnt 값만큼)
+            store_photo_urls = []
+            store_photo_cnt = store.get('store_photo_cnt', 0) or 0
+            
+            for i in range(1, store_photo_cnt + 1):
+                image_key = f'store_image/store_image_{store_id_item}_{i}.png'
+                s3_url = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': image_key},
+                    ExpiresIn=3600)
+                store_photo_urls.append(s3_url)
+            
+            store_data = {
+                'store_id': store['id'],
+                'owner_id': store['owner_id'],
+                'store_name': store['store_name'],
+                'store_logo': store_logo_url,
+                'store_telephone': store.get('store_telephone'),
+                'store_description': store.get('store_description'),
+                'store_address': store.get('store_address'),
+                'store_lat': float(store['store_lat']) if store.get('store_lat') else None,
+                'store_lng': float(store['store_lng']) if store.get('store_lng') else None,
+                'store_photo_cnt': store_photo_cnt,
+                'store_photo_urls': store_photo_urls,
+                'region_code': store.get('region_code'),
+                'district_code': store.get('district_code'),
+                'inspection_status': store.get('inspection_status'),
+                'inspection_msg': store.get('inspection_msg'),
+                'status': store.get('status'),
+                'open_yn': store.get('open_yn'),
+                'created_at': store['created_at'].isoformat() if store.get('created_at') else None,
+                'updated_at': store['updated_at'].isoformat() if store.get('updated_at') else None
+            }
+            store_list.append(store_data)
+        
+        return {
+            'owner_id': owner_id,
+            'store_count': len(store_list),
+            'stores': store_list
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_owner_store_list: {traceback.format_exc()}")
+        logger.error(f"Error in get_owner_store_list: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
         connection.close()

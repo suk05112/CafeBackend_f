@@ -10,7 +10,11 @@ from botocore.client import Config
 env = os.getenv("ENV", "dev")
 
 # S3 bucket 이름 설정: dev 환경이면 cafeplatform-dev, 아니면 cafeplatform
-BUCKET_NAME = "cafeplatform-dev" if env == "dev" else "cafeplatform"
+# dev, development, local 환경은 cafeplatform-dev, 나머지는 cafeplatform
+if env in ["dev", "development", "local"]:
+    BUCKET_NAME = "cafeplatform-dev"
+else:
+    BUCKET_NAME = "cafeplatform"
 
 # S3 클라이언트 설정
 S3_CLIENT = boto3.client(

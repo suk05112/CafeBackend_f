@@ -70,3 +70,17 @@ def get_account(store_id: int):
         )
 
 
+@router.put("/account/{store_id}")
+def update_account(store_id: int, account: Account):
+    """계좌 정보 변경"""
+    try:
+        settlement_crud.update_account(store_id, account)
+        return {'message': 'Account updated successfully'}
+    except Exception as e:
+        logger.error(f"Error in update_account: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed update Account: {str(e)}"
+        )
+
+

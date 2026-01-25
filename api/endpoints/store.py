@@ -11,10 +11,10 @@ import logging
 
 from models.store import StoreCreate
 from models.store import InspectionStatusUpdate
-from app.database import get_db_connection
-from app.settings import settings
-from app.region_code import get_region_from_district, get_region_name, get_district_name
-from app.s3_config import S3_CLIENT, BUCKET_NAME
+from db.session import get_db_connection
+from core.config import settings
+from core.region_code import get_region_from_district, get_region_name, get_district_name
+from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 logger = logging.getLogger("cafe_backend")
 
@@ -785,13 +785,23 @@ async def registerStore(store: StoreCreate):
     cursor = connection.cursor()
     
     try:
+        # district_code에서 region_code 자동 계산
+        region_code = None
+        district_code = store.district_code
+        
+        if district_code:
+            region_code = get_region_from_district(district_code)
+        
+        # region_code와 district_code를 포함한 INSERT 쿼리
         query = """
             INSERT INTO store (
-                owner_id, store_name, store_telephone, store_description, store_address, store_lat, store_lng, store_photo_cnt
+                owner_id, store_name, store_telephone, store_description, store_address, 
+                store_lat, store_lng, store_photo_cnt, region_code, district_code
             ) VALUES (
-              {},'{}','{}', '{}', '{}', {}, {}, {}
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             );
-        """.format(
+        """
+        cursor.execute(query, (
             store.owner_id,
             store.store_name,
             store.store_telephone,
@@ -800,9 +810,10 @@ async def registerStore(store: StoreCreate):
             store.store_lat,
             store.store_lng,
             store.store_photo_cnt,
-            )
+            region_code,  # district_code가 있으면 계산된 값, 없으면 None
+            district_code  # 있으면 값, 없으면 None
+        ))
             
-        cursor.execute(query)
         connection.commit()
 
         store_id = cursor.lastrowid
@@ -847,9 +858,12 @@ async def registerStore(store: StoreCreate):
             'bankBook_put_url': bankBook_put_url,
             'business_put_url': business_put_url
         }
+    except HTTPException:
+        raise
     except Exception as e:
         print(e)
         logger.error(f"Error: {str(e)}")
+        connection.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed register store: {str(e)}"
