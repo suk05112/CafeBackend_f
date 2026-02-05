@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 
 class User(BaseModel):
     name: Optional[str] = None
@@ -8,6 +8,8 @@ class User(BaseModel):
     uid: Optional[str] = None
     firebase: Optional[Dict[str, Any]] = None
     provider: Optional[str] = None
+    # 최초 회원가입 시 약관 동의 정보 (선택)
+    agreements: Optional[List["TermsAgreeItem"]] = None
 
 class Inquiry(BaseModel):
     title: str
@@ -21,4 +23,20 @@ class FindAccountRequest(BaseModel):
     name: str
     phone_number: str
     type: str  # "find_id" 또는 "find_password"
-    
+
+
+class TermsAgreeItem(BaseModel):
+    """약관 동의 항목"""
+    term_id: int
+    term_version_id: int
+    agreed: bool
+
+
+class TermsAgreeRequest(BaseModel):
+    """약관 동의 저장 요청"""
+    user_id: int
+    agreements: List[TermsAgreeItem]
+
+
+# forward ref 해결 (User.agreements)
+User.model_rebuild()

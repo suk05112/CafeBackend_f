@@ -459,3 +459,136 @@ def get_owner_settlement_detail(settlement_id: int) -> List[Dict]:
     finally:
         cursor.close()
         connection.close()
+
+
+def get_settlements_by_cycle(cycle_id: int) -> List[Dict]:
+    """관리자: 정산 주기별 매장 정산 리스트 (매장별 정산 row)"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                s.settlement_id,
+                s.store_id,
+                st.store_name,
+                s.cycle_id,
+                s.period_start,
+                s.period_end,
+                s.total_sales_amount,
+                s.total_fee_amount,
+                s.net_payout_amount,
+                s.status,
+                s.payout_date,
+                s.bank_name,
+                s.account_number,
+                a.name AS account_holder
+            FROM settlement s
+            LEFT JOIN store st ON s.store_id = st.id
+            LEFT JOIN account a ON s.store_id = a.store_id
+            WHERE s.cycle_id = %s
+            ORDER BY s.store_id
+        """, (cycle_id,))
+        
+        rows = cursor.fetchall()
+        result = []
+        for row in rows:
+            result.append({
+                'settlement_id': row['settlement_id'],
+                'store_id': row['store_id'],
+                'store_name': row['store_name'] or f"매장({row['store_id']})",
+                'cycle_id': row['cycle_id'],
+                'period_start': row['period_start'].isoformat() if row['period_start'] else None,
+                'period_end': row['period_end'].isoformat() if row['period_end'] else None,
+                'total_sales_amount': int(row['total_sales_amount'] or 0),
+                'total_fee_amount': int(row['total_fee_amount'] or 0),
+                'net_payout_amount': int(row['net_payout_amount'] or 0),
+                'status': row['status'],
+                'payout_date': row['payout_date'].isoformat() if row['payout_date'] else None,
+                'bank_name': row.get('bank_name'),
+                'account_number': row.get('account_number'),
+                'account_holder': row.get('account_holder'),
+            })
+        return result
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_settlement_detail_for_admin(settlement_id: int) -> Dict:
+    """관리자: 정산 상세 (헤더 + 건별 내역, 사용일 포함)"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    
+    try:
+        cursor.execute("""
+            SELECT 
+                s.settlement_id,
+                s.store_id,
+                st.store_name,
+                s.cycle_id,
+                s.period_start,
+                s.period_end,
+                s.total_sales_amount,
+                s.total_fee_amount,
+                s.net_payout_amount,
+                s.status,
+                s.payout_date,
+                s.bank_name,
+                s.account_number,
+                a.name AS account_holder
+            FROM settlement s
+            LEFT JOIN store st ON s.store_id = st.id
+            LEFT JOIN account a ON s.store_id = a.store_id
+            WHERE s.settlement_id = %s
+        """, (settlement_id,))
+        settlement = cursor.fetchone()
+        if not settlement:
+            return None
+        
+        cursor.execute("""
+            SELECT 
+                sd.id,
+                sd.gifticon_id,
+                g.used_at,
+                sd.sales_amount,
+                sd.fee_amount,
+                sd.settlement_amount
+            FROM settlement_details sd
+            JOIN gifticon g ON sd.gifticon_id = g.id
+            WHERE sd.settlement_id = %s
+            ORDER BY sd.id
+        """, (settlement_id,))
+        details = cursor.fetchall()
+        
+        header = {
+            'settlement_id': settlement['settlement_id'],
+            'store_id': settlement['store_id'],
+            'store_name': settlement['store_name'] or f"매장({settlement['store_id']})",
+            'cycle_id': settlement['cycle_id'],
+            'period_start': settlement['period_start'].isoformat() if settlement['period_start'] else None,
+            'period_end': settlement['period_end'].isoformat() if settlement['period_end'] else None,
+            'total_sales_amount': int(settlement['total_sales_amount'] or 0),
+            'total_fee_amount': int(settlement['total_fee_amount'] or 0),
+            'net_payout_amount': int(settlement['net_payout_amount'] or 0),
+            'status': settlement['status'],
+            'payout_date': settlement['payout_date'].isoformat() if settlement.get('payout_date') else None,
+            'bank_name': settlement.get('bank_name'),
+            'account_number': settlement.get('account_number'),
+            'account_holder': settlement.get('account_holder'),
+        }
+        items = []
+        for i, d in enumerate(details, 1):
+            items.append({
+                'index': i,
+                'id': d['id'],
+                'gifticon_id': d['gifticon_id'],
+                'used_at': d['used_at'].strftime('%Y-%m-%d %H:%M') if d.get('used_at') else '-',
+                'sales_amount': int(d['sales_amount'] or 0),
+                'fee_amount': int(d['fee_amount'] or 0),
+                'settlement_amount': int(d['settlement_amount'] or 0),
+            })
+        return {'settlement': header, 'details': items}
+    finally:
+        cursor.close()
+        connection.close()

@@ -9,6 +9,14 @@ from app.auth.auth_dependency import verify_firebase_token
 import firebase_admin
 from firebase_admin import auth, credentials
 
+def get_user_firebase_app():
+    """사용자 앱 Firebase 앱 반환"""
+    try:
+        return firebase_admin.get_app("user_app")
+    except ValueError:
+        # user_app이 없으면 기본 앱 반환 (기존 호환성)
+        return firebase_admin.get_app()
+
 from typing import Union
 from pydantic import BaseModel
 
@@ -33,10 +41,12 @@ from models.user import User
 from models.user import Inquiry
 from models.user import InquiryResponse
 from models.user import FindAccountRequest
+from models.user import TermsAgreeRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from models.notice import NoticeResponse
 from app.fcm_service import send_fcm_notification_to_user
 from core.config import settings
+from crud import terms as terms_crud
 
 router = APIRouter()
 
@@ -289,7 +299,8 @@ def signUp(user: User):
             detail="email, provider, and phone_number are required"
         )
 
-    user_record = auth.get_user(uid)
+    user_app = get_user_firebase_app()
+    user_record = auth.get_user(uid, app=user_app)
     # 요청으로 받은 name을 사용, 없으면 Firebase의 display_name 사용
     name = user.name or user_record.display_name
     
@@ -308,27 +319,24 @@ def signUp(user: User):
             existing_email = existing_user.get("email") or ""
             existing_fb_email = existing_user.get("fb_email") or ""
             existing_uid = existing_user.get("uid") or ""
-            
-            print(f"기존 사용자 발견: user_id={user_id}, email={existing_email}, fb_email={existing_fb_email}, uid={existing_uid}")
-            
+
+            print(f"기존 사용자 발견: user_id={user_id}, email={existing_email}, uid={existing_uid}")
+
             # user_provider 추가 로직
-            is_sns_provider = provider != "email" and not provider.startswith("email")
-            
             update_fields = []
             update_values = []
-            
-            # user 테이블 email이 비어있고 provider = sns 로그인이면 email 컬럼에 값 추가
-            if not existing_email and is_sns_provider:
-                update_fields.append("email = %s")
-                update_values.append(email)
-                print(f"user 테이블 email 업데이트 (SNS 로그인): {email}")
-            
-            # user 테이블 email이 있고 provider = sns 로그인이면 provider만 추가 (user_provider 테이블에만)
-            # user 테이블 fb_email이 비어있고 provider = email 로그인이면 fb_email 컬럼에 값 추가
-            if provider == "email" and not existing_fb_email:
-                update_fields.append("fb_email = %s")
-                update_values.append(email)
-                print(f"user 테이블 fb_email 업데이트 (email 로그인): {email}")
+
+            # provider가 email이면 fb_email, 그 외면 email 컬럼에 값 추가
+            if provider == "email":
+                if not existing_fb_email and email:
+                    update_fields.append("fb_email = %s")
+                    update_values.append(email)
+                    print(f"user 테이블 fb_email 업데이트: {email}")
+            else:
+                if not existing_email and email:
+                    update_fields.append("email = %s")
+                    update_values.append(email)
+                    print(f"user 테이블 email 업데이트: {email}")
             
             # uid가 없으면 업데이트
             if not existing_uid:
@@ -350,25 +358,24 @@ def signUp(user: User):
         else:
             # 신규 가입
             print("신규 가입 진행")
-            
-            # provider가 email이면 user 테이블의 fb_email 컬럼에 request의 email 저장
-            # 그 외면 user 테이블의 email 컬럼에 request의 email 저장
-            if provider == "email":
-                insert_query = """
-                    INSERT INTO user (
-                        name, fb_email, phone, uid
-                    ) VALUES (%s, %s, %s, %s);
-                """
-                cursor.execute(insert_query, (name, email, phone_number, uid))
-                print(f"신규 사용자 생성 (email 로그인): fb_email={email}")
-            else:
-                insert_query = """
-            INSERT INTO user (
-                name, email, phone, uid
-            ) VALUES (%s, %s, %s, %s);
-        """
-                cursor.execute(insert_query, (name, email, phone_number, uid))
-                print(f"신규 사용자 생성 (SNS 로그인): email={email}")
+
+            # 약관 동의가 있으면 검증 (필수 약관 미동의 시 가입 전에 400)
+            if user.agreements is not None and len(user.agreements) > 0:
+                agreements_list = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in user.agreements]
+                valid, err_msg = terms_crud.validate_user_agreements(connection, agreements_list)
+                if not valid:
+                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
+
+            # provider가 email이면 fb_email에, 그 외면 email에 저장
+            email_val = (email or "") if provider != "email" else ""
+            fb_email_val = (email or "") if provider == "email" else ""
+            insert_query = """
+                INSERT INTO user (
+                    name, email, phone, uid, fb_email
+                ) VALUES (%s, %s, %s, %s, %s);
+            """
+            cursor.execute(insert_query, (name, email_val, phone_number, uid, fb_email_val))
+            print(f"신규 사용자 생성: email={email}, provider={provider}")
 
         connection.commit()
         user_id = cursor.lastrowid
@@ -376,6 +383,14 @@ def signUp(user: User):
         
         # user_provider 추가
         linkAccount(uid, user_id, provider, email)
+
+        # 신규 가입 시 약관 동의 정보 저장
+        if not existing_user and user.agreements is not None and len(user.agreements) > 0:
+            agreements_list = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in user.agreements]
+            success, err_msg, _ = terms_crud.save_user_agreements(connection, user_id, agreements_list)
+            if not success:
+                # 이미 유저는 생성됨; 로그만 남기고 응답은 성공 (동의는 나중에 /terms/agree로 보완 가능)
+                logger.warning(f"signUp 약관 저장 실패 user_id={user_id}: {err_msg}")
         
         return {"user_id": user_id, "message": "new user registered"}
                                                   
@@ -393,7 +408,8 @@ def signUp(user: User):
         
 def linkAccount(uid, user_id, provider, email):
     print("linkAccount")
-    user_record = auth.get_user(uid)
+    user_app = get_user_firebase_app()
+    user_record = auth.get_user(uid, app=user_app)
     print("user_record\n\n")
     
     # email = user_record.email
@@ -501,7 +517,8 @@ async def login_user(
     provider = provider.strip()
     
     try:
-        user_record = auth.get_user(uid)
+        user_app = get_user_firebase_app()
+        user_record = auth.get_user(uid, app=user_app)
         email2 = user_record.email
     except Exception as e:
         # Firebase에 사용자가 없거나 다른 에러 발생
@@ -526,34 +543,28 @@ async def login_user(
         # provider를 활용한 DB 쿼리 (N+1 쿼리 문제 해결)
         # 변환된 provider로 user_provider 테이블 조회
         cursor.execute("""
-            SELECT u.*, 
-                   u.fb_email,
+            SELECT u.*,
                    CASE WHEN up.id IS NOT NULL THEN 1 ELSE 0 END as islinked
             FROM user u
-            LEFT JOIN user_provider up ON u.id = up.user_id 
-                AND up.email = %s 
+            LEFT JOIN user_provider up ON u.id = up.user_id
+                AND up.email = %s
                 AND up.provider = %s
             WHERE u.uid = %s
             LIMIT 1;
         """, (email, provider, uid))
-        
+
         result = cursor.fetchone()
-        
+
         if email == "apple":
              islinked = True
         elif result:
             islinked = result.get("islinked", 0) == 1
         else:
             islinked = None
-        
+
         if result:
             user_id = result["id"]
-            
-            # provider가 email이면 fb_email을 반환, 그 외면 email 반환
-            if provider == "email":
-                user_email = result.get("fb_email") or result.get("email") or None
-            else:
-                user_email = result.get("email") or None
+            user_email = result.get("email") or None
 
             print("이미 등록 islinked", islinked)
             # 이미 등록된 유저
@@ -665,19 +676,17 @@ async def idRegisteredUser(
             if result:
                 print(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
                 logger.info(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
-            return {'isRegistered': True}
-        else:
-                # 디버깅을 위해 phone으로 user가 있는지 확인
-                cursor.execute("SELECT id, phone FROM user WHERE phone = %s LIMIT 1", (phone,))
-                user_check = cursor.fetchone()
-                if user_check:
-                    # user는 있는데 해당 provider가 없는 경우 - 디버깅 로그
-                    cursor.execute("SELECT provider FROM user_provider WHERE user_id = %s", (user_check['id'],))
-                    existing_providers = cursor.fetchall()
-                    provider_list = [p['provider'] for p in existing_providers] if existing_providers else []
-                    print(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
-                    logger.info(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
-        
+                return {'isRegistered': True}
+            # 디버깅: phone으로 user는 있는데 해당 provider가 없는 경우
+            cursor.execute("SELECT id, phone FROM user WHERE phone = %s LIMIT 1", (phone,))
+            user_check = cursor.fetchone()
+            if user_check:
+                cursor.execute("SELECT provider FROM user_provider WHERE user_id = %s", (user_check['id'],))
+                existing_providers = cursor.fetchall()
+                provider_list = [p['provider'] for p in existing_providers] if existing_providers else []
+                print(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
+                logger.info(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
+
         # 결과 확인 (일치하는 값이 없으면 등록 안됨)
         return {'isRegistered': False}
 
@@ -859,7 +868,60 @@ async def getInquiry():
 
     finally:
         connection.close()
-        
+
+
+# ---------- 약관 동의 ----------
+
+@router.get("/terms/current")
+def get_terms_current():
+    """현재 시행 중인 약관 목록 (회원가입/재동의 화면 노출용)."""
+    connection = get_db_connection()
+    try:
+        terms = terms_crud.get_current_terms(connection, "user")
+        return {"terms": terms}
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_terms_current: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.get("/{user_id}/terms/status")
+def get_user_terms_status(user_id: int):
+    """유저의 약관별 동의 상태 및 재동의 필요 여부. 공지만 약관은 시행일 지나면 자동 저장."""
+    connection = get_db_connection()
+    try:
+        result = terms_crud.get_user_terms_status(connection, user_id)
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_user_terms_status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/terms/agree")
+def post_terms_agree(body: TermsAgreeRequest):
+    """약관 동의 저장 (회원가입/재동의 시). 필수 약관은 반드시 agreed=True."""
+    connection = get_db_connection()
+    try:
+        agreements = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in body.agreements]
+        success, err_msg, agreed_count = terms_crud.save_user_agreements(connection, body.user_id, agreements)
+        if not success:
+            raise HTTPException(status_code=400, detail=err_msg)
+        return {"success": True, "message": "약관 동의가 저장되었습니다.", "agreed_count": agreed_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"post_terms_agree: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
 @router.post("/reply/{inquiry_id}")
 async def subjectReply(inquiry_id: int, reply: InquiryResponse):
     connection = get_db_connection()  # 환경에 맞는 DB 연결               
@@ -1349,7 +1411,8 @@ def find_account(request: FindAccountRequest):
         
         # 2. Firebase에서 해당 uid의 유저 정보 확인
         try:
-            user_record = auth.get_user(user['uid'])
+            user_app = get_user_firebase_app()
+            user_record = auth.get_user(user['uid'], app=user_app)
             
             # Firebase 이메일 가입 유저인지 확인
             if not user_record.email:

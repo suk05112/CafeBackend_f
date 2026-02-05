@@ -20,11 +20,14 @@ from models.owner import OwnerFind
 from models.owner import OwnerFindPw
 from models.owner import OwnerInquiry
 from models.owner import OwnerInquiryResponse
+from models.owner import OwnerTermsAgreeRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from app.fcm_service import send_fcm_notification_to_owner
 from app.auth.auth_dependency import verify_firebase_token
+from crud import terms as terms_crud
 
 from models.user import User
+from schemas.settlement import AccountUpdateRequest
 
 router = APIRouter()
 
@@ -99,7 +102,60 @@ async def login(uid: str):
         )
     finally:
         close_db_connection(connection)
-        
+
+
+# ---------- 약관 동의 (사장님) ----------
+
+@router.get("/terms/current")
+def get_owner_terms_current():
+    """현재 시행 중인 약관 목록 (회원가입/재동의 화면 노출용)."""
+    connection = get_db_connection()
+    try:
+        terms = terms_crud.get_current_terms(connection, "owner")
+        return {"terms": terms}
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_owner_terms_current: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.get("/{owner_id}/terms/status")
+def get_owner_terms_status(owner_id: int):
+    """사장님의 약관별 동의 상태 및 재동의 필요 여부. 공지만 약관은 시행일 지나면 자동 저장."""
+    connection = get_db_connection()
+    try:
+        result = terms_crud.get_owner_terms_status(connection, owner_id)
+        return result
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_owner_terms_status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/terms/agree")
+def post_owner_terms_agree(body: OwnerTermsAgreeRequest):
+    """약관 동의 저장 (회원가입/재동의 시). 필수 약관은 반드시 agreed=True."""
+    connection = get_db_connection()
+    try:
+        agreements = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in body.agreements]
+        success, err_msg, agreed_count = terms_crud.save_owner_agreements(connection, body.owner_id, agreements)
+        if not success:
+            raise HTTPException(status_code=400, detail=err_msg)
+        return {"success": True, "message": "약관 동의가 저장되었습니다.", "agreed_count": agreed_count}
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"post_owner_terms_agree: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
 @router.post("/find_ownerId")
 async def findOwnerId(owner: OwnerFind):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
@@ -597,23 +653,53 @@ def get_store_statistics(store_id: int):
         connection.close()
 
 
+@router.get("/account/{store_id}")
+def get_account_by_store(store_id: int):
+    """store_id에 등록된 계좌 정보 조회"""
+    connection = get_db_connection()
+    try:
+        from crud import settlement as settlement_crud
+        account = settlement_crud.get_account_by_store(store_id)
+        if not account:
+            return {"account": {}}
+        return {"account": account}
+    except Exception as e:
+        print(f"Error in get_account_by_store: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
 @router.put("/account/{store_id}")
-def update_account(store_id: int, account: dict):
-    """계좌 정보 변경"""
+def update_account(store_id: int, account: AccountUpdateRequest):
+    """계좌 정보 변경 (예금주·은행·계좌번호 형식 검증 후 반영)"""
     connection = get_db_connection()
     try:
         from crud import settlement as settlement_crud
         from models.settlement import Account
-        
+
         account_obj = Account(
-            name=account.get('name'),
-            code=account.get('code'),
-            bank=account.get('bank'),
-            account=account.get('account')
+            name=account.name,
+            code=account.code,
+            bank=account.bank,
+            account=account.account,
         )
-        
         settlement_crud.update_account(store_id, account_obj)
-        return {'message': 'Account updated successfully'}
+
+        s3 = S3_CLIENT
+        bucket_name = BUCKET_NAME
+        bank_book_put_url = s3.generate_presigned_url(
+            "put_object",
+            Params={
+                "Bucket": bucket_name,
+                "Key": f"bankbook/bankbook_{store_id}.png",
+            },
+            ExpiresIn=3600,
+        )
+        return {
+            "message": "Account updated successfully",
+            "bank_book_put_url": bank_book_put_url,
+        }
     except Exception as e:
         print(f"Error in update_account: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -233,12 +233,12 @@ def useGifticon(gifticon_id: int):
             fee_rate = promotion_crud.get_fee_rate_for_gifticon(store_id, used_date)
             
             # order_history에 사용 기록 추가
-            if order_id:
-                cursor.execute('''
-                    INSERT INTO order_history (order_id, action_type, amount, status_to)
-                    SELECT %s, 'PAYMENT', total_amount, 'PAID'
-                    FROM orders WHERE id = %s
-                ''', (order_id, order_id))
+            # if order_id:
+            #     cursor.execute('''
+            #         INSERT INTO order_history (order_id, action_type, amount, status_to)
+            #         SELECT %s, 'PAYMENT', total_amount, 'PAID'
+            #         FROM orders WHERE id = %s
+            #     ''', (order_id, order_id))
             
             # 기프티콘 상태 업데이트 및 applied_fee_rate 업데이트 (프로모션이 있으면)
             cursor.execute('''
