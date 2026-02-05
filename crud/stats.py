@@ -94,16 +94,17 @@ def create_settlement_data(cycle_id: int) -> Dict:
         period_start = cycle['period_start_date']
         period_end = cycle['period_end_date']
         
-        # 2. 해당 기간에 사용된 기프티콘 조회 (아직 정산되지 않은 것만)
+        # 2. 해당 기간에 사용된 기프티콘 조회 (아직 정산되지 않은 것만). 매출액은 주문(orders) 금액 사용 (gifticon에는 total_price 컬럼 없음)
         cursor.execute("""
             SELECT 
                 g.id as gifticon_id,
                 g.store_id,
-                g.total_price as sales_amount,
+                COALESCE(o.amount, 0) as sales_amount,
                 g.applied_fee_rate,
                 COALESCE(a.bank, '') as bank_name,
                 COALESCE(a.account, '') as account_number
             FROM gifticon g
+            LEFT JOIN orders o ON g.order_id = o.id
             LEFT JOIN account a ON g.store_id = a.store_id
             WHERE g.status = 'USED'
             AND DATE(g.used_at) >= %s

@@ -358,6 +358,60 @@ def test_fee_rate_application():
         connection.close()
 
 
+def test_settlement_amount_per_store():
+    """매장별 정산금액 검증: settlement 합계 = 해당 settlement_details 합계"""
+    print("\n" + "=" * 60)
+    print("5. 매장별 정산금액 검증")
+    print("=" * 60)
+
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        # settlement 테이블의 금액 vs settlement_details 합계 비교
+        cursor.execute('''
+            SELECT 
+                s.settlement_id,
+                s.store_id,
+                s.total_sales_amount AS s_sales,
+                s.total_fee_amount AS s_fee,
+                s.net_payout_amount AS s_payout,
+                COALESCE(SUM(sd.sales_amount), 0) AS d_sales,
+                COALESCE(SUM(sd.fee_amount), 0) AS d_fee,
+                COALESCE(SUM(sd.settlement_amount), 0) AS d_payout
+            FROM settlement s
+            LEFT JOIN settlement_details sd ON s.settlement_id = sd.settlement_id
+            GROUP BY s.settlement_id, s.store_id, s.total_sales_amount, s.total_fee_amount, s.net_payout_amount
+            HAVING ABS(s.total_sales_amount - COALESCE(SUM(sd.sales_amount), 0)) > 1
+                OR ABS(s.total_fee_amount - COALESCE(SUM(sd.fee_amount), 0)) > 1
+                OR ABS(s.net_payout_amount - COALESCE(SUM(sd.settlement_amount), 0)) > 1
+        ''')
+
+        mismatches = cursor.fetchall()
+        if mismatches:
+            print(f"✗ 매장별 정산금액이 상세 합계와 일치하지 않는 건이 {len(mismatches)}건 있습니다:")
+            for m in mismatches:
+                print(f"  settlement_id={m['settlement_id']}, store_id={m['store_id']}:")
+                print(f"    settlement 테이블: 매출 {m['s_sales']:,} / 수수료 {m['s_fee']:,} / 지급액 {m['s_payout']:,}")
+                print(f"    상세 합계:        매출 {m['d_sales']:,} / 수수료 {m['d_fee']:,} / 지급액 {m['d_payout']:,}")
+            return False
+
+        cursor.execute('SELECT COUNT(*) AS cnt FROM settlement')
+        total = cursor.fetchone()['cnt']
+        print(f"✓ 검증한 정산 건수: {total}건")
+        print("✓ 모든 매장별 정산금액이 상세 합계와 일치합니다.")
+        return True
+
+    except Exception as e:
+        print(f"✗ 오류 발생: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return False
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def main():
     """메인 테스트 함수"""
     print("\n" + "=" * 60)
@@ -377,7 +431,10 @@ def main():
     
     # 4. 수수료율 적용 검증
     results.append(("수수료율 적용", test_fee_rate_application()))
-    
+
+    # 5. 매장별 정산금액 검증
+    results.append(("매장별 정산금액", test_settlement_amount_per_store()))
+
     # 결과 요약
     print("\n" + "=" * 60)
     print("테스트 결과 요약")

@@ -82,5 +82,3 @@ def update_account(store_id: int, account: Account):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed update Account: {str(e)}"
         )
-
-

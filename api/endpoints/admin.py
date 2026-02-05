@@ -6,8 +6,10 @@ from db.session import get_db_connection
 from crud import admin as admin_crud
 from crud import store as store_crud
 from crud import menu as menu_crud
+from crud import terms as terms_crud
 from models.store import StoreCreate
 from models.menu import Menu
+from core.s3_config import S3_CLIENT, BUCKET_NAME, TERMS_BUCKET_NAME
 
 router = APIRouter()
 
@@ -389,6 +391,292 @@ def delete_notice(target: str, notice_id: int):
         connection.close()
 
 
+# ---------- 약관 관리 ----------
+
+@router.post("/terms")
+def create_term(body: dict):
+    """약관 종류 추가. Body: target('user'|'owner'), term_type, title, required(optional, default True)"""
+    connection = get_db_connection()
+    try:
+        target = body.get("target", "user")
+        term_type = body.get("term_type")
+        title = body.get("title")
+        required = body.get("required", True)
+        if not term_type or not title:
+            raise HTTPException(status_code=400, detail="term_type and title are required")
+        if target not in ("user", "owner"):
+            raise HTTPException(status_code=400, detail="target must be 'user' or 'owner'")
+        term_id = terms_crud.create_term(connection, term_type, title, required, target)
+        return {"message": "Term created", "term_id": term_id}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in create_term: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.post("/terms/{term_id}/version")
+def create_term_version(term_id: int, body: dict):
+    """약관 버전 추가. 이미 같은 버전이 있으면 기존 version_id로 성공 반환(재등록/재업로드 허용)."""
+    connection = get_db_connection()
+    try:
+        version = body.get("version")
+        notice_date = body.get("notice_date")
+        effective_date = body.get("effective_date")
+        reagreement_required = body.get("reagreement_required", True)
+        if not version or not notice_date or not effective_date:
+            raise HTTPException(status_code=400, detail="version, notice_date, effective_date are required")
+        if isinstance(notice_date, str):
+            from datetime import datetime
+            notice_date = datetime.strptime(notice_date, "%Y-%m-%d").date()
+        if isinstance(effective_date, str):
+            from datetime import datetime
+            effective_date = datetime.strptime(effective_date, "%Y-%m-%d").date()
+        try:
+            version_id = terms_crud.create_term_version(
+                connection, term_id, version, notice_date, effective_date, reagreement_required
+            )
+            return {"message": "Term version created", "term_version_id": version_id}
+        except ValueError as e:
+            if "이미 존재하는 버전입니다" not in str(e):
+                raise HTTPException(status_code=400, detail=str(e))
+            existing_id = terms_crud.get_term_version_id_by_version(connection, term_id, version)
+            if existing_id is None:
+                raise HTTPException(status_code=500, detail="Version exists but could not be retrieved")
+            return {"message": "Term version already exists", "term_version_id": existing_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in create_term_version: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/terms/all")
+def get_all_terms(target: Optional[str] = Query(None, description="'user' 또는 'owner', None이면 전체")):
+    """모든 약관 종류 및 버전 조회 (관리자용). target 지정 시 해당만."""
+    connection = get_db_connection()
+    try:
+        if target and target not in ("user", "owner"):
+            raise HTTPException(status_code=400, detail="target must be 'user' or 'owner'")
+        result = terms_crud.get_all_terms_with_versions(connection, target)
+        return {"terms": result}
+    except Exception as e:
+        print(f"Error in get_all_terms: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.put("/terms_version/{version_id}")
+def update_term_version(version_id: int, body: dict):
+    """약관 버전 수정. Body: optional version, notice_date, effective_date, reagreement_required. 시행일은 공지일+30일 유지."""
+    connection = get_db_connection()
+    try:
+        notice_date = body.get("notice_date")
+        effective_date = body.get("effective_date")
+        if notice_date and isinstance(notice_date, str):
+            from datetime import datetime
+            notice_date = datetime.strptime(notice_date, "%Y-%m-%d").date()
+        if effective_date and isinstance(effective_date, str):
+            from datetime import datetime
+            effective_date = datetime.strptime(effective_date, "%Y-%m-%d").date()
+        success = terms_crud.update_term_version(
+            connection, version_id,
+            version=body.get("version"),
+            notice_date=notice_date,
+            effective_date=effective_date,
+            reagreement_required=body.get("reagreement_required"),
+        )
+        if not success:
+            raise HTTPException(status_code=404, detail="Term version not found")
+        return {"message": "Term version updated"}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_term_version: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/terms/content")
+def get_term_content(
+    target: str = Query(..., description="user 또는 owner"),
+    filename: str = Query(..., description="파일명 예: service_term_260101.txt"),
+):
+    """S3에서 약관 본문 파일 조회. key: terms/{user|partner}/{filename}"""
+    if target not in ("user", "owner"):
+        raise HTTPException(status_code=400, detail="target must be 'user' or 'owner'")
+    if ".." in filename or "/" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    s3_dir = "user" if target == "user" else "partner"
+    key = f"terms/{s3_dir}/{filename}"
+    bucket = TERMS_BUCKET_NAME
+    try:
+        obj = S3_CLIENT.get_object(Bucket=bucket, Key=key)
+        body = obj["Body"].read()
+        content = body.decode("utf-8", errors="replace")
+        return {"content": content, "filename": filename}
+    except Exception as e:
+        err_str = str(e)
+        err_lower = err_str.lower()
+        # 조회 실패 시 사용한 bucket/key 로그 (S3 콘솔에서 경로 확인용)
+        print(f"[terms/content] S3 GET failed: bucket={bucket}, key={key}, error={err_str}")
+        if "nosuchkey" in err_lower or "404" in err_lower or "no such key" in err_lower:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Term file not found. Check S3 key: s3://{bucket}/{key}",
+            )
+        if "accessdenied" in err_lower or "forbidden" in err_lower:
+            raise HTTPException(status_code=403, detail="S3 access denied")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=err_str)
+
+
+# 파일명 prefix -> term_type (Manager와 동일 규칙)
+_FILENAME_PREFIX_TO_TERM_TYPE_USER = {
+    "service_term": "SERVICE",
+    "marketing_term": "MARKETING",
+    "privacy_term": "PRIVACY",
+    "privacy_consent_term": "PRIVACY_CONSENT",
+    "location_term": "LOCATION",
+}
+_FILENAME_PREFIX_TO_TERM_TYPE_PARTNER = {
+    "partner_service_term": "SERVICE",
+    "partner_marketing_term": "MARKETING",
+    "partner_privacy_term": "PRIVACY",
+    "partner_privacy_consent_term": "PRIVACY_CONSENT",
+    "partner_location_term": "LOCATION",
+    "partner_fee_term": "FEE",
+}
+_TERM_TYPE_DEFAULT_TITLE = {
+    "SERVICE": "서비스 이용약관",
+    "MARKETING": "마케팅 정보 수신 이용약관",
+    "PRIVACY": "개인정보 처리방침",
+    "PRIVACY_CONSENT": "개인정보 수집 동의",
+    "LOCATION": "위치정보 이용약관",
+    "FEE": "수수료 약관",
+}
+
+
+def _parse_terms_filename(filename: str, target: str):
+    """filename(예: service_term_260101.txt) -> (term_type, version, effective_date, notice_date). 실패 시 None."""
+    from datetime import datetime, timedelta
+    if not filename or not filename.endswith(".txt"):
+        return None
+    base = filename[:-4]
+    parts = base.rsplit("_", 1)
+    if len(parts) != 2:
+        return None
+    prefix, version_str = parts[0], parts[1]
+    if len(version_str) != 6 or not version_str.isdigit():
+        return None
+    prefix_map = _FILENAME_PREFIX_TO_TERM_TYPE_USER if target == "user" else _FILENAME_PREFIX_TO_TERM_TYPE_PARTNER
+    term_type = prefix_map.get(prefix)
+    if not term_type:
+        return None
+    try:
+        y = 2000 + int(version_str[:2])
+        m = int(version_str[2:4])
+        d = int(version_str[4:6])
+        effective_date = datetime(y, m, d).date()
+        notice_date = effective_date - timedelta(days=30)
+    except (ValueError, TypeError):
+        return None
+    return {"term_type": term_type, "version": version_str, "effective_date": effective_date, "notice_date": notice_date}
+
+
+@router.post("/terms/upload")
+def upload_term_file(body: dict):
+    """S3에 약관 txt 업로드 후 DB에 term/term_version 등록. Body: target(user|owner), filename, content [, title, notice_date, effective_date, reagreement_required]"""
+    target = body.get("target")
+    filename = body.get("filename")
+    content = body.get("content", "")
+    if not target or target not in ("user", "owner"):
+        raise HTTPException(status_code=400, detail="target must be 'user' or 'owner'")
+    if not filename:
+        raise HTTPException(status_code=400, detail="filename is required")
+    if ".." in filename or "/" in filename:
+        raise HTTPException(status_code=400, detail="invalid filename")
+    s3_dir = "user" if target == "user" else "partner"
+    key = f"terms/{s3_dir}/{filename}"
+
+    parsed = _parse_terms_filename(filename, target)
+    if not parsed:
+        raise HTTPException(
+            status_code=400,
+            detail="filename must be like service_term_260101.txt or partner_service_term_260101.txt",
+        )
+    term_type = parsed["term_type"]
+    version = parsed["version"]
+    effective_date = parsed["effective_date"]
+    notice_date = parsed["notice_date"]
+    if body.get("effective_date"):
+        try:
+            from datetime import datetime
+            effective_date = datetime.strptime(body["effective_date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            pass
+    if body.get("notice_date"):
+        try:
+            from datetime import datetime
+            notice_date = datetime.strptime(body["notice_date"], "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            pass
+    title = body.get("title") or _TERM_TYPE_DEFAULT_TITLE.get(term_type, term_type)
+    reagreement_required = body.get("reagreement_required", True)
+    if isinstance(reagreement_required, str):
+        reagreement_required = reagreement_required.lower() in ("true", "1", "on", "yes")
+
+    connection = get_db_connection()
+    try:
+        terms_list = terms_crud.get_all_terms_with_versions(connection, target)
+        term_id = None
+        for t in terms_list:
+            if t.get("term_type") == term_type:
+                term_id = t["id"]
+                break
+        if not term_id:
+            term_id = terms_crud.create_term(connection, term_type, title, required=True, target=target)
+        try:
+            terms_crud.create_term_version(
+                connection, term_id, version, notice_date, effective_date, reagreement_required
+            )
+        except ValueError as e:
+            if "이미 존재하는 버전입니다" not in str(e):
+                connection.close()
+                raise HTTPException(status_code=400, detail=str(e))
+            # 버전이 이미 있으면 DB는 건너뛰고 S3만 덮어쓰기
+    except ValueError as e:
+        connection.close()
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        connection.close()
+        print(f"Error in terms/upload DB: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        try:
+            connection.close()
+        except Exception:
+            pass
+
+    try:
+        body_bytes = content.encode("utf-8")
+        S3_CLIENT.put_object(Bucket=TERMS_BUCKET_NAME, Key=key, Body=body_bytes, ContentType="text/plain; charset=utf-8")
+        return {"message": "Uploaded", "key": key, "term_type": term_type, "version": version}
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/test/store")
 def create_test_store(store: StoreCreate):
     """테스트 매장 추가"""
@@ -596,6 +884,36 @@ def generate_settlement_cycles(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         connection.close()
+
+
+@router.get("/settlement/list")
+def get_settlement_list_by_cycle(
+    cycle_id: int = Query(..., description="정산 주기 ID")
+):
+    """정산 주기별 매장 정산 리스트 (매장별 row)"""
+    try:
+        from crud import settlement as settlement_crud
+        items = settlement_crud.get_settlements_by_cycle(cycle_id)
+        return {'settlements': items}
+    except Exception as e:
+        print(f"Error in get_settlement_list_by_cycle: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/settlement/{settlement_id}/details")
+def get_settlement_details_admin(settlement_id: int):
+    """정산 상세 (헤더 + 건별 내역: 인덱스, 사용일, 금액, 수수료, 최종 정산금액)"""
+    try:
+        from crud import settlement as settlement_crud
+        data = settlement_crud.get_settlement_detail_for_admin(settlement_id)
+        if not data:
+            raise HTTPException(status_code=404, detail="Settlement not found")
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_settlement_details_admin: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/settlement/create/{cycle_id}")

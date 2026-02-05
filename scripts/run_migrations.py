@@ -5,8 +5,13 @@
 """
 import os
 import sys
-import pymysql
 from pathlib import Path
+
+# 프로젝트 루트를 Python 경로에 추가
+project_root = Path(__file__).parent.parent
+sys.path.insert(0, str(project_root))
+
+import pymysql
 from core.config import settings
 
 # 마이그레이션 파일 실행 순서
@@ -18,7 +23,12 @@ MIGRATION_FILES = [
     'create_settlement_cycles_table.sql',
     'create_new_settlement_tables.sql',
     'create_stats_tables.sql',
+    'create_terms_tables.sql',
+    'add_fb_email_to_user.sql',
 ]
+
+# RUN_TERMS_MIGRATE=1 일 때만 실행 (기존 약관 테이블 DROP 후 새 스키마로 생성, 데이터 삭제됨)
+TERMS_FULL_MIGRATE_FILE = 'migrate_terms_to_new_schema.sql'
 
 def run_migration_file(connection, file_path):
     """단일 마이그레이션 파일 실행"""
@@ -86,8 +96,14 @@ def run_migration_file(connection, file_path):
 
 def main():
     """메인 함수"""
-    # 데이터베이스 이름 설정
-    db_name = "cafeplatform_dev"
+    # 환경에 따라 데이터베이스 이름 설정
+    import os
+    env = os.getenv("ENV", "dev")
+    
+    if env in ["prod", "production"]:
+        db_name = "cafeplatform"
+    else:
+        db_name = "cafeplatform_dev"
     
     print(f"데이터베이스: {db_name}")
     print(f"호스트: {settings.db_host}")
@@ -95,8 +111,7 @@ def main():
     print(f"사용자: {settings.db_user}")
     print("\n마이그레이션 시작...")
     
-    # 마이그레이션 파일 디렉토리 (프로젝트 루트 기준)
-    project_root = Path(__file__).parent.parent
+    # 마이그레이션 파일 디렉토리
     migrations_dir = project_root / 'migrations'
     
     # 데이터베이스 연결 (데이터베이스 이름 지정)
@@ -131,6 +146,19 @@ def main():
         if run_migration_file(connection, file_path):
             success_count += 1
         else:
+            fail_count += 1
+
+    # 약관 테이블 새 스키마 적용 (RUN_TERMS_MIGRATE=1 일 때만, terms/terms_version/user_terms_agreement/owner_terms_agreement 데이터 삭제됨)
+    if os.getenv("RUN_TERMS_MIGRATE") == "1":
+        terms_migrate_path = migrations_dir / TERMS_FULL_MIGRATE_FILE
+        if terms_migrate_path.exists():
+            print(f"\n⚠ RUN_TERMS_MIGRATE=1: {TERMS_FULL_MIGRATE_FILE} 실행 (약관 관련 테이블 데이터 초기화)")
+            if run_migration_file(connection, terms_migrate_path):
+                success_count += 1
+            else:
+                fail_count += 1
+        else:
+            print(f"\n⚠ 파일을 찾을 수 없습니다: {TERMS_FULL_MIGRATE_FILE}")
             fail_count += 1
     
     connection.close()

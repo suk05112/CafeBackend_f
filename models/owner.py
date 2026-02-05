@@ -1,4 +1,5 @@
 from pydantic import BaseModel
+from typing import List
 
 class Owner(BaseModel):
     name: str
@@ -20,4 +21,14 @@ class OwnerInquiry(BaseModel):
 
 class OwnerInquiryResponse(BaseModel):
     response: str
-    
+
+
+class OwnerTermsAgreeItem(BaseModel):
+    term_id: int
+    term_version_id: int
+    agreed: bool
+
+
+class OwnerTermsAgreeRequest(BaseModel):
+    owner_id: int
+    agreements: List[OwnerTermsAgreeItem]

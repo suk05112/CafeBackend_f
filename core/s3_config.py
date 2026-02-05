@@ -16,6 +16,9 @@ if env in ["dev", "development", "local"]:
 else:
     BUCKET_NAME = "cafeplatform"
 
+# 약관 파일은 운영환경 상관없이 항상 cafeplatform 버킷 사용
+TERMS_BUCKET_NAME = "cafeplatform"
+
 # S3 클라이언트 설정
 S3_CLIENT = boto3.client(
     's3',
