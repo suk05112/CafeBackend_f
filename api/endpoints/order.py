@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException, status
 from fastapi import FastAPI
 import traceback
 
-from typing import Union
+from typing import Union, Optional
 from pydantic import BaseModel
 from loguru import logger
 
@@ -20,6 +20,20 @@ import http.client
 import json
 
 router = APIRouter()
+
+
+class RefundReceiverAccount(BaseModel):
+    """수신자 환불 시 계좌정보 (7일 이후 환불일 때 필수)"""
+    account_holder: str
+    bank_code: str
+    bank_name: str
+    account_number: str
+
+
+class RefundRequest(BaseModel):
+    """환불 요청 본문 (수신자 계좌 + 환불 사유)"""
+    receiver_account: Optional[RefundReceiverAccount] = None
+    reason: Optional[str] = None
 
 # 한국 시간대 (KST, UTC+9)
 KST = timezone(timedelta(hours=9))
@@ -616,90 +630,176 @@ def getOrderDetail(order_id: int):
         cursor.close()
         connection.close()
         
-#기프티콘 환불
-@router.get("/refund/{order_id}")
-def refundGifticon(order_id: int):
-    connection = get_db_connection()  # 환경에 맞는 DB 연결
+# 기프티콘 환불 (7일 이내: 구매자 환불, 7일 이후: 수신자 환불 + 계좌정보). reason 저장 (7일 전/후 공통)
+@router.post("/refund/{order_id}")
+def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
+    """
+    주문일(created_at) 기준 7일 이내: 구매자에게 토스 결제 취소 환불.
+    주문일 기준 7일 이후: 수신자 환불(계좌정보 필수), 기프티콘만 무효화.
+    """
+    connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-       
+
     try:
-        # 1. orders 테이블에서 해당 order_id와 payment_key 조회
-        cursor.execute('''SELECT id, payment_key FROM orders WHERE id=%s''', (order_id,))
+        # 1. 주문 조회 (id, payment_key, amount, created_at, status)
+        cursor.execute(
+            """SELECT id, payment_key, amount, created_at, status FROM orders WHERE id=%s""",
+            (order_id,),
+        )
         order = cursor.fetchone()
-        
+
         if not order:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Order with id {order_id} not found"
+                detail=f"Order with id {order_id} not found",
             )
-        
-        payment_key = order.get('payment_key')
-        if not payment_key:
+
+        if order.get("status") == "REFUNDED":
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Payment key not found for order {order_id}"
+                detail=f"Order {order_id} is already refunded",
             )
-        
-        # 2. 토스페이먼츠 취소 요청
-        conn = http.client.HTTPSConnection("api.tosspayments.com")
 
-        payload_dict = {"cancelReason": "구매자 변심"}
-        payload = json.dumps(payload_dict, ensure_ascii=False).encode('utf-8')
+        order_created = order["created_at"]
+        if hasattr(order_created, "date"):
+            order_date = order_created.date()
+        else:
+            order_date = order_created
+        today = get_kst_now().date()
+        cutoff_date = order_date + timedelta(days=7)
+        within_7_days = today <= cutoff_date
 
-        headers = {
-            'Authorization': "Basic dGVzdF9za196WExrS0V5cE5BcldtbzUwblgzbG1lYXhZRzVSOg==",
-            'Content-Type': "application/json; charset=utf-8"
-        }
+        amount = int(order.get("amount") or 0)
 
-        cancel_url = f"/v1/payments/{payment_key}/cancel"
-        conn.request("POST", cancel_url, payload, headers)
-
-        res = conn.getresponse()
-        data = res.read()
-        response_data = data.decode("utf-8")
-
-        print(f"Toss Payments cancel response: {response_data}")
-
-        # 취소 요청 실패 시 에러 처리
-        if res.status != 200:
-            logger.error(f"Toss Payments cancel failed: {response_data}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Payment cancel failed: {response_data}"
-            )
-        
-        # 3. orders 테이블의 status를 REFUNDED로 업데이트
-        cursor.execute('''UPDATE orders SET status='REFUNDED' WHERE id=%s''', (order_id,))
-        connection.commit()
-        
-        # 4. orders_gifticon 테이블을 통해 해당 order_id와 연결된 모든 gifticon_id 찾기
-        cursor.execute('''SELECT gifticon_id FROM orders_gifticon WHERE order_id=%s''', (order_id,))
+        # 2. 연결된 기프티콘 조회
+        cursor.execute(
+            """SELECT gifticon_id FROM orders_gifticon WHERE order_id=%s""",
+            (order_id,),
+        )
         gifticon_rows = cursor.fetchall()
-        
-        # 5. 각 gifticon의 status를 CANCELED로 업데이트
-        for row in gifticon_rows:
-            gifticon_id = row['gifticon_id']
-            cursor.execute('''UPDATE gifticon SET status='CANCELED' WHERE id=%s''', (gifticon_id,))
-        
-        connection.commit()
-        
-        return {
-            "message": f"Order {order_id} refunded successfully",
-            "order_id": order_id,
-            "gifticons_canceled": len(gifticon_rows)
-        }
-        
+        gifticon_ids = [r["gifticon_id"] for r in gifticon_rows]
+
+        if within_7_days:
+            # 7일 이내: 구매자 환불 (토스 결제 취소)
+            payment_key = order.get("payment_key")
+            if not payment_key:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Payment key not found for order {order_id}",
+                )
+
+            conn = http.client.HTTPSConnection("api.tosspayments.com")
+            payload_dict = {"cancelReason": "구매자 변심"}
+            payload = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
+            headers = {
+                "Authorization": "Basic dGVzdF9za196WExrS0V5cE5BcldtbzUwblgzbG1lYXhZRzVSOg==",
+                "Content-Type": "application/json; charset=utf-8",
+            }
+            conn.request("POST", f"/v1/payments/{payment_key}/cancel", payload, headers)
+            res = conn.getresponse()
+            response_data = res.read().decode("utf-8")
+
+            if res.status != 200:
+                logger.error(f"Toss Payments cancel failed: {response_data}")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f"Payment cancel failed: {response_data}",
+                )
+
+            cursor.execute(
+                """UPDATE orders SET status='REFUNDED' WHERE id=%s""",
+                (order_id,),
+            )
+            for gid in gifticon_ids:
+                cursor.execute(
+                    """UPDATE gifticon SET status='CANCELED' WHERE id=%s""",
+                    (gid,),
+                )
+
+            reason = (body.reason or "")[:500] if body else None
+            cursor.execute(
+                """
+                INSERT INTO refund (order_id, refund_type, amount, status, refunded_at, reason)
+                VALUES (%s, 'PURCHASER', %s, 'COMPLETED', NOW(), %s)
+                """,
+                (order_id, amount, reason),
+            )
+            connection.commit()
+
+            return {
+                "message": "구매자에게 환불되었습니다.",
+                "order_id": order_id,
+                "refund_type": "PURCHASER",
+                "gifticons_canceled": len(gifticon_ids),
+            }
+        else:
+            # 7일 이후: 수신자 환불 (계좌정보 필수)
+            receiver_account = body.receiver_account if body else None
+            if not receiver_account:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="7일 이후 환불은 수신자 계좌정보(account_holder, bank_code, bank_name, account_number)가 필요합니다.",
+                )
+
+            # 수신자 user_id (해당 주문 기프티콘 중 하나의 user_id)
+            receiver_user_id = None
+            if gifticon_ids:
+                cursor.execute(
+                    """SELECT user_id FROM gifticon WHERE id=%s LIMIT 1""",
+                    (gifticon_ids[0],),
+                )
+                row = cursor.fetchone()
+                if row:
+                    receiver_user_id = row.get("user_id")
+
+            cursor.execute(
+                """UPDATE orders SET status='REFUNDED' WHERE id=%s""",
+                (order_id,),
+            )
+            for gid in gifticon_ids:
+                cursor.execute(
+                    """UPDATE gifticon SET status='CANCELED' WHERE id=%s""",
+                    (gid,),
+                )
+
+            reason = (body.reason or "")[:500] if body else None
+            cursor.execute(
+                """
+                INSERT INTO refund (
+                    order_id, refund_type, amount, status, refunded_at,
+                    receiver_user_id, account_holder, bank_code, bank_name, account_number, reason
+                ) VALUES (%s, 'RECEIVER', %s, 'COMPLETED', NOW(), %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    order_id,
+                    amount,
+                    receiver_user_id,
+                    receiver_account.account_holder.strip(),
+                    receiver_account.bank_code.strip(),
+                    receiver_account.bank_name.strip(),
+                    receiver_account.account_number.strip(),
+                    reason,
+                ),
+            )
+            connection.commit()
+
+            return {
+                "message": "수신자 계좌로 환불 예정입니다.",
+                "order_id": order_id,
+                "refund_type": "RECEIVER",
+                "gifticons_canceled": len(gifticon_ids),
+            }
+
     except HTTPException:
         raise
     except Exception as e:
-        print(e)
         traceback.print_exc()
-        logger.error(f"서버 오류 발생: {str(e)}")
+        logger.error(f"refund gifticon: {str(e)}")
+        connection.rollback()
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed refund gifticon: {str(e)}"
+            detail=f"failed refund gifticon: {str(e)}",
         )
-
-    finally:        
+    finally:
         cursor.close()
         connection.close()

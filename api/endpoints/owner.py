@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Header, Depends
+from fastapi import APIRouter, HTTPException, status, Header, Depends, Query
 from fastapi import FastAPI
 
 from fastapi import FastAPI
@@ -708,33 +708,34 @@ def update_account(store_id: int, account: AccountUpdateRequest):
 
 
 @router.get("/settlement/{store_id}")
-def get_owner_settlement_data(store_id: int):
-    """사장님 정산 데이터 조회 (정산 주기별)"""
-    connection = get_db_connection()
+def get_owner_settlement_data(
+    store_id: int,
+    past_months: int = Query(3, description="과거 몇 달 기준으로 정산 목록 조회 (1~24)", ge=1, le=24),
+):
+    """사장님 정산 목록. 과거 N달 기준은 쿼리 파라미터 past_months로 지정 (기본 3)."""
     try:
         from crud import settlement as settlement_crud
-        settlements = settlement_crud.get_owner_settlement_data(store_id)
-        return {'settlements': settlements}
+        items = settlement_crud.get_owner_settlement_list_unified(store_id, past_months=past_months)
+        return {'settlements': items}
     except Exception as e:
         print(f"Error in get_owner_settlement_data: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        connection.close()
 
 
 @router.get("/settlement/detail/{settlement_id}")
 def get_owner_settlement_detail(settlement_id: int):
-    """사장님 정산 상세 내역 조회"""
-    connection = get_db_connection()
+    """사장님 정산 상세: settlement 헤더 + details 건별 내역"""
     try:
         from crud import settlement as settlement_crud
-        details = settlement_crud.get_owner_settlement_detail(settlement_id)
-        return {'details': details}
+        data = settlement_crud.get_owner_settlement_detail(settlement_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="해당 정산을 찾을 수 없습니다.")
+        return data
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in get_owner_settlement_detail: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        connection.close()
 
 
 @router.get("/list/{owner_id}")

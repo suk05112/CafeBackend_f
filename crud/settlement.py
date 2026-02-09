@@ -1,11 +1,22 @@
 """
 Settlement CRUD 로직
 """
+import math
 import pymysql
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 from datetime import datetime, date, timedelta
 
 from db.session import get_db_connection, close_db_connection
+
+
+def calc_fee_supply_and_vat(sales_amount: int, fee_rate_pct: float) -> Tuple[int, int, int]:
+    """수수료 공급가액(원미만 절사) + 부가세(소수점 첫째 자리 반올림).
+    예: 2,220원 3.5% → 공급가액 77원 + 부가세 8원 = 수수료 85원.
+    Returns (공급가액, 부가세, 총수수료)."""
+    supply = math.floor(sales_amount * fee_rate_pct / 100)  # 원미만 절사
+    vat = round(supply * 0.1)  # 부가세 10%, 소수점 첫째 자리 반올림
+    total_fee = supply + vat
+    return (supply, vat, total_fee)
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from models.settlement import Account
 
@@ -89,8 +100,8 @@ def create_or_update_order_settlement(connection, order_id: int, store_id: int, 
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        # 수수료 계산 (소수점 이하 반올림)
-        commission_amount = round(order_amount * (commission_rate / 100))
+        # 수수료 계산: 공급가액 원미만 절사 + 부가세 소수점 첫째 자리 반올림
+        _, _, commission_amount = calc_fee_supply_and_vat(int(order_amount), float(commission_rate))
         settlement_amount = order_amount - commission_amount
         
         # 주문건별 정산 정보 생성
@@ -393,6 +404,7 @@ def get_owner_settlement_data(store_id: int) -> List[Dict]:
                 s.net_payout_amount,
                 s.status,
                 s.payout_date,
+                s.failure_reason,
                 sc.payout_date as expected_payout_date
             FROM settlement s
             LEFT JOIN settlement_cycles sc ON s.cycle_id = sc.cycle_id
@@ -413,7 +425,8 @@ def get_owner_settlement_data(store_id: int) -> List[Dict]:
                 'fee_amount': float(settlement['total_fee_amount'] or 0),
                 'expected_payout_date': settlement['expected_payout_date'].isoformat() if settlement.get('expected_payout_date') else None,
                 'status': settlement['status'],
-                'payout_date': settlement['payout_date'].isoformat() if settlement['payout_date'] else None
+                'payout_date': settlement['payout_date'].isoformat() if settlement['payout_date'] else None,
+                'failure_reason': settlement.get('failure_reason'),
             })
         
         return result
@@ -422,40 +435,195 @@ def get_owner_settlement_data(store_id: int) -> List[Dict]:
         connection.close()
 
 
-def get_owner_settlement_detail(settlement_id: int) -> List[Dict]:
-    """사장님 정산 상세 내역 조회"""
+def get_owner_settlement_list_unified(
+    store_id: int,
+    past_months: int = 3,
+) -> List[Dict]:
+    """사장님 정산 목록.
+    1) settlement_cycles 전체 읽어서
+    2) period_end_date가 과거 past_months달 ~ 오늘 범위인 주기 중, 정산 데이터 존재하는 것만 리스트로 구성
+    3) period_start_date ~ period_end_date에 오늘이 포함된 주기(진행 중)는 정산 데이터 없으므로 기존 주문 데이터로 preview 만들어 리스트 맨 앞에 추가
+    """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+    try:
+        today = date.today()
+        cutoff = today - timedelta(days=max(1, past_months * 30))
+
+        cursor.execute("""
+            SELECT cycle_id, period_start_date, period_end_date, payout_date, status
+            FROM settlement_cycles
+            ORDER BY period_start_date ASC
+        """)
+        all_cycles = cursor.fetchall()
+        if not all_cycles:
+            return []
+
+        result = []
+        current_cycle = None
+
+        for c in all_cycles:
+            period_start = c.get('period_start_date')
+            period_end = c.get('period_end_date')
+            if not period_start or not period_end:
+                continue
+            if hasattr(period_start, 'date') and callable(period_start.date):
+                period_start = period_start.date()
+            if hasattr(period_end, 'date') and callable(period_end.date):
+                period_end = period_end.date()
+
+            if period_start <= today <= period_end:
+                current_cycle = c
+
+            if period_end < cutoff or period_end > today:
+                continue
+            cursor.execute("""
+                SELECT s.settlement_id, s.cycle_id, s.period_start, s.period_end,
+                    s.total_sales_amount, s.total_fee_amount, s.net_payout_amount,
+                    s.status, s.payout_date, s.failure_reason,
+                    sc.payout_date AS expected_payout_date
+                FROM settlement s
+                LEFT JOIN settlement_cycles sc ON s.cycle_id = sc.cycle_id
+                WHERE s.store_id = %s AND s.cycle_id = %s
+                ORDER BY s.settlement_id DESC
+                LIMIT 1
+            """, (store_id, c['cycle_id']))
+            row = cursor.fetchone()
+            if not row:
+                continue
+            pe = row.get('expected_payout_date')
+            if pe and hasattr(pe, 'isoformat'):
+                pe = pe.isoformat()
+            elif pe is not None:
+                pe = str(pe)
+            else:
+                pe = None
+            result.append({
+                'settlement_id': row['settlement_id'],
+                'cycle_id': row['cycle_id'],
+                'period_start': row['period_start'].isoformat() if row.get('period_start') else None,
+                'period_end': row['period_end'].isoformat() if row.get('period_end') else None,
+                'total_sales_amount': int(row['total_sales_amount'] or 0),
+                'total_fee_amount': int(row['total_fee_amount'] or 0),
+                'net_payout_amount': int(row['net_payout_amount'] or 0),
+                'expected_amount': float(row['net_payout_amount'] or 0),
+                'fee_amount': float(row['total_fee_amount'] or 0),
+                'expected_payout_date': pe,
+                'status': row['status'],
+                'payout_date': row['payout_date'].isoformat() if row.get('payout_date') else None,
+                'failure_reason': row.get('failure_reason'),
+            })
+
+        if current_cycle:
+            period_start = current_cycle.get('period_start_date')
+            period_end = current_cycle.get('period_end_date')
+            cycle_id = current_cycle['cycle_id']
+            payout_date = current_cycle.get('payout_date')
+            period_start_str = period_start.isoformat() if hasattr(period_start, 'isoformat') else str(period_start)
+            period_end_str = period_end.isoformat() if hasattr(period_end, 'isoformat') else str(period_end)
+            payout_date_str = payout_date.isoformat() if payout_date and hasattr(payout_date, 'isoformat') else (str(payout_date) if payout_date else None)
+
+            cursor.execute("""
+                SELECT COALESCE(o.amount, 0) AS sales_amount, g.applied_fee_rate
+                FROM gifticon g
+                LEFT JOIN orders o ON g.order_id = o.id
+                WHERE g.store_id = %s AND g.status = 'USED'
+                AND g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            """, (store_id, period_start_str, period_end_str))
+            rows = cursor.fetchall()
+            total_sales = 0
+            total_fee = 0
+            for r in rows:
+                sales = int(r['sales_amount'] or 0)
+                rate = float(r['applied_fee_rate'] or 3.0)
+                _, _, fee = calc_fee_supply_and_vat(sales, rate)
+                total_sales += sales
+                total_fee += fee
+            net = total_sales - total_fee
+            if total_sales > 0:
+                preview = {
+                    'settlement_id': None,
+                    'cycle_id': cycle_id,
+                    'period_start': period_start_str,
+                    'period_end': period_end_str,
+                    'total_sales_amount': total_sales,
+                    'total_fee_amount': total_fee,
+                    'net_payout_amount': net,
+                    'expected_amount': float(net),
+                    'fee_amount': float(total_fee),
+                    'expected_payout_date': payout_date_str,
+                    'status': 'PENDING',
+                    'payout_date': None,
+                    'failure_reason': None,
+                }
+                result.insert(0, preview)
+
+        result.sort(key=lambda x: (x.get('period_start') or ''), reverse=True)
+        return result
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
+    """사장님 정산 상세: 헤더(settlement) + 건별 내역(details). 없으면 None."""
+    sid = int(settlement_id)
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         cursor.execute("""
-            SELECT 
-                sd.id,
-                sd.gifticon_id,
-                sd.sales_amount,
-                sd.fee_amount,
-                sd.settlement_amount,
-                s.status as settlement_status
+            SELECT settlement_id, store_id, cycle_id, period_start, period_end,
+                total_sales_amount, total_fee_amount, net_payout_amount,
+                status, payout_date, failure_reason
+            FROM settlement
+            WHERE settlement_id = %s
+        """, (sid,))
+        settlement = cursor.fetchone()
+        if not settlement:
+            return None
+        cursor.execute("""
+            SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
+                g.used_at, m.menu_name
             FROM settlement_details sd
-            JOIN settlement s ON sd.settlement_id = s.settlement_id
+            JOIN gifticon g ON sd.gifticon_id = g.id
+            LEFT JOIN menu m ON g.menu_id = m.id
             WHERE sd.settlement_id = %s
-            ORDER BY sd.id DESC
-        """, (settlement_id,))
-        
-        details = cursor.fetchall()
-        result = []
-        
-        for detail in details:
-            result.append({
-                'id': detail['id'],
-                'gifticon_id': detail['gifticon_id'],
-                'amount': float(detail['sales_amount'] or 0),
-                'fee_amount': float(detail['fee_amount'] or 0),
-                'settlement_amount': float(detail['settlement_amount'] or 0),
-                'status': detail['settlement_status']
+            ORDER BY sd.id
+        """, (sid,))
+        rows = cursor.fetchall()
+        details = []
+        for d in rows:
+            used_at = d.get('used_at')
+            if used_at and hasattr(used_at, 'strftime'):
+                used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
+            else:
+                used_at_str = str(used_at) if used_at else None
+            details.append({
+                'id': d['id'],
+                'gifticon_id': d['gifticon_id'],
+                'menu_name': d.get('menu_name'),
+                'used_at': used_at_str,
+                'amount': int(d['sales_amount'] or 0),
+                'fee_amount': int(d['fee_amount'] or 0),
+                'settlement_amount': int(d['settlement_amount'] or 0),
+                'status': settlement.get('status'),
             })
-        
-        return result
+        return {
+            'settlement': {
+                'settlement_id': settlement['settlement_id'],
+                'store_id': settlement['store_id'],
+                'cycle_id': settlement['cycle_id'],
+                'period_start': settlement['period_start'].isoformat() if settlement.get('period_start') else None,
+                'period_end': settlement['period_end'].isoformat() if settlement.get('period_end') else None,
+                'total_sales_amount': int(settlement['total_sales_amount'] or 0),
+                'total_fee_amount': int(settlement['total_fee_amount'] or 0),
+                'net_payout_amount': int(settlement['net_payout_amount'] or 0),
+                'status': settlement['status'],
+                'payout_date': settlement['payout_date'].isoformat() if settlement.get('payout_date') else None,
+                'failure_reason': settlement.get('failure_reason'),
+            },
+            'details': details,
+        }
     finally:
         cursor.close()
         connection.close()
@@ -579,14 +747,19 @@ def get_settlement_detail_for_admin(settlement_id: int) -> Dict:
         }
         items = []
         for i, d in enumerate(details, 1):
+            used_at = d.get('used_at')
+            if used_at and hasattr(used_at, 'strftime'):
+                used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
+            else:
+                used_at_str = str(used_at) if used_at is not None else '-'
             items.append({
                 'index': i,
-                'id': d['id'],
-                'gifticon_id': d['gifticon_id'],
-                'used_at': d['used_at'].strftime('%Y-%m-%d %H:%M') if d.get('used_at') else '-',
-                'sales_amount': int(d['sales_amount'] or 0),
-                'fee_amount': int(d['fee_amount'] or 0),
-                'settlement_amount': int(d['settlement_amount'] or 0),
+                'id': d.get('id'),
+                'gifticon_id': d.get('gifticon_id'),
+                'used_at': used_at_str,
+                'sales_amount': int(d.get('sales_amount') or 0),
+                'fee_amount': int(d.get('fee_amount') or 0),
+                'settlement_amount': int(d.get('settlement_amount') or 0),
             })
         return {'settlement': header, 'details': items}
     finally:
