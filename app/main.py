@@ -103,6 +103,10 @@ else:
 logger = logging.getLogger(logger_name)
 logger.addHandler(cloudwatch_handler)
 logger.setLevel(logging.INFO)
+# 엔드포인트에서 사용하는 cafe_backend 로거에도 동일 핸들러 추가 (CloudWatch 수집)
+cafe_backend_logger = logging.getLogger("cafe_backend")
+cafe_backend_logger.addHandler(cloudwatch_handler)
+cafe_backend_logger.setLevel(logging.INFO)
 
 # lifespan 함수 정의 (app 생성 전에 정의 필요)
 @asynccontextmanager
@@ -174,7 +178,8 @@ async def log_requests(request: Request, call_next):
         "/isRegistered" in request.url.path 
         or request.url.path.endswith("/isRegistered")
     )
-    
+    is_settlement_endpoint = "settlement" in request.url.path
+
     # 요청 본문 읽기 (POST/PUT/PATCH만, 최대 10KB로 제한)
     request_body = None
     if not is_get_request and request.method in ["POST", "PUT", "PATCH"]:
@@ -193,13 +198,13 @@ async def log_requests(request: Request, call_next):
     
     # 로깅 판단
     # 헬스체크: 실패 시에만 로깅
-    # login: 성공/실패 상관없이 항상 로깅
+    # login / settlement: 성공/실패 상관없이 항상 로깅 (AWS 수집)
     # 그 외 GET: 오류 시에만 로깅
     # 그 외: 모두 로깅
     if is_health_check:
         should_log = response.status_code >= 400
-    elif is_login_endpoint or is_isRegistered_endpoint:
-        should_log = True  # login은 항상 로깅
+    elif is_login_endpoint or is_isRegistered_endpoint or is_settlement_endpoint:
+        should_log = True
     elif is_get_request:
         should_log = response.status_code >= 400
     else:

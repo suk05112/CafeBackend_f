@@ -1,6 +1,7 @@
 """
 Settlement API 엔드포인트
 """
+import logging
 import traceback
 from fastapi import APIRouter, HTTPException, status
 
@@ -10,6 +11,7 @@ from models.settlement import Account
 from crud import settlement as settlement_crud
 
 router = APIRouter()
+cloudwatch_logger = logging.getLogger("cafe_backend")
 
 
 @router.post("/register/{store_id}")
@@ -19,7 +21,9 @@ def register_account(store_id: int, account: Account):
         settlement_crud.create_account(store_id, account)
         return {}
     except Exception as e:
-        logger.error(f"Error in register_account: {traceback.format_exc()}")
+        err_msg = f"settlement register_account error: {traceback.format_exc()}"
+        logger.error(err_msg)
+        cloudwatch_logger.error(err_msg)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed register Account: {str(e)}"
@@ -33,7 +37,9 @@ def get_settlement_list(store_id: int):
         settlements = settlement_crud.get_settlements_by_store(store_id)
         return {'settlements': settlements}
     except Exception as e:
-        logger.error(f"Error in get_settlement_list: {traceback.format_exc()}")
+        err_msg = f"settlement get_settlement_list error: {traceback.format_exc()}"
+        logger.error(err_msg)
+        cloudwatch_logger.error(err_msg)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed getSettlementAmountsByDate: {str(e)}"
@@ -47,7 +53,9 @@ def get_detail_settlements(settlement_id: int):
         details = settlement_crud.get_settlement_detail(settlement_id)
         return {'detail_settlements': details}
     except Exception as e:
-        logger.error(f"Error in get_detail_settlements: {traceback.format_exc()}")
+        err_msg = f"settlement get_detail_settlements error: {traceback.format_exc()}"
+        logger.error(err_msg)
+        cloudwatch_logger.error(err_msg)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed getDetailSettlements: {str(e)}"
@@ -63,7 +71,9 @@ def get_account(store_id: int):
             return {'account': {}}
         return {'account': account}
     except Exception as e:
-        logger.error(f"Error in get_account: {traceback.format_exc()}")
+        err_msg = f"settlement get_account error: {traceback.format_exc()}"
+        logger.error(err_msg)
+        cloudwatch_logger.error(err_msg)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed get Account: {str(e)}"
@@ -77,7 +87,9 @@ def update_account(store_id: int, account: Account):
         settlement_crud.update_account(store_id, account)
         return {'message': 'Account updated successfully'}
     except Exception as e:
-        logger.error(f"Error in update_account: {traceback.format_exc()}")
+        err_msg = f"settlement update_account error: {traceback.format_exc()}"
+        logger.error(err_msg)
+        cloudwatch_logger.error(err_msg)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed update Account: {str(e)}"

@@ -855,6 +855,39 @@ def get_settlement_cycle(cycle_id: int):
         connection.close()
 
 
+def _close_settlement_cycle_impl(cycle_id: int):
+    """정산 주기 마감 구현 (PATCH/POST 공용)"""
+    from crud import settlement_cycle as cycle_crud
+    updated = cycle_crud.close_settlement_cycle(cycle_id)
+    if not updated:
+        raise HTTPException(status_code=404, detail="정산 주기를 찾을 수 없거나 이미 마감되었습니다.")
+    return {"success": True, "message": "정산 주기가 마감되었습니다.", "cycle_id": cycle_id}
+
+
+@router.patch("/settlement/cycles/{cycle_id}/close")
+def close_settlement_cycle_patch(cycle_id: int):
+    """정산 주기 마감: settlement_cycles.status 를 CLOSED 로 변경 (PATCH)"""
+    try:
+        return _close_settlement_cycle_impl(cycle_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in close_settlement_cycle: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/settlement/cycles/{cycle_id}/close")
+def close_settlement_cycle_post(cycle_id: int):
+    """정산 주기 마감 (POST - 프록시에서 PATCH 미지원 시 사용)"""
+    try:
+        return _close_settlement_cycle_impl(cycle_id)
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in close_settlement_cycle: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/settlement/cycles/generate")
 def generate_settlement_cycles(
     start_date: Optional[str] = Query(None, description="시작일 (YYYY-MM-DD), 기본값: 오늘"),
@@ -934,4 +967,39 @@ def create_settlement_data(cycle_id: int):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         connection.close()
+
+
+@router.get("/refund/list")
+def get_refund_list_api(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    refund_type: Optional[str] = Query(None, description="PURCHASER 또는 RECEIVER"),
+):
+    """환불 리스트 (관리자). id, 구매날짜, 환불요청날짜, 환불타입, 예금주, 계좌번호, 지급상태"""
+    try:
+        from crud import refund as refund_crud
+        result = refund_crud.get_refund_list(page=page, limit=limit, refund_type=refund_type)
+        return result
+    except Exception as e:
+        print(f"Error in get_refund_list: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/refund/{refund_id}/status")
+def update_refund_status_api(refund_id: int, body: dict):
+    """환불 지급상태 변경. body: { \"status\": \"COMPLETED\" } (REQUESTED, COMPLETED, FAILED)"""
+    status = (body.get("status") or "").strip().upper()
+    if not status:
+        raise HTTPException(status_code=400, detail="status is required")
+    try:
+        from crud import refund as refund_crud
+        updated = refund_crud.update_refund_status(refund_id, status)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Refund not found or invalid status")
+        return updated
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_refund_status: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
