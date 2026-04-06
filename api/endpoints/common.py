@@ -1,8 +1,13 @@
 """
 Common API 엔드포인트
 """
+import html
+import json
 import traceback
-from fastapi import APIRouter, HTTPException, status, Query
+from urllib.parse import urlencode
+
+from fastapi import APIRouter, HTTPException, status, Query, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Literal
 import pymysql
@@ -132,6 +137,52 @@ def get_gifnut_image_url(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=error_message
         )
+
+
+def _ppay_return_query_from_mapping(data: dict) -> dict:
+    """앱 `PayletterPpayCheckoutPage`와 동일 키(code, tid, order_no)."""
+    out = {}
+    for key in ("code", "tid", "order_no", "message"):
+        val = data.get(key)
+        if val is not None and str(val) != "":
+            out[key] = str(val)
+    return out
+
+
+def _ppay_html_redirect_deeplink(path: str, query: dict) -> HTMLResponse:
+    q = urlencode(query) if query else ""
+    dest = f"gifnut://payletter{path}"
+    if q:
+        dest = f"{dest}?{q}"
+    esc = html.escape(dest)
+    js_dest = json.dumps(dest)
+    body = f"""<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<meta http-equiv="refresh" content="0;url={esc}"/>
+<script>location.replace({js_dest});</script>
+<title>Redirect</title>
+</head><body></body></html>"""
+    return HTMLResponse(content=body)
+
+
+@router.api_route("/payletter/ppay/app-return", methods=["GET", "POST"])
+async def payletter_ppay_app_return(request: Request):
+    """PPAY return_url — GET 쿼리 또는 POST 폼 → 앱 딥링크로 이동."""
+    if request.method == "POST":
+        try:
+            form = await request.form()
+            data = {k: form.get(k) for k in form.keys()}
+        except Exception:
+            data = {}
+    else:
+        data = dict(request.query_params)
+    params = _ppay_return_query_from_mapping(data)
+    return _ppay_html_redirect_deeplink("/return", params)
+
+
+@router.api_route("/payletter/ppay/app-cancel", methods=["GET", "POST"])
+async def payletter_ppay_app_cancel(_request: Request):
+    """PPAY cancel_url — WebView가 이 URL을 열면 결제 취소로 처리."""
+    return _ppay_html_redirect_deeplink("/cancel", {})
 
 
 @router.post("/notification/broadcast")

@@ -48,7 +48,19 @@ class Settings(BaseSettings):
         default="NEMxQjNDQTk5NzRGNjRERUIxMzRDNzlGMkYwMEE3NUM",
         description="PPAY 네이버페이 조회용 API Key",
     )
-    
+    # PPAY 콜백 IP (nginx 뒤 FastAPI만 검사 시 X-Real-IP / X-Forwarded-For 사용)
+    payletter_callback_enforce_ip: bool = Field(
+        default=False,
+        description="True면 콜백 요청 출발 IP가 allowlist에 있을 때만 처리",
+    )
+    payletter_callback_allowed_ips: str = Field(
+        default=(
+            "211.115.72.37,211.115.72.38,211.115.120.37,211.115.120.38,"
+            "211.115.117.11,211.115.120.167"
+        ),
+        description="콜백 허용 IP 쉼표 구분 (페이레터 문서 기준 라이브+예비+테스트)",
+    )
+
     def get_apple_private_key(self) -> str:
         """
         .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 반환
