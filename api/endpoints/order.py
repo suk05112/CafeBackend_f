@@ -50,7 +50,17 @@ def get_kst_now():
 
 
 def _apply_gifticon_validity_and_settlement(connection, cursor, order_id: int) -> None:
-    """결제 성공 후 기프티콘 유효기간·정산 반영 (orders는 이미 COMPLETED)."""
+    """결제 성공 직후 호출. 해당 주문에 연결된 기프티콘과 정산 정보를 갱신한다.
+
+    동작:
+      1. orders_gifticon 테이블에서 order_id에 해당하는 gifticon_id 목록 조회
+      2. 각 gifticon의 validity = 오늘로부터 365일 후, status = 'UNUSED' 로 업데이트
+      3. settlement_crud.update_settlement_on_order 로 매장 정산 데이터 반영
+         - 정산 실패는 WARNING 로그만 남기고 결제 완료 자체는 유지한다.
+
+    이 함수는 updatePaymentResult(앱 호출)와 payletter_ppay_callback(서버→서버) 양쪽에서 동일하게 호출된다.
+    """
+    # 해당 주문에 연결된 기프티콘 ID 목록 조회
     cursor.execute(
         """
         SELECT gifticon_id
@@ -60,9 +70,12 @@ def _apply_gifticon_validity_and_settlement(connection, cursor, order_id: int) -
         (order_id,),
     )
     gifticon_rows = cursor.fetchall()
+
+    # 유효기간: 결제 완료 시각 기준 1년 후
     validity_date = (get_kst_now() + timedelta(days=365)).date()
     for row in gifticon_rows:
         gifticon_id = row["gifticon_id"]
+        # validity(만료일) 설정, status를 UNUSED(사용 가능)로 변경
         cursor.execute(
             """
             UPDATE gifticon
@@ -72,6 +85,8 @@ def _apply_gifticon_validity_and_settlement(connection, cursor, order_id: int) -
             (validity_date, gifticon_id),
         )
     connection.commit()
+
+    # 정산 정보 갱신 — 실패해도 결제 완료 처리에는 영향 없음
     try:
         cursor.execute(
             """SELECT store_id, amount, created_at FROM orders WHERE id = %s""",
@@ -90,7 +105,7 @@ def _apply_gifticon_validity_and_settlement(connection, cursor, order_id: int) -
                 store_id=order_info["store_id"],
                 order_amount=float(order_info["amount"] or 0),
                 order_date=order_datetime,
-                commission_rate=6.9,
+                commission_rate=6.9,  # 수수료율 6.9%
             )
     except Exception as settlement_error:
         logger.warning(
@@ -448,16 +463,19 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
 
 @router.post("/payment/result")
 def updatePaymentResult(payment_result: PaymentResult):
-    """
-    결제 결과를 받아서 order의 payment_key와 status를 업데이트하는 API
-    결제 성공 시: status = COMPLETED
-    결제 실패 시: status = UNKNOWN
+    """앱 클라이언트가 결제 WebView 종료 후 결과를 직접 전달하는 API.
+
+    페이레터 PPAY 흐름에서는 WebView가 닫힐 때 앱이 tid(=payment_key)를 갖고 이 API를 호출한다.
+    서버→서버 콜백(payletter_ppay_callback)이 먼저 처리됐을 수 있으므로, COMPLETED 상태를 중복 처리해도 무관.
+
+    결제 성공(is_success=True): status = COMPLETED + 기프티콘·정산 반영
+    결제 실패(is_success=False): status = UNKNOWN (payment_key null 가능)
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        # 1. order_id로 주문 정보 확인
+        # 1. order_id 로 주문 존재 확인
         cursor.execute('''SELECT id, status FROM orders WHERE id=%s''', (payment_result.order_id,))
         order = cursor.fetchone()
         
@@ -467,13 +485,13 @@ def updatePaymentResult(payment_result: PaymentResult):
                 detail=f"Order with id {payment_result.order_id} not found"
             )
         
-        # 2. 결제 결과에 따라 status 설정
+        # 2. 성공·실패에 따른 목표 상태 결정
         if payment_result.is_success:
             new_status = 'COMPLETED'
         else:
             new_status = 'UNKNOWN'
         
-        # 3. order 테이블 업데이트 (payment_key와 status)
+        # 3. orders 테이블: payment_key(= tid) 와 status 업데이트
         update_query = """
             UPDATE orders 
             SET payment_key = %s, status = %s 
@@ -489,6 +507,7 @@ def updatePaymentResult(payment_result: PaymentResult):
         )
         connection.commit()
         
+        # 4. 결제 성공 시 기프티콘 유효기간·상태, 정산 정보 반영
         if payment_result.is_success:
             _apply_gifticon_validity_and_settlement(
                 connection, cursor, payment_result.order_id
@@ -519,7 +538,30 @@ def updatePaymentResult(payment_result: PaymentResult):
 
 @router.post("/payment/payletter-ppay/callback")
 async def payletter_ppay_callback(request: Request):
-    """페이레터 PPAY 서버→가맹점 결제 성공 콜백 (본문 JSON, 응답 code 0 성공)."""
+    """페이레터 PPAY 서버→가맹점 결제 성공 콜백.
+
+    페이레터가 결제 성공 시에만 POST로 호출한다. 실패·취소는 호출하지 않는다.
+    응답 본문 {"code":0} 을 돌려줘야 페이레터가 성공으로 간주한다.
+    code != 0 이면 5분 간격으로 최대 20회 재전송된다.
+
+    처리 순서:
+      1. 출발 IP 검사 (PAYLETTER_CALLBACK_ENFORCE_IP=true 일 때만 적용)
+      2. JSON 파싱 및 필수 필드 확인 (tid, order_no)
+      3. client_id 로 결제용 API Key 결정
+      4. payhash = SHA256(user_id + amount + tid + API Key) 검증 — 위변조 방지
+      5. order_no 로 DB 주문 조회
+      6. custom_parameter.order_id 일치 여부 확인 (앱이 JSON으로 심어 둔 내부 order_id)
+      7. 결제 금액 일치 여부 확인
+      8. user_id 일치 여부 확인 (앱에서 'u{user_id}' 형태로 전달한 경우)
+      9. 이미 같은 tid로 COMPLETED 면 멱등 처리 (code 0 반환)
+     10. orders.status PENDING → COMPLETED, payment_key = tid 로 업데이트
+     11. _apply_gifticon_validity_and_settlement 호출
+         - gifticon validity 1년 설정, status UNUSED
+         - 정산 정보 반영
+    """
+    # ── 1. IP 검사 ──────────────────────────────────────────────────────────────
+    # PAYLETTER_CALLBACK_ENFORCE_IP=true 일 때만 허용 IP 목록과 비교한다.
+    # nginx 뒤에서는 X-Real-IP(루프백/사설 peer 조건)를 통해 원래 IP를 복원한다.
     ip_ok, effective_ip, ip_reason = check_payletter_callback_ip(request)
     if not ip_ok:
         logger.warning(
@@ -532,6 +574,7 @@ async def payletter_ppay_callback(request: Request):
             content={"detail": "callback source ip not allowed"},
         )
 
+    # ── 2. 본문 파싱 ────────────────────────────────────────────────────────────
     try:
         payload = await request.json()
     except Exception:
@@ -540,11 +583,11 @@ async def payletter_ppay_callback(request: Request):
             content={"code": 99, "message": "invalid json"},
         )
 
-    payhash = payload.get("payhash")
-    tid = payload.get("tid")
-    order_no = payload.get("order_no")
+    payhash  = payload.get("payhash")
+    tid      = payload.get("tid")       # 페이레터 결제 고유번호 — 이후 payment_key로 저장
+    order_no = payload.get("order_no")  # 주문 시 우리가 생성한 주문번호
     user_id_pl = str(payload.get("user_id") or "")
-    amount = payload.get("amount")
+    amount   = payload.get("amount")
     client_id = payload.get("client_id")
 
     if not tid or not order_no:
@@ -553,6 +596,8 @@ async def payletter_ppay_callback(request: Request):
             content={"code": 98, "message": "missing tid or order_no"},
         )
 
+    # ── 3. client_id → API Key 매핑 ─────────────────────────────────────────────
+    # 기본 가맹점(hansj4525) 또는 네이버페이 전용 가맹점(hansj4525n)에 따라 키가 다르다.
     api_key = resolve_payment_api_key_for_client_id(client_id)
     if not api_key:
         return JSONResponse(
@@ -560,6 +605,8 @@ async def payletter_ppay_callback(request: Request):
             content={"code": 97, "message": "unknown client_id"},
         )
 
+    # ── 4. payhash 검증 ──────────────────────────────────────────────────────────
+    # SHA256(user_id + amount + tid + 결제용 API Key) 와 비교 — 위변조 방지 핵심
     if not verify_callback_payhash(user_id_pl, amount, tid, payhash, api_key):
         logger.warning("payletter ppay payhash fail order_no={} tid={}", order_no, tid)
         return JSONResponse(
@@ -567,9 +614,11 @@ async def payletter_ppay_callback(request: Request):
             content={"code": 96, "message": "payhash verification failed"},
         )
 
+    # ── 5~11. DB 처리 ────────────────────────────────────────────────────────────
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
+        # 5. order_no 로 주문 조회
         cursor.execute(
             """
             SELECT id, status, payment_key, amount, user_id, order_no
@@ -584,6 +633,7 @@ async def payletter_ppay_callback(request: Request):
                 content={"code": 94, "message": "order not found"},
             )
 
+        # 6. 앱이 custom_parameter 에 심어 둔 내부 order_id 와 DB 주문 ID 비교
         cp = payload.get("custom_parameter")
         if cp:
             try:
@@ -595,14 +645,16 @@ async def payletter_ppay_callback(request: Request):
                         content={"code": 93, "message": "order_id mismatch"},
                     )
             except (json.JSONDecodeError, TypeError, ValueError):
-                pass
+                pass  # custom_parameter 파싱 실패 시 무시하고 진행
 
+        # 7. 결제 금액 검증 — 조작 가능성 차단
         if int(row["amount"]) != int(amount):
             return JSONResponse(
                 status_code=200,
                 content={"code": 92, "message": "amount mismatch"},
             )
 
+        # 8. user_id 검증 — 앱이 'u{user_id}' 형태로 전달했을 때만 확인
         rest = user_id_pl[1:] if user_id_pl.startswith("u") else ""
         if rest.isdigit():
             if int(rest) != int(row["user_id"]):
@@ -611,12 +663,14 @@ async def payletter_ppay_callback(request: Request):
                     content={"code": 91, "message": "user mismatch"},
                 )
 
+        # 9. 멱등 처리 — 같은 tid 로 이미 완료된 주문이면 code 0 재반환
         if row["status"] == "COMPLETED":
             if row["payment_key"] == tid:
                 return JSONResponse(
                     status_code=200,
                     content={"code": 0, "message": "OK"},
                 )
+            # 다른 tid 로 이미 완료됐으면 비정상 상황
             return JSONResponse(
                 status_code=200,
                 content={"code": 90, "message": "already completed with different tid"},
@@ -628,6 +682,8 @@ async def payletter_ppay_callback(request: Request):
                 content={"code": 89, "message": f"invalid status {row['status']}"},
             )
 
+        # 10. 주문 확정 — PENDING → COMPLETED, payment_key = tid(페이레터 결제 고유번호)
+        # WHERE status='PENDING' 조건으로 동시 요청 중복 처리 방지
         cursor.execute(
             """
             UPDATE orders SET payment_key=%s, status=%s
@@ -636,6 +692,7 @@ async def payletter_ppay_callback(request: Request):
             (tid, "COMPLETED", row["id"]),
         )
         if cursor.rowcount == 0:
+            # 업데이트 못 함 → 동시 콜백이 이미 처리했을 가능성 재확인
             cursor.execute(
                 "SELECT status, payment_key FROM orders WHERE id=%s",
                 (row["id"],),
@@ -646,6 +703,7 @@ async def payletter_ppay_callback(request: Request):
                 and r2["status"] == "COMPLETED"
                 and r2["payment_key"] == tid
             ):
+                # 동시 요청이 먼저 완료 → 멱등 성공으로 응답
                 return JSONResponse(
                     status_code=200,
                     content={"code": 0, "message": "OK"},
@@ -655,8 +713,11 @@ async def payletter_ppay_callback(request: Request):
                 content={"code": 88, "message": "concurrent update"},
             )
         connection.commit()
+
+        # 11. 기프티콘 유효기간·상태 및 정산 정보 반영
         _apply_gifticon_validity_and_settlement(connection, cursor, row["id"])
         return JSONResponse(status_code=200, content={"code": 0, "message": "OK"})
+
     except Exception as e:
         logger.exception("payletter ppay callback failed: {}", e)
         connection.rollback()
