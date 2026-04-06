@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Request
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 import traceback
 
 from typing import Union, Optional
@@ -15,6 +16,10 @@ from models.gifticon import Gifticon, PaymentResult
 from models.store import StoreCreate
 from crud import settlement as settlement_crud
 from crud import promotion as promotion_crud
+from services.payletter_ppay import (
+    resolve_payment_api_key_for_client_id,
+    verify_callback_payhash,
+)
 
 import http.client
 import json
@@ -41,6 +46,58 @@ KST = timezone(timedelta(hours=9))
 def get_kst_now():
     """한국 시간(KST)을 반환하는 헬퍼 함수"""
     return datetime.now(KST)
+
+
+def _apply_gifticon_validity_and_settlement(connection, cursor, order_id: int) -> None:
+    """결제 성공 후 기프티콘 유효기간·정산 반영 (orders는 이미 COMPLETED)."""
+    cursor.execute(
+        """
+        SELECT gifticon_id
+        FROM orders_gifticon
+        WHERE order_id = %s
+        """,
+        (order_id,),
+    )
+    gifticon_rows = cursor.fetchall()
+    validity_date = (get_kst_now() + timedelta(days=365)).date()
+    for row in gifticon_rows:
+        gifticon_id = row["gifticon_id"]
+        cursor.execute(
+            """
+            UPDATE gifticon
+            SET validity = %s, status = 'UNUSED'
+            WHERE id = %s
+            """,
+            (validity_date, gifticon_id),
+        )
+    connection.commit()
+    try:
+        cursor.execute(
+            """SELECT store_id, amount, created_at FROM orders WHERE id = %s""",
+            (order_id,),
+        )
+        order_info = cursor.fetchone()
+        if order_info:
+            order_datetime = (
+                order_info["created_at"]
+                if order_info.get("created_at")
+                else get_kst_now()
+            )
+            settlement_crud.update_settlement_on_order(
+                connection=connection,
+                order_id=order_id,
+                store_id=order_info["store_id"],
+                order_amount=float(order_info["amount"] or 0),
+                order_date=order_datetime,
+                commission_rate=6.9,
+            )
+    except Exception as settlement_error:
+        logger.warning(
+            "Failed to update settlement info for order %s: %s",
+            order_id,
+            str(settlement_error),
+        )
+
 
 def generate_order_no(connection) -> str:
     """

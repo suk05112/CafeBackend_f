@@ -22,6 +22,32 @@ class Settings(BaseSettings):
     apple_private_key_line5: str = Field(default="", description="Apple Private Key Line 5")
     apple_private_key_line6: str = Field(default="", description="Apple Private Key Line 6")
     apple_redirect_uri: str = Field(default="", description="Apple Redirect URI")
+
+    # 페이레터 PPAY (통합 간편결제) — 콜백 payhash 검증·환경 정합용
+    payletter_client_id: str = Field(
+        default="hansj4525",
+        description="PPAY 기본 가맹점 client_id",
+    )
+    payletter_naver_client_id: str = Field(
+        default="hansj4525n",
+        description="PPAY 네이버페이용 client_id",
+    )
+    payletter_payment_api_key: str = Field(
+        default="***REMOVED_PAYLETTER_KEY***",
+        description="PPAY 기본 결제용 API Key (PLKEY)",
+    )
+    payletter_naver_payment_api_key: str = Field(
+        default="***REMOVED_PAYLETTER_KEY***",
+        description="PPAY 네이버페이 결제용 API Key",
+    )
+    payletter_search_api_key: str = Field(
+        default="",
+        description="PPAY 기본 조회용 API Key (거래조회 등 연동 시)",
+    )
+    payletter_naver_search_api_key: str = Field(
+        default="NEMxQjNDQTk5NzRGNjRERUIxMzRDNzlGMkYwMEE3NUM",
+        description="PPAY 네이버페이 조회용 API Key",
+    )
     
     def get_apple_private_key(self) -> str:
         """
