@@ -21,9 +21,11 @@ from services.payletter_ppay import (
     resolve_payment_api_key_for_client_id,
     verify_callback_payhash,
 )
+from core.config import settings
 
 import http.client
 import json
+import os
 
 router = APIRouter()
 
@@ -47,6 +49,32 @@ KST = timezone(timedelta(hours=9))
 def get_kst_now():
     """한국 시간(KST)을 반환하는 헬퍼 함수"""
     return datetime.now(KST)
+
+
+def _is_naver_payment_label(payment_label: Optional[str]) -> bool:
+    label = (payment_label or "").strip().lower()
+    return ("네이버" in (payment_label or "")) or ("naver" in label)
+
+
+def _resolve_payletter_client_and_api_key(payment_label: Optional[str]) -> tuple[str, str]:
+    """주문 결제수단 라벨 기반으로 페이레터 client_id/API Key를 결정한다."""
+    is_naver = _is_naver_payment_label(payment_label)
+    if is_naver:
+        cid = (settings.payletter_naver_client_id or "").strip()
+        api_key = (settings.payletter_naver_payment_api_key or "").strip()
+        if cid and api_key:
+            return cid, api_key
+
+    cid = (settings.payletter_client_id or "").strip()
+    api_key = (settings.payletter_payment_api_key or "").strip()
+    return cid, api_key
+
+
+def _payletter_pg_api_host() -> str:
+    env = (os.getenv("ENV", "dev") or "dev").strip().lower()
+    if env in {"prod", "production"}:
+        return "pgapi.payletter.com"
+    return "testpgapi.payletter.com"
 
 
 def _apply_gifticon_validity_and_settlement(connection, cursor, order_id: int) -> None:
@@ -243,6 +271,34 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
     cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
       
     try:
+        # 0. menu_id 기준으로 store_id를 보정/검증
+        # 모바일 앱에서 menu.store_id가 누락(0)될 수 있어, 서버에서 menu 테이블 기준으로 확정한다.
+        cursor.execute(
+            """
+            SELECT store_id
+            FROM menu
+            WHERE id = %s AND is_deleted = 0
+            LIMIT 1
+            """,
+            (gifticon.menu_id,),
+        )
+        menu_row = cursor.fetchone()
+        if not menu_row:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="유효하지 않은 메뉴입니다.",
+            )
+
+        resolved_store_id = int(menu_row["store_id"])
+        if gifticon.store_id and gifticon.store_id != resolved_store_id:
+            logger.warning(
+                "purchaseGifticon store_id mismatch. client=%s resolved=%s menu_id=%s user_id=%s",
+                gifticon.store_id,
+                resolved_store_id,
+                gifticon.menu_id,
+                user_id,
+            )
+
         # 0. 중복 주문 체크 (결제 완료된 주문만 체크: payment_key가 있는 주문)
         # 결제 전(PENDING) 주문은 중복으로 간주하지 않음
         five_minutes_ago = get_kst_now() - timedelta(minutes=5)
@@ -262,7 +318,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
             LIMIT 1
         ''', (
             user_id,
-            gifticon.store_id,
+            resolved_store_id,
             gifticon.menu_id,
             gifticon.total_price,
             gifticon.receiver,
@@ -294,7 +350,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         cursor.execute(
             order_query,
             (
-                gifticon.store_id,
+                resolved_store_id,
                 user_id,
                 None,  # 결제 전이므로 payment_key는 NULL
                 gifticon.total_price,
@@ -335,7 +391,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
                 gifticon.receiver,
                 gifticon.receiver_phone_number,
                 gifticon.menu_id,
-                gifticon.store_id,
+                resolved_store_id,
                 order_id,  # order_id 추가
                 current_fee_rate,  # applied_fee_rate 저장
             )
@@ -351,7 +407,7 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         while retry_count < max_retries:
             try:
                 # 기프티콘 번호 생성
-                gift_code = generate_gift_code(connection, cursor, gifticon.store_id, user_id, gifticon_id + retry_count)
+                gift_code = generate_gift_code(connection, cursor, resolved_store_id, user_id, gifticon_id + retry_count)
                 
                 # gift_code 업데이트 시도
                 update_query = """
@@ -466,7 +522,7 @@ def updatePaymentResult(payment_result: PaymentResult):
     """앱 클라이언트가 결제 WebView 종료 후 결과를 직접 전달하는 API.
 
     페이레터 PPAY 흐름에서는 WebView가 닫힐 때 앱이 tid(=payment_key)를 갖고 이 API를 호출한다.
-    서버→서버 콜백(payletter_ppay_callback)이 먼저 처리됐을 수 있으므로, COMPLETED 상태를 중복 처리해도 무관.
+    서버→서버 콜백(payletter_ppay_callback)이 이미 COMPLETED로 확정한 경우 중복 처리 없이 바로 반환한다.
 
     결제 성공(is_success=True): status = COMPLETED + 기프티콘·정산 반영
     결제 실패(is_success=False): status = UNKNOWN (payment_key null 가능)
@@ -475,8 +531,8 @@ def updatePaymentResult(payment_result: PaymentResult):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        # 1. order_id 로 주문 존재 확인
-        cursor.execute('''SELECT id, status FROM orders WHERE id=%s''', (payment_result.order_id,))
+        # 1. order_id 로 주문 존재 확인 (payment_key 포함 조회 — COMPLETED 조기 반환에 사용)
+        cursor.execute('''SELECT id, status, payment_key FROM orders WHERE id=%s''', (payment_result.order_id,))
         order = cursor.fetchone()
         
         if not order:
@@ -485,13 +541,22 @@ def updatePaymentResult(payment_result: PaymentResult):
                 detail=f"Order with id {payment_result.order_id} not found"
             )
         
-        # 2. 성공·실패에 따른 목표 상태 결정
+        # 2. 이미 COMPLETED이면 콜백이 먼저 처리한 것이므로 중복 작업 없이 반환
+        if order['status'] == 'COMPLETED':
+            return {
+                "message": "Payment already completed",
+                "order_id": payment_result.order_id,
+                "status": 'COMPLETED',
+                "payment_key": order.get('payment_key')
+            }
+
+        # 3. 성공·실패에 따른 목표 상태 결정
         if payment_result.is_success:
             new_status = 'COMPLETED'
         else:
             new_status = 'UNKNOWN'
         
-        # 3. orders 테이블: payment_key(= tid) 와 status 업데이트
+        # 4. orders 테이블: payment_key(= tid) 와 status 업데이트
         update_query = """
             UPDATE orders 
             SET payment_key = %s, status = %s 
@@ -507,7 +572,7 @@ def updatePaymentResult(payment_result: PaymentResult):
         )
         connection.commit()
         
-        # 4. 결제 성공 시 기프티콘 유효기간·상태, 정산 정보 반영
+        # 5. 결제 성공 시 기프티콘 유효기간·상태, 정산 정보 반영
         if payment_result.is_success:
             _apply_gifticon_validity_and_settlement(
                 connection, cursor, payment_result.order_id
@@ -866,18 +931,22 @@ def getOrderDetail(order_id: int):
         
 # 기프티콘 환불 (7일 이내: 구매자 환불, 7일 이후: 수신자 환불 + 계좌정보). reason 저장 (7일 전/후 공통)
 @router.post("/refund/{order_id}")
-def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
+def refundGifticon(order_id: int, request: Request, body: Optional[RefundRequest] = None):
     """
-    주문일(created_at) 기준 7일 이내: 구매자에게 토스 결제 취소 환불.
+    주문일(created_at) 기준 7일 이내: 구매자에게 페이레터 결제 취소 환불.
     주문일 기준 7일 이후: 수신자 환불(계좌정보 필수), 기프티콘만 무효화.
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # 1. 주문 조회 (id, payment_key, amount, created_at, status)
+        # 1. 주문 조회 (id, user_id, payment_key, payment, amount, created_at, status)
         cursor.execute(
-            """SELECT id, payment_key, amount, created_at, status FROM orders WHERE id=%s""",
+            """
+            SELECT id, user_id, payment_key, payment, amount, created_at, status
+            FROM orders
+            WHERE id=%s
+            """,
             (order_id,),
         )
         order = cursor.fetchone()
@@ -914,7 +983,7 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
         gifticon_ids = [r["gifticon_id"] for r in gifticon_rows]
 
         if within_7_days:
-            # 7일 이내: 구매자 환불 (토스 결제 취소)
+            # 7일 이내: 구매자 환불 (페이레터 결제 취소)
             payment_key = order.get("payment_key")
             if not payment_key:
                 raise HTTPException(
@@ -922,19 +991,44 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
                     detail=f"Payment key not found for order {order_id}",
                 )
 
-            conn = http.client.HTTPSConnection("api.tosspayments.com")
-            payload_dict = {"cancelReason": "구매자 변심"}
+            order_user_id = str(order.get("user_id") or "").strip()
+            if not order_user_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"User id not found for order {order_id}",
+                )
+
+            client_id, payletter_api_key = _resolve_payletter_client_and_api_key(
+                order.get("payment")
+            )
+            if not client_id or not payletter_api_key:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="Payletter client_id or api key is not configured",
+                )
+
+            ip_addr = "127.0.0.1"
+            if request.client and request.client.host:
+                ip_addr = request.client.host
+
+            conn = http.client.HTTPSConnection(_payletter_pg_api_host())
+            payload_dict = {
+                "client_id": client_id,
+                "user_id": order_user_id,
+                "tid": payment_key,
+                "ip_addr": ip_addr,
+            }
             payload = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
             headers = {
-                "Authorization": "Basic dGVzdF9za196WExrS0V5cE5BcldtbzUwblgzbG1lYXhZRzVSOg==",
+                "Authorization": f"PLKEY {payletter_api_key}",
                 "Content-Type": "application/json; charset=utf-8",
             }
-            conn.request("POST", f"/v1/payments/{payment_key}/cancel", payload, headers)
+            conn.request("POST", "/v1.0/payments/cancel", payload, headers)
             res = conn.getresponse()
             response_data = res.read().decode("utf-8")
 
             if res.status != 200:
-                logger.error(f"Toss Payments cancel failed: {response_data}")
+                logger.error(f"Payletter cancel failed: {response_data}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Payment cancel failed: {response_data}",
@@ -961,7 +1055,7 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
             connection.commit()
 
             return {
-                "message": "구매자에게 환불되었습니다.",
+                "message": "페이레터 결제 취소로 구매자에게 환불되었습니다.",
                 "order_id": order_id,
                 "refund_type": "PURCHASER",
                 "gifticons_canceled": len(gifticon_ids),

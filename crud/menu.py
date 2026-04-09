@@ -44,6 +44,7 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
             
             menus.append({
                 "menu_id": row['id'],
+                "store_id": store_id,
                 "menu_name": row['menu_name'],
                 "price": row['price'],
                 "description": row['description'],
