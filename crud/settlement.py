@@ -138,129 +138,42 @@ def create_or_update_order_settlement(connection, order_id: int, store_id: int, 
         cursor.close()
 
 
-def create_or_update_monthly_settlement(connection, store_id: int, year: int, month: int) -> int:
-    """
-    월별 정산 정보 생성 또는 업데이트
-    
-    Args:
-        connection: DB 연결 (이미 열려있는 connection 사용)
-        store_id: 매장 ID
-        year: 정산 년도
-        month: 정산 월 (1~12)
-    
-    Returns:
-        monthly_settlement.id
-    """
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
-    try:
-        # 해당 월의 주문건별 정산 정보 집계
-        aggregate_query = """
-            SELECT 
-                COUNT(*) as total_order_count,
-                COALESCE(SUM(order_amount), 0) as total_amount,
-                COALESCE(SUM(commission_amount), 0) as total_commission,
-                COALESCE(SUM(settlement_amount), 0) as settlement_amount
-            FROM order_settlement
-            WHERE store_id = %s
-            AND YEAR(order_date) = %s
-            AND MONTH(order_date) = %s
-            AND status = 'PENDING'
-        """
-        cursor.execute(aggregate_query, (store_id, year, month))
-        aggregate = cursor.fetchone()
-        
-        total_order_count = aggregate['total_order_count'] or 0
-        total_amount = float(aggregate['total_amount'] or 0)
-        total_commission = float(aggregate['total_commission'] or 0)
-        settlement_amount = float(aggregate['settlement_amount'] or 0)
-        
-        # 월별 정산 정보 생성 또는 업데이트
-        insert_query = """
-            INSERT INTO monthly_settlement (
-                store_id, settlement_year, settlement_month,
-                total_order_count, total_amount, total_commission, settlement_amount,
-                status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
-            ON DUPLICATE KEY UPDATE
-                total_order_count = VALUES(total_order_count),
-                total_amount = VALUES(total_amount),
-                total_commission = VALUES(total_commission),
-                settlement_amount = VALUES(settlement_amount),
-                updated_at = NOW()
-        """
-        cursor.execute(insert_query, (
-            store_id,
-            year,
-            month,
-            total_order_count,
-            total_amount,
-            total_commission,
-            settlement_amount
-        ))
-        connection.commit()
-        
-        # 생성/업데이트된 monthly_settlement의 id 조회
-        cursor.execute(
-            "SELECT id FROM monthly_settlement WHERE store_id = %s AND settlement_year = %s AND settlement_month = %s",
-            (store_id, year, month)
-        )
-        result = cursor.fetchone()
-        return result['id'] if result else cursor.lastrowid
-        
-    finally:
-        cursor.close()
-
-
-def update_settlement_on_order(connection, order_id: int, store_id: int, order_amount: float, 
+def update_settlement_on_order(connection, order_id: int, store_id: int, order_amount: float,
                                 order_date: datetime, commission_rate: float = 6.9):
-    """
-    주문 발생 시 정산 정보 업데이트 (건별 + 월별)
-    
-    Args:
-        connection: DB 연결 (이미 열려있는 connection 사용)
-        order_id: 주문 ID
-        store_id: 매장 ID
-        order_amount: 주문 금액
-        order_date: 주문 일시
-        commission_rate: 수수료율 (기본 6.9%)
-    """
-    # 1. 주문건별 정산 정보 생성/업데이트
+    """주문 발생 시 건별 정산 정보 업데이트"""
     create_or_update_order_settlement(connection, order_id, store_id, order_amount, order_date, commission_rate)
-    
-    # 2. 해당 월의 월별 정산 정보 생성/업데이트
-    year = order_date.year
-    month = order_date.month
-    create_or_update_monthly_settlement(connection, store_id, year, month)
 
 
 def get_settlements_by_store(store_id: int) -> List[Dict]:
     """매장별 정산 리스트 조회"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
         cursor.execute("""
-            SELECT * FROM monthly_settlement
+            SELECT settlement_id, total_sales_amount, memo, payout_date,
+                   period_start, status, tax_invoice_issued, tax_invoice_issued_date
+            FROM settlement
             WHERE store_id = %s
-            ORDER BY settlement_year DESC, settlement_month DESC
+            ORDER BY period_start DESC
         """, (store_id,))
-        
+
         results = cursor.fetchall()
         settlements = []
-        
+
         for result in results:
+            period_start = result.get('period_start')
             settlements.append({
-                'settlement_id': result['id'],
-                'total_price': result['total_amount'] or 0,
-                'settlement_msg': result.get('memo', ''),
-                'settlement_date': result['settlement_date'].isoformat() if result.get('settlement_date') else None,
-                'settlement_period': f"{result['settlement_year']}-{result['settlement_month']:02d}",
+                'settlement_id': result['settlement_id'],
+                'total_price': int(result['total_sales_amount'] or 0),
+                'settlement_msg': result.get('memo') or '',
+                'settlement_date': result['payout_date'].isoformat() if result.get('payout_date') else None,
+                'settlement_period': period_start.strftime('%Y-%m') if period_start else None,
                 'status': result['status'],
                 'tax_invoice_issued': bool(result.get('tax_invoice_issued', False)),
                 'tax_invoice_issued_date': result['tax_invoice_issued_date'].isoformat() if result.get('tax_invoice_issued_date') else None,
             })
-        
+
         return settlements
     finally:
         cursor.close()
@@ -271,40 +184,35 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
     """정산 상세 내역 조회"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
         cursor.execute("""
-            SELECT DISTINCT
-                m.menu_name as name,
-                os.order_amount as price,
-                g.used_at as used_time,
-                os.commission_amount as commission
-            FROM monthly_settlement ms
-            JOIN order_settlement os ON ms.store_id = os.store_id 
-                AND YEAR(os.order_date) = ms.settlement_year
-                AND MONTH(os.order_date) = ms.settlement_month
-            JOIN orders o ON os.order_id = o.id
-            JOIN orders_gifticon og ON o.id = og.order_id
-            JOIN gifticon g ON og.gifticon_id = g.id
-            JOIN menu m ON g.menu_id = m.id
-            WHERE ms.id = %s
-            AND g.status = 'USED'
+            SELECT
+                m.menu_name AS name,
+                sd.sales_amount AS price,
+                g.used_at AS used_time,
+                sd.fee_amount AS commission
+            FROM settlement_details sd
+            JOIN gifticon g ON sd.gifticon_id = g.id
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE sd.settlement_id = %s
             ORDER BY g.used_at DESC
         """, (settlement_id,))
-        
+
         results = cursor.fetchall()
         details = []
-        
+
         for result in results:
             commission = result['commission'] or 0
+            price = result['price'] or 0
             details.append({
                 'menu_name': result['name'],
                 'commission': commission,
-                'price': result['price'],
-                'deposit': result['price'] - commission,
+                'price': price,
+                'deposit': price - commission,
                 'used_time': result['used_time'].isoformat() if result.get('used_time') else None,
             })
-        
+
         return details
     finally:
         cursor.close()
