@@ -13,6 +13,11 @@ class Gifticon(BaseModel):
     payment: Optional[str] = None  # 결제 정보 (String)
 
 class PaymentResult(BaseModel):
-    order_id: int
-    payment_key: str
-    is_success: bool  # True: 성공, False: 실패
+    # Payletter 결제 결과 콜백 필드
+    order_id: int           # 주문 ID (user_id로 전달)
+    tid: str                # 페이레터 거래 ID
+    cid: str                # 클라이언트 ID
+    amount: int             # 결제 금액
+    user_id: str            # 페이레터 user_id (order_id를 문자열로 전달)
+    transaction_date: str   # 거래 일시
+    payhash: str            # SHA256(user_id + amount + tid + API_Key)

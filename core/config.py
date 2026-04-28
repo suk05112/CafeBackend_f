@@ -22,7 +22,11 @@ class Settings(BaseSettings):
     apple_private_key_line5: str = Field(default="", description="Apple Private Key Line 5")
     apple_private_key_line6: str = Field(default="", description="Apple Private Key Line 6")
     apple_redirect_uri: str = Field(default="", description="Apple Redirect URI")
-    
+
+    # Payletter 설정
+    payletter_client_id: str = Field(default="", description="Payletter Client ID")
+    payletter_payment_api_key: str = Field(default="", description="Payletter Payment API Key")
+
     def get_apple_private_key(self) -> str:
         """
         .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 반환
