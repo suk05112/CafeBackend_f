@@ -84,8 +84,8 @@ def get_business_info():
     return {
         "business_number": '479-03-03427',
         "online_sales_number": '2025-서울강서-3226',
-        "address": '서울특별시 강서구 공항대로 543',
-        "telephone": '010-2544-6458'
+        "address": '서울특별시 강남구 강남대로 112길 47, 2층 661A호',
+        "telephone": '02-2659-3004'
     }
 
 
