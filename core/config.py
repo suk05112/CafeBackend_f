@@ -26,6 +26,7 @@ class Settings(BaseSettings):
     # Payletter 설정
     payletter_client_id: str = Field(default="", description="Payletter Client ID")
     payletter_payment_api_key: str = Field(default="", description="Payletter Payment API Key")
+    payletter_api_host: str = Field(default="testpgapi.payletter.com", description="Payletter API Host")
 
     def get_apple_private_key(self) -> str:
         """

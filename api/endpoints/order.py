@@ -440,8 +440,7 @@ def updatePaymentResult(payment_result: PaymentResult):
                 payment_result.order_id
             )
         )
-        connection.commit()
-        
+
         # 4. 연결된 gifticon validity를 1년 후로 설정하고 status를 UNUSED로 변경
         cursor.execute('''
             SELECT gifticon_id
@@ -458,31 +457,30 @@ def updatePaymentResult(payment_result: PaymentResult):
                 WHERE id = %s
             ''', (validity_date, row['gifticon_id']))
 
+        # 5. 정산 정보 업데이트
+        cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (payment_result.order_id,))
+        order_info = cursor.fetchone()
+        if order_info:
+            order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
+            settlement_crud.update_settlement_on_order(
+                connection=connection,
+                order_id=payment_result.order_id,
+                store_id=order_info['store_id'],
+                order_amount=float(order_info['amount'] or 0),
+                order_date=order_datetime,
+                commission_rate=6.9
+            )
+
+        # 모든 작업 성공 시 단일 커밋
         connection.commit()
 
-        # 5. 정산 정보 업데이트
-        try:
-            cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (payment_result.order_id,))
-            order_info = cursor.fetchone()
-            if order_info:
-                order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
-                settlement_crud.update_settlement_on_order(
-                    connection=connection,
-                    order_id=payment_result.order_id,
-                    store_id=order_info['store_id'],
-                    order_amount=float(order_info['amount'] or 0),
-                    order_date=order_datetime,
-                    commission_rate=6.9
-                )
-        except Exception as settlement_error:
-            logger.warning(f"Failed to update settlement info for order {payment_result.order_id}: {str(settlement_error)}")
-        
         # 페이레터 규격 응답
         return {"code": 0, "message": "success"}
-        
+
     except HTTPException:
         raise
     except Exception as e:
+        connection.rollback()
         print(f"Error during updatePaymentResult: {e}")
         traceback.print_exc()
         logger.error(f"Error during updatePaymentResult: {str(e)}")
@@ -688,7 +686,7 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
                 )
 
             # 페이레터 결제 취소 API 호출
-            conn = http.client.HTTPSConnection("testpgapi.payletter.com")
+            conn = http.client.HTTPSConnection(settings.payletter_api_host)
             payload_dict = {
                 "client_id": settings.payletter_client_id,
                 "tid": payment_key,
