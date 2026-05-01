@@ -53,11 +53,12 @@ def generate_order_no(connection) -> str:
         today = get_kst_now()
         yyddd = today.strftime("%y") + str(today.timetuple().tm_yday).zfill(3)
         
-        # 오늘 날짜의 주문 개수 조회하여 seq 계산
+        # 오늘 날짜의 주문 개수 조회하여 seq 계산 (PENDING/EXPIRED 제외)
         query = """
-            SELECT COUNT(*) as cnt 
-            FROM orders 
+            SELECT COUNT(*) as cnt
+            FROM orders
             WHERE DATE(created_at) = CURDATE()
+            AND status NOT IN ('PENDING', 'EXPIRED')
         """
         cursor.execute(query)
         result = cursor.fetchone()
@@ -353,21 +354,6 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         )
         connection.commit()
         
-        # 6. 정산 정보 생성/업데이트 (건별 + 월별)
-        try:
-            order_datetime = get_kst_now()  # 주문 일시 (한국 시간)
-            settlement_crud.update_settlement_on_order(
-                connection=connection,
-                order_id=order_id,
-                store_id=gifticon.store_id,
-                order_amount=float(gifticon.total_price),
-                order_date=order_datetime,
-                commission_rate=6.9  # 수수료율 6.9%
-            )
-        except Exception as settlement_error:
-            # 정산 정보 생성 실패해도 주문은 성공한 것으로 처리
-            logger.warning(f"Failed to create settlement info for order {order_id}: {str(settlement_error)}")
-
         return {
             "message": "Order registered successfully. Please proceed with payment.",
             "order_id": order_id,
