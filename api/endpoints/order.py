@@ -18,6 +18,9 @@ from crud import promotion as promotion_crud
 
 import http.client
 import json
+import hashlib
+
+from core.config import settings
 
 router = APIRouter()
 
@@ -377,99 +380,93 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
 @router.post("/payment/result")
 def updatePaymentResult(payment_result: PaymentResult):
     """
-    결제 결과를 받아서 order의 payment_key와 status를 업데이트하는 API
-    결제 성공 시: status = COMPLETED
-    결제 실패 시: status = UNKNOWN
+    페이레터 결제 결과 콜백 API
+    payhash 검증 후 주문 상태를 COMPLETED로 업데이트
+    성공 시 {"code": 0, "message": "success"} 반환 (페이레터 규격)
     """
+    # 1. payhash 검증: SHA256(user_id + amount + tid + API_Key)
+    expected_hash = hashlib.sha256(
+        (payment_result.user_id + str(payment_result.amount) + payment_result.tid + settings.payletter_payment_api_key).encode("utf-8")
+    ).hexdigest()
+
+    if payment_result.payhash != expected_hash:
+        logger.warning(f"Payletter payhash mismatch for order {payment_result.order_id}")
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid payhash"
+        )
+
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
-        # 1. order_id로 주문 정보 확인
+        # 2. order_id로 주문 정보 확인
         cursor.execute('''SELECT id, status FROM orders WHERE id=%s''', (payment_result.order_id,))
         order = cursor.fetchone()
-        
+
         if not order:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Order with id {payment_result.order_id} not found"
             )
-        
-        # 2. 결제 결과에 따라 status 설정
-        if payment_result.is_success:
-            new_status = 'COMPLETED'
-        else:
-            new_status = 'UNKNOWN'
-        
-        # 3. order 테이블 업데이트 (payment_key와 status)
+
+        new_status = 'COMPLETED'
+
+        # 3. order 테이블 업데이트 (tid를 payment_key에 저장)
         update_query = """
-            UPDATE orders 
-            SET payment_key = %s, status = %s 
+            UPDATE orders
+            SET payment_key = %s, status = %s
             WHERE id = %s
         """
         cursor.execute(
             update_query,
             (
-                payment_result.payment_key,
+                payment_result.tid,
                 new_status,
                 payment_result.order_id
             )
         )
-        connection.commit()
-        
-        # 4. 결제 성공 시 해당 주문과 연결된 gifticon의 validity를 1년 후로 설정하고 status를 USED로 변경
-        if payment_result.is_success:
-            # order_id로 연결된 gifticon_id 조회
+
+        # 4. 연결된 gifticon validity를 1년 후로 설정하고 status를 UNUSED로 변경
+        cursor.execute('''
+            SELECT gifticon_id
+            FROM orders_gifticon
+            WHERE order_id = %s
+        ''', (payment_result.order_id,))
+        gifticon_rows = cursor.fetchall()
+
+        validity_date = (get_kst_now() + timedelta(days=365)).date()
+        for row in gifticon_rows:
             cursor.execute('''
-                SELECT gifticon_id 
-                FROM orders_gifticon 
-                WHERE order_id = %s
-            ''', (payment_result.order_id,))
-            gifticon_rows = cursor.fetchall()
-            
-            # 오늘로부터 1년 후 날짜 계산 (시간 제외, 날짜만) - 한국 시간 기준
-            validity_date = (get_kst_now() + timedelta(days=365)).date()
-            
-            # 각 gifticon의 validity와 status 업데이트
-            for row in gifticon_rows:
-                gifticon_id = row['gifticon_id']
-                cursor.execute('''
-                    UPDATE gifticon 
-                    SET validity = %s, status = 'UNUSED'
-                    WHERE id = %s
-                ''', (validity_date, gifticon_id))
-            
-            connection.commit()
-            
-            # 5. 결제 성공 시 정산 정보도 업데이트 (주문 상태가 COMPLETED로 변경되므로)
-            try:
-                # 주문 정보 조회
-                cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (payment_result.order_id,))
-                order_info = cursor.fetchone()
-                if order_info:
-                    order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
-                    settlement_crud.update_settlement_on_order(
-                        connection=connection,
-                        order_id=payment_result.order_id,
-                        store_id=order_info['store_id'],
-                        order_amount=float(order_info['amount'] or 0),
-                        order_date=order_datetime,
-                        commission_rate=6.9  # 수수료율 6.9%
-                    )
-            except Exception as settlement_error:
-                # 정산 정보 업데이트 실패해도 결제 결과 업데이트는 성공한 것으로 처리
-                logger.warning(f"Failed to update settlement info for order {payment_result.order_id}: {str(settlement_error)}")
-        
-        return {
-            "message": f"Payment result updated successfully",
-            "order_id": payment_result.order_id,
-            "status": new_status,
-            "payment_key": payment_result.payment_key
-        }
-        
+                UPDATE gifticon
+                SET validity = %s, status = 'UNUSED'
+                WHERE id = %s
+            ''', (validity_date, row['gifticon_id']))
+
+        # 5. 정산 정보 업데이트
+        cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (payment_result.order_id,))
+        order_info = cursor.fetchone()
+        if order_info:
+            order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
+            settlement_crud.update_settlement_on_order(
+                connection=connection,
+                order_id=payment_result.order_id,
+                store_id=order_info['store_id'],
+                order_amount=float(order_info['amount'] or 0),
+                order_date=order_datetime,
+                commission_rate=6.9
+            )
+
+        # 모든 작업 성공 시 단일 커밋
+        connection.commit()
+
+        # 페이레터 규격 응답
+        return {"code": 0, "message": "success"}
+
     except HTTPException:
         raise
     except Exception as e:
+        connection.rollback()
         print(f"Error during updatePaymentResult: {e}")
         traceback.print_exc()
         logger.error(f"Error during updatePaymentResult: {str(e)}")
@@ -674,19 +671,23 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
                     detail=f"Payment key not found for order {order_id}",
                 )
 
-            conn = http.client.HTTPSConnection("api.tosspayments.com")
-            payload_dict = {"cancelReason": "구매자 변심"}
+            # 페이레터 결제 취소 API 호출
+            conn = http.client.HTTPSConnection(settings.payletter_api_host)
+            payload_dict = {
+                "client_id": settings.payletter_client_id,
+                "tid": payment_key,
+            }
             payload = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
             headers = {
-                "Authorization": "Basic dGVzdF9za196WExrS0V5cE5BcldtbzUwblgzbG1lYXhZRzVSOg==",
+                "Authorization": f"PLKEY {settings.payletter_payment_api_key}",
                 "Content-Type": "application/json; charset=utf-8",
             }
-            conn.request("POST", f"/v1/payments/{payment_key}/cancel", payload, headers)
+            conn.request("POST", "/v1.0/payments/cancel", payload, headers)
             res = conn.getresponse()
             response_data = res.read().decode("utf-8")
 
             if res.status != 200:
-                logger.error(f"Toss Payments cancel failed: {response_data}")
+                logger.error(f"Payletter cancel failed: {response_data}")
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Payment cancel failed: {response_data}",
