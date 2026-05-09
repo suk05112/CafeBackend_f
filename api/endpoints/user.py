@@ -9,12 +9,16 @@ from app.auth.auth_dependency import verify_firebase_token
 import firebase_admin
 from firebase_admin import auth, credentials
 
-def get_user_firebase_app():
+def get_user_firebase_app(project_type: str = "user"):
     """사용자 앱 Firebase 앱 반환"""
+    if project_type == "dev":
+        try:
+            return firebase_admin.get_app("dev_app")
+        except ValueError:
+            pass
     try:
         return firebase_admin.get_app("user_app")
     except ValueError:
-        # user_app이 없으면 기본 앱 반환 (기존 호환성)
         return firebase_admin.get_app()
 
 from typing import Union
@@ -280,14 +284,15 @@ async def revoke_apple_token(refresh_token: str):
         return False
 
 @router.post("/register")
-def signUp(user: User):
+def signUp(user: User, firebase_project: str = Header(None, alias="X-Firebase-Project")):
     """
     회원가입/링크 로직:
     - provider가 email이면 user 테이블의 fb_email 컬럼에 request의 email 저장
     - 그 외면 user 테이블의 email 컬럼에 request의 email 저장
     - user 테이블에 존재하는 phone이 있으면 user_provider 추가, 없으면 신규가입
     """
-    
+    project_type = firebase_project.lower() if firebase_project else "user"
+
     uid = user.uid
     email = user.email  # request에서 받은 email
     provider = user.provider  # request에서 받은 provider
@@ -299,7 +304,7 @@ def signUp(user: User):
             detail="email, provider, and phone_number are required"
         )
 
-    user_app = get_user_firebase_app()
+    user_app = get_user_firebase_app(project_type)
     user_record = auth.get_user(uid, app=user_app)
     # 요청으로 받은 name을 사용, 없으면 Firebase의 display_name 사용
     name = user.name or user_record.display_name
@@ -352,8 +357,8 @@ def signUp(user: User):
                 connection.commit()
             
             # user_provider 추가
-            linkAccount(uid, user_id, provider, email)
-            
+            linkAccount(uid, user_id, provider, email, project_type)
+
             return {"user_id": user_id, "message": "user_provider added to existing user"}
         else:
             # 신규 가입
@@ -382,7 +387,7 @@ def signUp(user: User):
         print(f"신규 사용자 생성 완료: user_id={user_id}, provider={provider}")
         
         # user_provider 추가
-        linkAccount(uid, user_id, provider, email)
+        linkAccount(uid, user_id, provider, email, project_type)
 
         # 신규 가입 시 약관 동의 정보 저장
         if not existing_user and user.agreements is not None and len(user.agreements) > 0:
@@ -406,9 +411,9 @@ def signUp(user: User):
     finally:
         close_db_connection(connection)
         
-def linkAccount(uid, user_id, provider, email):
+def linkAccount(uid, user_id, provider, email, project_type: str = "user"):
     print("linkAccount")
-    user_app = get_user_firebase_app()
+    user_app = get_user_firebase_app(project_type)
     user_record = auth.get_user(uid, app=user_app)
     print("user_record\n\n")
     
@@ -485,8 +490,9 @@ def linkAccount(uid, user_id, provider, email):
 
 @router.get("/login/{email}")
 async def login_user(
-    email: str, 
+    email: str,
     provider: str = Query(..., description="로그인 provider (예: email, oidc.kakao, oidc.apple 등)"),
+    firebase_project: str = Header(None, alias="X-Firebase-Project"),
     user=Depends(verify_firebase_token)
 ):
     """
@@ -495,6 +501,7 @@ async def login_user(
     서버가 Firebase 토큰에서 uid를 읽어 DB 조회에 활용합니다.
     provider는 DB 쿼리에 직접 사용됩니다.
     """
+    project_type = firebase_project.lower() if firebase_project else "user"
 
     print(user)
     
@@ -571,7 +578,7 @@ async def login_user(
             
             if not islinked:
                 print("islinked false")
-                linkAccount(uid, user_id, provider, email)
+                linkAccount(uid, user_id, provider, email, project_type)
             else:
                 print("islinked true")
 

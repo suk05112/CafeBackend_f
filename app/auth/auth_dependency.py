@@ -13,21 +13,22 @@ def get_firebase_app(project_type: str = "user"):
     프로젝트 타입에 따라 Firebase 앱 반환
     - "user": 사용자 앱 (기본값)
     - "owner": 사장님 앱
+    - "dev": Dev 앱 (gifnut-dev)
     """
     if project_type == "owner":
         try:
-            # 사장님 앱 반환
             return firebase_admin.get_app("owner_app")
         except ValueError:
-            # owner_app이 없으면 에러
-            raise ValueError(f"Firebase owner_app not initialized. Check firebase_init.py and ensure OWNER_FIREBASE_CRED_PATH is set.")
-    else:
-        # 사용자 앱 (기본 앱 또는 user_app)
+            raise ValueError("Firebase owner_app not initialized.")
+    elif project_type == "dev":
         try:
-            # user_app 이름으로 시도
+            return firebase_admin.get_app("dev_app")
+        except ValueError:
+            raise ValueError("Firebase dev_app not initialized.")
+    else:
+        try:
             return firebase_admin.get_app("user_app")
         except ValueError:
-            # user_app이 없으면 기본 앱 반환 (기존 호환성)
             return firebase_admin.get_app()
 
 
@@ -43,7 +44,12 @@ async def verify_firebase_token(request: Request,
         return None
     
     # 프로젝트 타입 결정 (기본값: user)
-    project_type = "owner" if firebase_project and firebase_project.lower() == "owner" else "user"
+    if firebase_project and firebase_project.lower() == "owner":
+        project_type = "owner"
+    elif firebase_project and firebase_project.lower() == "dev":
+        project_type = "dev"
+    else:
+        project_type = "user"
     
     print(f"app_check_token: {app_check_token is not None}, project_type: {project_type}")
     print("\n")
