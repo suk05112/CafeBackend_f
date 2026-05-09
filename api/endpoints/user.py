@@ -284,7 +284,7 @@ async def revoke_apple_token(refresh_token: str):
         return False
 
 @router.post("/register")
-def signUp(user: User, firebase_project: str = Header(None, alias="X-Firebase-Project")):
+def signUp(user: User, firebase_project: Optional[str] = None):
     """
     회원가입/링크 로직:
     - provider가 email이면 user 테이블의 fb_email 컬럼에 request의 email 저장
@@ -492,7 +492,7 @@ def linkAccount(uid, user_id, provider, email, project_type: str = "user"):
 async def login_user(
     email: str,
     provider: str = Query(..., description="로그인 provider (예: email, oidc.kakao, oidc.apple 등)"),
-    firebase_project: str = Header(None, alias="X-Firebase-Project"),
+    firebase_project: Optional[str] = Header(None, alias="X-Firebase-Project"),
     user=Depends(verify_firebase_token)
 ):
     """
@@ -524,7 +524,7 @@ async def login_user(
     provider = provider.strip()
     
     try:
-        user_app = get_user_firebase_app()
+        user_app = get_user_firebase_app(project_type)
         user_record = auth.get_user(uid, app=user_app)
         email2 = user_record.email
     except Exception as e:
@@ -603,7 +603,7 @@ async def login_user(
                 email=email,
                 phone_number=phone_number  # Firebase에서 가져온 phone_number 사용
             )
-            signUp(signup_user)
+            signUp(signup_user, project_type)
 
             return {
                 "isRegistered": 0,
