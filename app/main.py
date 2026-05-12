@@ -111,6 +111,10 @@ cafe_backend_logger.setLevel(logging.INFO)
 # lifespan 함수 정의 (app 생성 전에 정의 필요)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # 필수 환경변수 유효성 검사
+    if not settings.payletter_api_host:
+        raise RuntimeError("PAYLETTER_API_HOST 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
+
     # 서버 시작 시 DB 연결
     try:
         connection = get_db_connection()  # 환경에 맞는 DB 연결
