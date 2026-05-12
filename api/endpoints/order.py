@@ -818,7 +818,7 @@ def getOrderDetail(order_id: int):
         
 # 기프티콘 환불 (7일 이내: 구매자 환불, 7일 이후: 수신자 환불 + 계좌정보). reason 저장 (7일 전/후 공통)
 @router.post("/refund/{order_id}")
-def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
+def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest] = None):
     """
     주문일(created_at) 기준 7일 이내: 구매자에게 토스 결제 취소 환불.
     주문일 기준 7일 이후: 수신자 환불(계좌정보 필수), 기프티콘만 무효화.
@@ -829,7 +829,7 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
     try:
         # 1. 주문 조회 (id, payment_key, amount, created_at, status)
         cursor.execute(
-            """SELECT id, payment_key, amount, created_at, status FROM orders WHERE id=%s""",
+            """SELECT id, user_id, payment_key, amount, created_at, status FROM orders WHERE id=%s""",
             (order_id,),
         )
         order = cursor.fetchone()
@@ -876,9 +876,12 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
 
             # 페이레터 결제 취소 API 호출
             conn = http.client.HTTPSConnection(settings.payletter_api_host)
+            client_ip = request.headers.get("X-Forwarded-For", request.client.host)
             payload_dict = {
                 "client_id": settings.payletter_client_id,
                 "tid": payment_key,
+                "user_id": str(order.get("user_id")),
+                "ip_addr": client_ip,
             }
             payload = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
             headers = {
