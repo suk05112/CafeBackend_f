@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, status
-from fastapi import FastAPI
+from fastapi import APIRouter, HTTPException, status, Request, Form
+from fastapi.responses import RedirectResponse
 import traceback
 
 from typing import Union, Optional
@@ -11,7 +11,7 @@ from db.session import get_db_connection
 from datetime import datetime, timedelta, date, timezone
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
-from models.gifticon import Gifticon, PaymentResult
+from models.gifticon import Gifticon, PaymentResult, VALID_PGCODES
 from models.store import StoreCreate
 from crud import settlement as settlement_crud
 from crud import promotion as promotion_crud
@@ -377,20 +377,233 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         cursor.close()
         connection.close()
 
+@router.post("/{user_id}/payment-url")
+def requestPaymentUrl(user_id: int, gifticon: Gifticon):
+    """
+    주문 등록 후 페이레터 결제 요청 URL을 발급하는 API.
+    1. 주문/기프티콘 DB 등록 (PENDING)
+    2. 페이레터 /v1.0/payments/request 호출
+    3. 결제 URL(online_url, app_scheme) 반환
+    페이레터 요청 실패 시 생성된 주문/기프티콘 rollback.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    order_id = None
+
+    try:
+        # 1. 중복 주문 체크
+        five_minutes_ago = get_kst_now() - timedelta(minutes=5)
+        cursor.execute('''
+            SELECT o.id FROM orders o
+            JOIN gifticon g ON o.id = g.order_id
+            WHERE o.user_id = %s AND o.store_id = %s AND g.menu_id = %s
+            AND o.amount = %s AND g.receiver = %s AND g.receiver_phone = %s
+            AND o.payment_key IS NOT NULL AND o.created_at >= %s
+            ORDER BY o.created_at DESC LIMIT 1
+        ''', (user_id, gifticon.store_id, gifticon.menu_id, gifticon.total_price,
+              gifticon.receiver, gifticon.receiver_phone_number, five_minutes_ago))
+        if cursor.fetchone():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="중복된 주문입니다. 최근 5분 내 동일한 결제 완료 주문이 존재합니다."
+            )
+
+        cursor.close()
+        cursor = connection.cursor()
+
+        # 2. 주문번호 생성
+        order_no = generate_order_no(connection)
+
+        # 3. orders INSERT (PENDING)
+        cursor.execute(
+            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment)
+        )
+        connection.commit()
+        order_id = cursor.lastrowid
+
+        # 4. 수수료율 조회
+        current_fee_rate = 3.00
+        try:
+            cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+            config = cursor.fetchone()
+            if config:
+                current_fee_rate = float(config["base_fee_rate"])
+        except Exception:
+            pass
+
+        # 5. gifticon INSERT
+        cursor.execute(
+            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, applied_fee_rate)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
+             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id, current_fee_rate)
+        )
+        connection.commit()
+        gifticon_id = cursor.lastrowid
+
+        # 6. gift_code 생성 (중복 방지 재시도)
+        gift_code = None
+        for retry in range(10):
+            try:
+                gift_code = generate_gift_code(connection, cursor, gifticon.store_id, user_id, gifticon_id + retry)
+                cursor.execute(
+                    "UPDATE gifticon SET gift_code = %s WHERE id = %s AND (gift_code IS NULL OR gift_code = '')",
+                    (gift_code, gifticon_id)
+                )
+                if cursor.rowcount > 0:
+                    connection.commit()
+                    break
+                cursor.execute("SELECT gift_code FROM gifticon WHERE id = %s", (gifticon_id,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    gift_code = row[0]
+                    break
+            except pymysql.IntegrityError:
+                if retry >= 9:
+                    raise HTTPException(status_code=500, detail="Failed to generate unique gift code")
+
+        if not gift_code:
+            raise HTTPException(status_code=500, detail="Failed to generate gift code")
+
+        # 7. orders_gifticon INSERT
+        receiver_id = None if gifticon.type == 2 else user_id
+        if receiver_id is not None:
+            cursor.execute("UPDATE gifticon SET receiver_id = %s WHERE id = %s", (receiver_id, gifticon_id))
+        cursor.execute(
+            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id)
+        )
+        connection.commit()
+
+        # 8. 메뉴명 조회 (페이레터 product_name용)
+        cursor.execute("SELECT menu_name FROM menu WHERE id = %s", (gifticon.menu_id,))
+        menu_row = cursor.fetchone()
+        product_name = menu_row["menu_name"] if menu_row else "기프티콘"
+
+        # 9. 페이레터 결제 요청
+        if gifticon.pgcode not in VALID_PGCODES:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"유효하지 않은 pgcode입니다: {gifticon.pgcode}"
+            )
+        payletter_payload = {
+            "pgcode": gifticon.pgcode,
+            "client_id": settings.payletter_client_id,
+            "user_id": str(user_id),
+            "user_name": gifticon.sender,
+            "order_no": order_no,
+            "amount": gifticon.total_price,
+            "product_name": product_name,
+            "service_name": "gifnut",
+            "return_url": settings.payletter_return_url,
+            "callback_url": settings.payletter_callback_url,
+            "cancel_url": settings.payletter_cancel_url,
+        }
+        pl_conn = http.client.HTTPSConnection(settings.payletter_api_host)
+        pl_conn.request(
+            "POST",
+            "/v1.0/payments/request",
+            json.dumps(payletter_payload, ensure_ascii=False).encode("utf-8"),
+            {
+                "Authorization": f"PLKEY {settings.payletter_payment_api_key}",
+                "Content-Type": "application/json; charset=utf-8",
+            }
+        )
+        pl_res = pl_conn.getresponse()
+        pl_data = json.loads(pl_res.read().decode("utf-8"))
+
+        if pl_res.status != 200 or not pl_data.get("token"):
+            logger.error(f"Payletter request failed: {pl_data}")
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY,
+                detail=f"결제 요청 실패: {pl_data.get('message', '페이레터 오류')}"
+            )
+
+        return {
+            "order_id": order_id,
+            "order_no": order_no,
+            "gifticon_id": gifticon_id,
+            "online_url": pl_data.get("online_url"),
+            "mobile_url": pl_data.get("mobile_url"),
+            "token": pl_data.get("token"),
+        }
+
+    except HTTPException:
+        # 페이레터 요청 실패 또는 검증 실패 시 생성된 주문 rollback
+        if order_id:
+            try:
+                rb = connection.cursor()
+                rb.execute("DELETE FROM orders_gifticon WHERE order_id = %s", (order_id,))
+                rb.execute("DELETE FROM gifticon WHERE order_id = %s", (order_id,))
+                rb.execute("DELETE FROM orders WHERE id = %s", (order_id,))
+                connection.commit()
+                rb.close()
+            except Exception as rb_err:
+                logger.error(f"Rollback failed for order {order_id}: {rb_err}")
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"Error during requestPaymentUrl: {str(e)}")
+        if order_id:
+            try:
+                rb = connection.cursor()
+                rb.execute("DELETE FROM orders_gifticon WHERE order_id = %s", (order_id,))
+                rb.execute("DELETE FROM gifticon WHERE order_id = %s", (order_id,))
+                rb.execute("DELETE FROM orders WHERE id = %s", (order_id,))
+                connection.commit()
+                rb.close()
+            except Exception as rb_err:
+                logger.error(f"Rollback failed for order {order_id}: {rb_err}")
+        raise HTTPException(status_code=500, detail=f"Error during requestPaymentUrl: {str(e)}")
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@router.api_route("/payment/return", methods=["GET", "POST"])
+def paymentReturn(request: Request):
+    """
+    페이레터 결제 완료/실패 후 리다이렉트 엔드포인트.
+    쿼리파라미터를 그대로 앱 딥링크로 포워딩.
+    """
+    params = str(request.query_params)
+    return RedirectResponse(url=f"gifnut://payment/result?{params}", status_code=302)
+
+
+@router.api_route("/payment/cancel", methods=["GET", "POST"])
+def paymentCancel(request: Request):
+    """
+    페이레터 결제 취소 후 리다이렉트 엔드포인트.
+    쿼리파라미터를 그대로 앱 딥링크로 포워딩.
+    """
+    params = str(request.query_params)
+    return RedirectResponse(url=f"gifnut://payment/cancel?{params}", status_code=302)
+
+
 @router.post("/payment/result")
-def updatePaymentResult(payment_result: PaymentResult):
+async def updatePaymentResult(request: Request):
     """
     페이레터 결제 결과 콜백 API
     payhash 검증 후 주문 상태를 COMPLETED로 업데이트
     성공 시 {"code": 0, "message": "success"} 반환 (페이레터 규격)
     """
-    # 1. payhash 검증: SHA256(user_id + amount + tid + API_Key)
-    expected_hash = hashlib.sha256(
-        (payment_result.user_id + str(payment_result.amount) + payment_result.tid + settings.payletter_payment_api_key).encode("utf-8")
-    ).hexdigest()
+    data = await request.json()
+    user_id = data.get("user_id", "")
+    amount = data.get("amount", 0)
+    tid = data.get("tid", "")
+    order_no = data.get("order_no", "")
+    payhash = data.get("payhash", "")
 
-    if payment_result.payhash != expected_hash:
-        logger.warning(f"Payletter payhash mismatch for order {payment_result.order_id}")
+    # 1. payhash 검증: SHA256(user_id + amount + tid + API_Key) 대문자
+    expected_hash = hashlib.sha256(
+        (user_id + str(amount) + tid + settings.payletter_payment_api_key).encode("utf-8")
+    ).hexdigest().upper()
+
+    if payhash != expected_hash:
+        logger.warning(f"Payletter payhash mismatch for order_no {order_no}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid payhash"
@@ -400,31 +613,23 @@ def updatePaymentResult(payment_result: PaymentResult):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # 2. order_id로 주문 정보 확인
-        cursor.execute('''SELECT id, status FROM orders WHERE id=%s''', (payment_result.order_id,))
+        # 2. order_no로 주문 조회
+        cursor.execute('''SELECT id, status FROM orders WHERE order_no=%s''', (order_no,))
         order = cursor.fetchone()
 
         if not order:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Order with id {payment_result.order_id} not found"
+                detail=f"Order with order_no {order_no} not found"
             )
 
+        order_id = order["id"]
         new_status = 'COMPLETED'
 
         # 3. order 테이블 업데이트 (tid를 payment_key에 저장)
-        update_query = """
-            UPDATE orders
-            SET payment_key = %s, status = %s
-            WHERE id = %s
-        """
         cursor.execute(
-            update_query,
-            (
-                payment_result.tid,
-                new_status,
-                payment_result.order_id
-            )
+            "UPDATE orders SET payment_key = %s, status = %s WHERE id = %s",
+            (tid, new_status, order_id)
         )
 
         # 4. 연결된 gifticon validity를 1년 후로 설정하고 status를 UNUSED로 변경
@@ -432,7 +637,7 @@ def updatePaymentResult(payment_result: PaymentResult):
             SELECT gifticon_id
             FROM orders_gifticon
             WHERE order_id = %s
-        ''', (payment_result.order_id,))
+        ''', (order_id,))
         gifticon_rows = cursor.fetchall()
 
         validity_date = (get_kst_now() + timedelta(days=365)).date()
@@ -444,23 +649,21 @@ def updatePaymentResult(payment_result: PaymentResult):
             ''', (validity_date, row['gifticon_id']))
 
         # 5. 정산 정보 업데이트
-        cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (payment_result.order_id,))
+        cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (order_id,))
         order_info = cursor.fetchone()
         if order_info:
             order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
             settlement_crud.update_settlement_on_order(
                 connection=connection,
-                order_id=payment_result.order_id,
+                order_id=order_id,
                 store_id=order_info['store_id'],
                 order_amount=float(order_info['amount'] or 0),
                 order_date=order_datetime,
                 commission_rate=6.9
             )
 
-        # 모든 작업 성공 시 단일 커밋
         connection.commit()
 
-        # 페이레터 규격 응답
         return {"code": 0, "message": "success"}
 
     except HTTPException:
@@ -787,6 +990,43 @@ def refundGifticon(order_id: int, body: Optional[RefundRequest] = None):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"failed refund gifticon: {str(e)}",
         )
+    finally:
+        cursor.close()
+        connection.close()
+
+
+@router.post("/expire-pending")
+def expirePendingOrders():
+    """
+    15분 이상 PENDING 상태인 주문을 EXPIRED로 전환하는 배치 엔드포인트.
+    스케줄러 또는 관리자가 주기적으로 호출.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cutoff = get_kst_now() - timedelta(minutes=15)
+        cursor.execute(
+            "SELECT id FROM orders WHERE status = 'PENDING' AND created_at <= %s",
+            (cutoff,)
+        )
+        rows = cursor.fetchall()
+        order_ids = [r["id"] for r in rows]
+
+        if not order_ids:
+            return {"expired_count": 0, "order_ids": []}
+
+        fmt = ",".join(["%s"] * len(order_ids))
+        cursor.execute(f"UPDATE orders SET status = 'EXPIRED' WHERE id IN ({fmt})", order_ids)
+        connection.commit()
+
+        logger.info(f"Expired {len(order_ids)} pending orders: {order_ids}")
+        return {"expired_count": len(order_ids), "order_ids": order_ids}
+
+    except Exception as e:
+        connection.rollback()
+        logger.error(f"Error during expirePendingOrders: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error during expirePendingOrders: {str(e)}")
     finally:
         cursor.close()
         connection.close()

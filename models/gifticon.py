@@ -1,6 +1,13 @@
 from pydantic import BaseModel
 from typing import Optional
 
+VALID_PGCODES = {
+    "creditcard", "banktransfer", "virtualaccount", "mobile", "voucher",
+    "book", "culture", "smartculture", "teencash", "tmoney", "cvs",
+    "eggmoney", "phonebill", "cashbee", "kakaopay", "payco", "checkpay",
+    "toss", "ssgpay", "naverpay", "samsungpay", "applepay",
+}
+
 class Gifticon(BaseModel):
     type: int
     sender: str
@@ -9,6 +16,7 @@ class Gifticon(BaseModel):
     menu_id: int
     store_id: int
     total_price: int
+    pgcode: str = "creditcard"
     payment_key: Optional[str] = None  # 결제 전에는 None
     payment: Optional[str] = None  # 결제 정보 (String)
 
