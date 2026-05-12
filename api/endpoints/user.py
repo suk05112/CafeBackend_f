@@ -1388,7 +1388,7 @@ def get_user_notice():
 
 
 @router.post("/find-account")
-def find_account(request: FindAccountRequest):
+def find_account(request: FindAccountRequest, firebase_project: Optional[str] = Header(None)):
     """
     아이디 찾기 / 비밀번호 찾기 검증 API
     
@@ -1417,8 +1417,9 @@ def find_account(request: FindAccountRequest):
             )
         
         # 2. Firebase에서 해당 uid의 유저 정보 확인
+        project_type = firebase_project.lower() if firebase_project else "user"
         try:
-            user_app = get_user_firebase_app()
+            user_app = get_user_firebase_app(project_type)
             user_record = auth.get_user(user['uid'], app=user_app)
             
             # Firebase 이메일 가입 유저인지 확인
