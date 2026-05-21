@@ -74,7 +74,7 @@ def delete_menu(menu_id: int):
 def update_menu(menu_id: int, menu: Menu):
     """메뉴 정보 업데이트"""
     try:
-        success = menu_crud.update_menu(menu_id, menu)
+        success = menu_crud.update_menu(menu_id, menu.store_id, menu)
         if not success:
             raise HTTPException(status_code=404, detail="Menu not found")
         

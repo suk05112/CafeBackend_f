@@ -1,11 +1,13 @@
 from pydantic import BaseModel
+from typing import Optional
 
 class Menu(BaseModel):
     name: str
     menu_id: int
-    store_id :int
-    description: str
+    store_id: int
+    description: Optional[str] = None
     price: int
-    status: int
+    status: str  # "ACTIVE" | "INACTIVE"
+    delete_image: bool = False
 
 
