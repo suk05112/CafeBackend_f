@@ -770,7 +770,6 @@ def get_owner_store_list(owner_id: int):
                 s.store_address,
                 s.store_lat,
                 s.store_lng,
-                s.store_photo_cnt,
                 s.region_code,
                 s.district_code,
                 s.inspection_status,
@@ -805,16 +804,16 @@ def get_owner_store_list(owner_id: int):
                 # 로고가 없으면 None
                 store_logo_url = None
             
-            # S3에서 store_photo URLs 생성 (store_photo_cnt 값만큼)
-            store_photo_urls = []
-            store_photo_cnt = store.get('store_photo_cnt', 0) or 0
-            
-            for i in range(1, store_photo_cnt + 1):
-                image_key = f'store_image/store_image_{store_id_item}_{i}.png'
-                s3_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key},
+            cursor.execute(
+                "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
+                (store_id_item,)
+            )
+            store_photo_urls = [
+                s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': r['image_key']},
                     ExpiresIn=3600)
-                store_photo_urls.append(s3_url)
+                for r in cursor.fetchall()
+            ]
             
             store_data = {
                 'store_id': store['id'],
@@ -826,7 +825,6 @@ def get_owner_store_list(owner_id: int):
                 'store_address': store.get('store_address'),
                 'store_lat': float(store['store_lat']) if store.get('store_lat') else None,
                 'store_lng': float(store['store_lng']) if store.get('store_lng') else None,
-                'store_photo_cnt': store_photo_cnt,
                 'store_photo_urls': store_photo_urls,
                 'region_code': store.get('region_code'),
                 'district_code': store.get('district_code'),

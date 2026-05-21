@@ -1,7 +1,8 @@
 import traceback
 import os
+import uuid
 from fastapi import APIRouter, HTTPException, status, Query
-from typing import Optional, Union
+from typing import Optional, Union, List
 from pydantic import BaseModel
 
 import pymysql
@@ -20,9 +21,53 @@ logger = logging.getLogger("cafe_backend")
 
 router = APIRouter()
 
-# S3 설정은 app.s3_config에서 가져옴
 s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
+
+
+def _get_store_photo_urls(cursor, store_id: int) -> List[str]:
+    """store_images 테이블에서 매장 사진 presigned GET URL 목록 반환"""
+    cursor.execute(
+        "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
+        (store_id,)
+    )
+    rows = cursor.fetchall()
+    urls = []
+    for row in rows:
+        key = row['image_key'] if isinstance(row, dict) else row[0]
+        urls.append(s3.generate_presigned_url('get_object',
+            Params={'Bucket': bucket_name, 'Key': key},
+            ExpiresIn=3600))
+    return urls
+
+
+def _delete_store_images(cursor, connection, store_id: int) -> None:
+    """store_images 테이블 레코드 삭제 및 S3 객체 삭제"""
+    cursor.execute(
+        "SELECT image_key FROM store_images WHERE store_id = %s",
+        (store_id,)
+    )
+    rows = cursor.fetchall()
+    for row in rows:
+        key = row['image_key'] if isinstance(row, dict) else row[0]
+        s3.delete_object(Bucket=bucket_name, Key=key)
+    cursor.execute("DELETE FROM store_images WHERE store_id = %s", (store_id,))
+
+
+def _insert_store_images(cursor, store_id: int, image_count: int):
+    """store_images 테이블에 uuid 키 INSERT 후 put_url 목록 반환"""
+    result = []
+    for i in range(image_count):
+        image_key = f'store_image/store_image_{store_id}_{uuid.uuid4().hex[:8]}.png'
+        cursor.execute(
+            "INSERT INTO store_images (store_id, image_key, `order`) VALUES (%s, %s, %s)",
+            (store_id, image_key, i)
+        )
+        put_url = s3.generate_presigned_url('put_object',
+            Params={'Bucket': bucket_name, 'Key': image_key},
+            ExpiresIn=3600)
+        result.append({'image_key': image_key, 'put_url': put_url})
+    return result
 
 @router.get("/search")
 def searchStore(
@@ -52,13 +97,12 @@ def searchStore(
         if cursor:
             db_cursor.execute('''
             SELECT
-                s.owner_id, 
-                s.id, 
-                s.store_name, 
-                s.status, 
-                s.inspection_status, 
+                s.owner_id,
+                s.id,
+                s.store_name,
+                s.status,
+                s.inspection_status,
                 s.open_yn,
-                s.store_photo_cnt,
                 s.store_description,
                 s.store_address,
                 MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
@@ -75,13 +119,12 @@ def searchStore(
         else:
             db_cursor.execute('''
             SELECT
-                s.owner_id, 
-                s.id, 
-                s.store_name, 
-                s.status, 
-                s.inspection_status, 
+                s.owner_id,
+                s.id,
+                s.store_name,
+                s.status,
+                s.inspection_status,
                 s.open_yn,
-                s.store_photo_cnt,
                 s.store_description,
                 s.store_address,
                 MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
@@ -129,16 +172,6 @@ def searchStore(
                 else:
                     store_logo_url = None
             
-            # S3에서 store_photo URLs 생성
-            store_photo_urls = []
-            store_photo_cnt = row['store_photo_cnt'] if row['store_photo_cnt'] is not None else 0
-            for i in range(1, store_photo_cnt + 1):
-                s3_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': f'store_image/store_image_{store_id}_{i}.png'},
-                    ExpiresIn=3600)
-                store_photo_urls.append(s3_url)
-
             # store 데이터를 구성
             store = {
                 "owner_id": row['owner_id'],
@@ -192,14 +225,13 @@ def getStoreList():
     try:
         cursor.execute('''
         SELECT DISTINCT
-            s.owner_id, 
-            s.id, 
-            s.store_name, 
-            s.status, 
-            s.inspection_status, 
+            s.owner_id,
+            s.id,
+            s.store_name,
+            s.status,
+            s.inspection_status,
             s.open_yn,
-            s.store_photo_cnt,
-            s.store_lat, 
+            s.store_lat,
             s.store_lng,
             s.updated_at,
             s.store_telephone,
@@ -245,15 +277,7 @@ def getStoreList():
                 else:
                     store_logo_url = None
             
-            # S3에서 store_photo URLs 생성
-            store_photo_urls = []
-            store_photo_cnt = row['store_photo_cnt'] if row['store_photo_cnt'] is not None else 0
-            for i in range(1, store_photo_cnt + 1):  # row[6]은 store_photo_cnt
-                s3_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': f'store_image/store_image_{store_id}_{i}.png'},
-                    ExpiresIn=3600)
-                store_photo_urls.append(s3_url)
+            store_photo_urls = _get_store_photo_urls(cursor, store_id)
 
             # store 데이터를 구성
             store = {
@@ -705,14 +729,13 @@ def getStore(owner_id: int):
         owner_id = owner_id
             
         cursor.execute('''SELECT DISTINCT
-        s.owner_id, 
-        s.id, 
-        s.store_name, 
-        s.status, 
-        s.inspection_status, 
+        s.owner_id,
+        s.id,
+        s.store_name,
+        s.status,
+        s.inspection_status,
         s.open_yn,
-        s.store_photo_cnt,
-        s.store_lat, 
+        s.store_lat,
         s.store_lng,
         s.store_address,
         s.updated_at,
@@ -735,18 +758,8 @@ def getStore(owner_id: int):
                                                             },
                                                   ExpiresIn=3600)
                                                   
-            store_photo_urls = []
-        
-            store_photo_cnt = row['store_photo_cnt'] if row['store_photo_cnt'] is not None else 0
-            for i in range(1, store_photo_cnt+1):
-                s3_url = s3.generate_presigned_url('get_object',
-                                                            Params={'Bucket': bucket_name,
-                                                                    'Key': f'store_image/store_image_{store_id}_{i}.png',
-                                                                    },
-                                                          ExpiresIn=3600)
+            store_photo_urls = _get_store_photo_urls(cursor, store_id)
 
-                store_photo_urls.append(s3_url) 
-            
             store = {
                 "owner_id": row['owner_id'],
                 "store_id": row['id'],
@@ -795,10 +808,10 @@ async def registerStore(store: StoreCreate):
         # region_code와 district_code를 포함한 INSERT 쿼리
         query = """
             INSERT INTO store (
-                owner_id, store_name, store_telephone, store_description, store_address, 
-                store_lat, store_lng, store_photo_cnt, region_code, district_code
+                owner_id, store_name, store_telephone, store_description, store_address,
+                store_lat, store_lng, region_code, district_code
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s
             );
         """
         cursor.execute(query, (
@@ -809,9 +822,8 @@ async def registerStore(store: StoreCreate):
             store.store_address,
             store.store_lat,
             store.store_lng,
-            store.store_photo_cnt,
-            region_code,  # district_code가 있으면 계산된 값, 없으면 None
-            district_code  # 있으면 값, 없으면 None
+            region_code,
+            district_code
         ))
             
         connection.commit()
@@ -838,23 +850,14 @@ async def registerStore(store: StoreCreate):
                                                             },
                                                   ExpiresIn=3600)                      
     
-        store_photo_urls = []
-        
-        store_photo_cnt = store.store_photo_cnt if store.store_photo_cnt is not None else 0
-        for i in range(1, store_photo_cnt+1):
-            s3_url = s3.generate_presigned_url('put_object',
-                                                    Params={'Bucket': bucket_name,
-                                                            'Key': f'store_image/store_image_{store_id}_{i}.png',
-                                                            },
-                                                  ExpiresIn=3600)
+        image_count = store.image_count if store.image_count is not None else 0
+        store_photos = _insert_store_images(cursor, store_id, image_count)
+        connection.commit()
 
-            store_photo_urls.append(s3_url)
-    
-        
         return {
             'store_id': store_id,
             'store_logo_url': store_logo_url,
-            'store_photo_urls': store_photo_urls,
+            'store_photos': store_photos,
             'bankBook_put_url': bankBook_put_url,
             'business_put_url': business_put_url
         }
@@ -872,32 +875,15 @@ async def registerStore(store: StoreCreate):
     finally:
         connection.close()
 
-#store.store_photo_cnt이 -1이면 이미지 변경은 없다는 의미
 @router.post("/update/{store_id}")
 def updateStore(store_id: int, store: StoreCreate):
-    connection = get_db_connection()  # 환경에 맞는 DB 연
-    
+    connection = get_db_connection()
+
     try:
-        cursor = connection.cursor()
-        
-        #기존에 저장된 이미지 삭제
-        cursor.execute('''select
-        store_photo_cnt
-        from store where id=%s ;''', (store_id,))
-        
-        stored_photo_cnt = cursor.fetchone()
-        print('stored_photo_cnt', stored_photo_cnt)
-             
-        if store.store_photo_cnt != -1: # 변경된 이미지가 있을 때만 저장된 이미지 삭제
-            if stored_photo_cnt or stored_photo_cnt != 0:  # 조회 결과가 있는지 확인
-                stored_photo_cnt = stored_photo_cnt[0] 
-                for i in range(1, stored_photo_cnt+1):
-                    object_key =  f'store_image/store_image_{store_id}_{i}.png'
-                    s3.delete_object(Bucket=bucket_name, Key=object_key)
-                
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+
         query = "UPDATE store SET "
         values = []
-        print("store.store_photo_cnt", store.store_photo_cnt)
 
         if store.store_address:
             query += "store_address = %s, "
@@ -908,52 +894,33 @@ def updateStore(store_id: int, store: StoreCreate):
         if store.store_description:
             query += "store_description = %s, "
             values.append(store.store_description)
-        if store.store_photo_cnt != -1:
-            query += "store_photo_cnt = %s, "
-            values.append(store.store_photo_cnt)
-            
+
         query += "inspection_status = %s, "
         values.append(0)
 
-        query = query[:-2]  # 마지막 쉼표와 공백 제거
+        query = query[:-2]
         query += " WHERE id = %s"
         values.append(store_id)
 
         cursor.execute(query, tuple(values))
+
+        store_photos = []
+        store_photo_get_urls = []
+
+        if store.image_count is not None:
+            _delete_store_images(cursor, connection, store_id)
+            store_photos = _insert_store_images(cursor, store_id, store.image_count)
+            store_photo_get_urls = [p['put_url'] for p in store_photos]
+
         connection.commit()
 
-        store_photo_urls = []
-        store_photo_get_urls = []
-        
-        updated_stored_photo_cnt = store.store_photo_cnt if store.store_photo_cnt is not None and store.store_photo_cnt != -1 else 0
-        print("stored_photo_cnt", stored_photo_cnt)
-        #새로 업데이트 된 이미지 저장 
-        for i in range(1, updated_stored_photo_cnt+1):
-            if store.store_photo_cnt != -1: # 변경된 이미지가 있을 때만 저장된 이미지 put
-                s3_put_url = s3.generate_presigned_url('put_object',
-                                                        Params={'Bucket': bucket_name,
-                                                                'Key': f'store_image/store_image_{store_id}_{i}.png',
-                                                                },
-                                                    ExpiresIn=3600)
-                store_photo_urls.append(s3_put_url)
-
-            s3_get_url = s3.generate_presigned_url('get_object',
-                                                Params={'Bucket': bucket_name,
-                                                        'Key': f'store_image/store_image_{store_id}_{i}.png',
-                                                        },
-                                                ExpiresIn=3600)
-            
-            store_photo_get_urls.append(s3_get_url)
-                
-        print("store_photo_urls", store_photo_get_urls)
-        
         return {
             'msg': "success",
-            'store_photo_urls': store_photo_urls,
+            'store_photos': store_photos,
             'store_photo_get_urls': store_photo_get_urls
         }
     except Exception as e:
-        print(e)
+        connection.rollback()
         logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -1003,15 +970,14 @@ def searchStore(item: str, lat: float, lng: float):
         storeList = []
 
         itemQuery = '''select
-        owner_id, 
-        id, 
-        store_name, 
-        status, 
-        inspection_status, 
+        owner_id,
+        id,
+        store_name,
+        status,
+        inspection_status,
         open_yn,
-        store_photo_cnt,
-        store_lat, 
-        store_lng 
+        store_lat,
+        store_lng
         from store'''
 
         if item and item.strip():
@@ -1034,15 +1000,11 @@ def searchStore(item: str, lat: float, lng: float):
                                                         ExpiresIn=3600)
                                                                             
                     store = {
-                        # "owner_id": row[0],
                         "store_id": row[1],
                         "store_name": row[2],
                         "store_logo": store_logo_url,
-                        # "status": row[3],
-                        # "inspection_status": row[4],
-                        # "open_yn": row[5],
-                        "store_lat": row[7],
-                        "store_lng": row[8],
+                        "store_lat": row[6],
+                        "store_lng": row[7],
                     }
                     storeList.append(store)
 
@@ -1053,7 +1015,6 @@ def searchStore(item: str, lat: float, lng: float):
                     status,
                     inspection_status,
                     open_yn,
-                    store_photo_cnt,
                     store_lat,
                     store_lng,
                     (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
@@ -1073,17 +1034,11 @@ def searchStore(item: str, lat: float, lng: float):
                                                                     },
                                                         ExpiresIn=3600)
                     store = {
-                        # "owner_id": row[0],
                         "store_id": row[1],
                         "store_name": row[2],
                         "store_logo": store_logo_url,
-                        # "status": row[3],
-                        # "inspection_status": row[4],
-                        # "open_yn": row[5],
-                        # "store_photo_cnt": row[6],
-                        "store_lat": row[7],
-                        "store_lng": row[8],
-                        # "distance": row[9],  # Include the calculated distance
+                        "store_lat": row[6],
+                        "store_lng": row[7],
                     }
                     storeList.append(store)
 
@@ -1104,7 +1059,6 @@ def searchStore(item: str, lat: float, lng: float):
                     status,
                     inspection_status,
                     open_yn,
-                    store_photo_cnt,
                     store_lat,
                     store_lng,
                     (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
@@ -1124,18 +1078,11 @@ def searchStore(item: str, lat: float, lng: float):
                                                                     },
                                                         ExpiresIn=3600)
                 store = {
-                    # "owner_id": row[0],
                     "store_id": row[1],
                     "store_name": row[2],
                     "store_logo": store_logo_url,
-
-                    # "status": row[3],
-                    # "inspection_status": row[4],
-                    # "open_yn": row[5],
-                    # "store_photo_cnt": row[6],
-                    "store_lat": row[7],
-                    "store_lng": row[8],
-                    # "distance": row[9],  # Include the calculated distance
+                    "store_lat": row[6],
+                    "store_lng": row[7],
                 }
                 storeList.append(store)
                 
@@ -1171,7 +1118,6 @@ def getCurrentLocationStore(item: str, lat: float, lng: float):
                     status,
                     inspection_status,
                     open_yn,
-                    store_photo_cnt,
                     store_lat,
                     store_lng,
                     (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
@@ -1192,10 +1138,9 @@ def getCurrentLocationStore(item: str, lat: float, lng: float):
                 "status": row[3],
                 "inspection_status": row[4],
                 "open_yn": row[5],
-                "store_photo_cnt": row[6],
-                "store_lat": row[7],
-                "store_lng": row[8],
-                "distance": row[9],  # Include the calculated distance
+                "store_lat": row[6],
+                "store_lng": row[7],
+                "distance": row[8],
             }
             storeList.append(store)
 
@@ -1220,16 +1165,14 @@ def getStoreInfo(store_id: int):
     try:      
         print("storeList 호출1")
       
-        cursor.execute('''select 
+        cursor.execute('''select
         owner_id,
         id,
-        store_name, 
-        store_address, 
+        store_name,
+        store_address,
         store_telephone,
         store_description,
-        store_photo_cnt,
-        store_address,
-        store_lat, 
+        store_lat,
         store_lng,
         updated_at,
         inspection_status,
@@ -1246,18 +1189,8 @@ def getStoreInfo(store_id: int):
                                                             },
                                                   ExpiresIn=3600)
                                                   
-            store_photo_urls = []
-            store_photo_cnt = store['store_photo_cnt'] if store['store_photo_cnt'] is not None else 0
+            store_photo_urls = _get_store_photo_urls(cursor, store_id)
 
-            for i in range(1, store_photo_cnt+1):
-                s3_url = s3.generate_presigned_url('get_object',
-                                                            Params={'Bucket': bucket_name,
-                                                                    'Key': f'store_image/store_image_{store_id}_{i}.png',
-                                                                    },
-                                                          ExpiresIn=3600)
-
-                store_photo_urls.append(s3_url) 
-            
             store = {
                 "owner_id": store['owner_id'],
                 "store_id": store['id'],

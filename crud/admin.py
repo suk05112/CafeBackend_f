@@ -177,7 +177,7 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
         result = []
         for store in stores:
             store['created_at'] = store['created_at'].isoformat() if store['created_at'] else None
-            store['approved'] = store['status'] == 'approved'
+            store['approved'] = store['status'].upper() == 'APPROVED' if store['status'] else False
             result.append(store)
         
         return {
@@ -220,19 +220,15 @@ def get_store_detail(connection, store_id: int) -> Dict:
         except ClientError:
             pass
         
-        # 매장 사진 URLs
-        store_photo_urls = []
-        store_photo_cnt = store.get('store_photo_cnt', 0) or 0
-        for i in range(1, store_photo_cnt + 1):
-            try:
-                image_key = f'store_image/store_image_{store_id}_{i}.png'
-                s3.head_object(Bucket=bucket_name, Key=image_key)
-                url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
-                store_photo_urls.append(url)
-            except ClientError:
-                pass
-        store['images'] = store_photo_urls
+        cursor.execute(
+            "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
+            (store_id,)
+        )
+        store['images'] = [
+            s3.generate_presigned_url('get_object',
+                Params={'Bucket': bucket_name, 'Key': r['image_key']}, ExpiresIn=3600)
+            for r in cursor.fetchall()
+        ]
         
         # 날짜 형식 변환
         if store.get('created_at'):
@@ -251,29 +247,26 @@ def get_store_menus(connection, store_id: int) -> List[Dict]:
     
     try:
         cursor.execute('''
-            SELECT 
+            SELECT
                 m.id,
                 m.menu_name as name,
                 m.price as price,
                 m.description as description,
-                m.store_id
+                m.store_id,
+                m.image_key
             FROM menu m
             WHERE m.store_id = %s
         ''', (store_id,))
-        
+
         menus = cursor.fetchall()
-        
+
         result = []
         for menu in menus:
-            menu_id = menu['id']
-            image_key = f'menu_image/menu_image_{menu_id}.png'
             menu['image'] = None
-            try:
-                s3.head_object(Bucket=bucket_name, Key=image_key)
+            if menu.get('image_key'):
                 menu['image'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
-            except ClientError:
-                pass
+                    Params={'Bucket': bucket_name, 'Key': menu['image_key']}, ExpiresIn=3600)
+            del menu['image_key']
             result.append(menu)
         
         return result
