@@ -682,14 +682,22 @@ def create_test_store(store: StoreCreate):
     """테스트 매장 추가"""
     try:
         store_id = store_crud.create_store(store)
-        s3_urls = store_crud.generate_store_s3_urls(store_id, store.store_photo_cnt)
-        
+
+        store_logo_url = S3_CLIENT.generate_presigned_url('put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f'store_logo/store_logo_{store_id}.png'},
+            ExpiresIn=3600)
+        bankBook_put_url = S3_CLIENT.generate_presigned_url('put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f'bankbook/bankbook_{store_id}.png'},
+            ExpiresIn=3600)
+        business_put_url = S3_CLIENT.generate_presigned_url('put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f'business_registration/business_registration_{store_id}.png'},
+            ExpiresIn=3600)
+
         return {
             'store_id': store_id,
-            'store_logo_url': s3_urls['store_logo_url'],
-            'store_photo_urls': s3_urls['store_photo_urls'],
-            'bankBook_put_url': s3_urls['bankBook_put_url'],
-            'business_put_url': s3_urls['business_put_url']
+            'store_logo_url': store_logo_url,
+            'bankBook_put_url': bankBook_put_url,
+            'business_put_url': business_put_url
         }
     except Exception as e:
         print(f"Error in create_test_store: {traceback.format_exc()}")
