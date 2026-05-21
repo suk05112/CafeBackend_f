@@ -44,7 +44,7 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
             
             menus.append({
                 "menu_id": row['id'],
-                "menu_name": row['menu_name'],
+                "name": row['menu_name'],
                 "price": row['price'],
                 "description": row['description'],
                 "status": row['status'],
@@ -84,15 +84,16 @@ def create_menu(store_id: int, menu_data: Menu) -> int:
     
     try:
         query = """
-            INSERT INTO menu (store_id, menu_name, price, description)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO menu (store_id, menu_name, price, description, status)
+            VALUES (%s, %s, %s, %s, %s)
         """
-        
+
         cursor.execute(query, (
             store_id,
             menu_data.name,
             menu_data.price,
             menu_data.description,
+            menu_data.status,
         ))
         connection.commit()
         
@@ -121,33 +122,35 @@ def generate_menu_s3_urls(store_id: int, menu_id: int) -> Dict:
     }
 
 
-def update_menu(menu_id: int, menu_data: Menu) -> bool:
+def update_menu(menu_id: int, store_id: int, menu_data: Menu) -> bool:
     """메뉴 정보 업데이트"""
     connection = get_db_connection()
     cursor = connection.cursor()
-    
+
     try:
-        query = "UPDATE menu SET "
-        values = []
-        
-        if menu_data.name:
-            query += "menu_name = %s, "
-            values.append(menu_data.name)
-        if menu_data.price:
-            query += "price = %s, "
-            values.append(menu_data.price)
-        if menu_data.description:
-            query += "description = %s, "
+        query = "UPDATE menu SET menu_name = %s, price = %s, status = %s"
+        values = [menu_data.name, menu_data.price, menu_data.status]
+
+        if menu_data.description is not None:
+            query += ", description = %s"
             values.append(menu_data.description)
-        
-        query = query[:-2]  # 마지막 쉼표와 공백 제거
-        query += " WHERE id = %s"
+
+        query += " WHERE id = %s AND is_deleted = 0"
         values.append(menu_id)
-        
+
         cursor.execute(query, tuple(values))
         connection.commit()
-        
-        return cursor.rowcount > 0
+
+        if cursor.rowcount == 0:
+            # 동일한 값으로 업데이트 시 rowcount == 0 → 레코드 존재 여부로 판단
+            cursor.execute("SELECT id FROM menu WHERE id = %s AND is_deleted = 0", (menu_id,))
+            if cursor.fetchone() is None:
+                return False
+
+        if menu_data.delete_image:
+            s3.delete_object(Bucket=bucket_name, Key=f"menu/menu_{store_id}_{menu_id}.png")
+
+        return True
     except Exception as e:
         connection.rollback()
         raise e
