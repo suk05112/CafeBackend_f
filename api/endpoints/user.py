@@ -575,12 +575,15 @@ async def login_user(
 
             print("이미 등록 islinked", islinked)
             # 이미 등록된 유저
-            
+
             if not islinked:
                 print("islinked false")
                 linkAccount(uid, user_id, provider, email, project_type)
             else:
                 print("islinked true")
+
+            cursor.execute("UPDATE user SET last_login = NOW() WHERE id = %s", (user_id,))
+            connection.commit()
 
             return {
                 "isRegistered": 1,
