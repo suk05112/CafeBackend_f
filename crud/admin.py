@@ -403,11 +403,11 @@ def get_owners(connection, search: Optional[str] = None, page: int = 1, limit: i
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        count_query = 'SELECT COUNT(*) as total FROM owner WHERE deleted_at IS NULL'
+        count_query = 'SELECT COUNT(*) as total FROM owner'
         count_params = []
 
         if search:
-            count_query += ' AND (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            count_query += ' WHERE (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
             search_pattern = f'%{search}%'
             try:
                 search_id = int(search)
@@ -421,14 +421,10 @@ def get_owners(connection, search: Optional[str] = None, page: int = 1, limit: i
         offset = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
 
-        query = '''
-            SELECT id, name, email, phone, created_at
-            FROM owner
-            WHERE deleted_at IS NULL
-        '''
+        query = 'SELECT id, name, email, phone, created_at FROM owner'
         params = []
         if search:
-            query += ' AND (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            query += ' WHERE (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
             search_pattern = f'%{search}%'
             try:
                 search_id = int(search)
@@ -464,7 +460,7 @@ def get_owner_detail(connection, owner_id: int) -> Dict:
 
     try:
         cursor.execute(
-            'SELECT id, name, email, phone, created_at FROM owner WHERE id = %s AND deleted_at IS NULL',
+            'SELECT id, name, email, phone, created_at FROM owner WHERE id = %s',
             (owner_id,)
         )
         owner = cursor.fetchone()
