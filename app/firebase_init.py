@@ -20,7 +20,7 @@ owner_firebase_cred_path = os.getenv(
 # Dev 앱 Firebase 인증서 파일 경로
 dev_firebase_cred_path = os.getenv(
     "DEV_FIREBASE_CRED_PATH",
-    os.path.join(BASE_DIR, "gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json")
+    os.path.join(BASE_DIR, "gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json")
 )
 
 print("initialize firebase")
