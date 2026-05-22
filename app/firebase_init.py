@@ -8,13 +8,13 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 # 사용자 앱 (User App) Firebase 인증서 파일 경로
 user_firebase_cred_path = os.getenv(
     "USER_FIREBASE_CRED_PATH",
-    os.path.join(BASE_DIR, "cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json")  # 기본값: 기존 파일
+    os.path.join(BASE_DIR, "cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json")
 )
 
-# 사장님 앱 (Owner App) Firebase 인증서 파일 경로
+# 사장님 앱 - Dev (cafe-owner-dev) Firebase 인증서 파일 경로
 owner_firebase_cred_path = os.getenv(
     "OWNER_FIREBASE_CRED_PATH",
-    os.path.join(BASE_DIR, "cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json")
+    os.path.join(BASE_DIR, "cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json")
 )
 
 # Dev 앱 Firebase 인증서 파일 경로
@@ -38,7 +38,7 @@ if "user_app" not in firebase_admin._apps:
 else:
     user_app = firebase_admin.get_app("user_app")
 
-# 사장님 앱 Firebase 초기화
+# 사장님 앱 Firebase 초기화 (cafe-owner-dev)
 try:
     if "owner_app" not in firebase_admin._apps:
         owner_cred = credentials.Certificate(owner_firebase_cred_path)
