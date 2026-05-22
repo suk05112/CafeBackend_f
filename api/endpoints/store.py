@@ -1316,3 +1316,32 @@ def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate
             cursor.close()
         if connection:
             connection.close()
+
+
+@router.patch("/{storeId}/contract")
+def update_contract_status(storeId: int, body: dict):
+    """계약상태 업데이트 (0: 미계약, 1: 계약)"""
+    contract_status = body.get('contract_status')
+    if contract_status not in (0, 1):
+        raise HTTPException(status_code=400, detail="contract_status must be 0 or 1")
+
+    connection = None
+    cursor = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        cursor.execute('SELECT id FROM store WHERE id = %s', (storeId,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail=f"Store {storeId} not found")
+        cursor.execute('UPDATE store SET contract_status = %s WHERE id = %s', (contract_status, storeId))
+        connection.commit()
+        return {"message": f"Store {storeId} contract_status updated to {contract_status}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            connection.close()
