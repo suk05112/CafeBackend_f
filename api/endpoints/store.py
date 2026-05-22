@@ -1333,7 +1333,7 @@ def update_contract_status(storeId: int, body: dict):
         cursor.execute('SELECT id FROM store WHERE id = %s', (storeId,))
         if not cursor.fetchone():
             raise HTTPException(status_code=404, detail=f"Store {storeId} not found")
-        cursor.execute('UPDATE store SET contract_status = %s WHERE id = %s', (contract_status, storeId))
+        cursor.execute('UPDATE store SET contract_completed = %s WHERE id = %s', (contract_status, storeId))
         connection.commit()
         return {"message": f"Store {storeId} contract_status updated to {contract_status}"}
     except HTTPException:
