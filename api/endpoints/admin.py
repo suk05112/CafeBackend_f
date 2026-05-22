@@ -1011,3 +1011,47 @@ def update_refund_status_api(refund_id: int, body: dict):
         print(f"Error in update_refund_status: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+@router.get("/owners")
+def get_owners(
+    search: Optional[str] = Query(None, description="이름, 이메일, 전화번호, ID로 검색"),
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+):
+    """사장님 리스트 (관리자용, 페이지네이션)"""
+    connection = get_db_connection()
+    try:
+        result = admin_crud.get_owners(connection, search, page, limit)
+        return {
+            'owners': result['items'],
+            'pagination': {
+                'total': result['total'],
+                'page': result['page'],
+                'limit': result['limit'],
+                'total_pages': result['total_pages'],
+            },
+        }
+    except Exception as e:
+        print(f"Error in get_owners: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/owners/{owner_id}")
+def get_owner_detail(owner_id: int):
+    """사장님 상세 정보"""
+    connection = get_db_connection()
+    try:
+        owner = admin_crud.get_owner_detail(connection, owner_id)
+        if not owner:
+            raise HTTPException(status_code=404, detail="Owner not found")
+        return owner
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_owner_detail: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()

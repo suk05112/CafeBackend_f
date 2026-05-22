@@ -398,6 +398,123 @@ def get_users(connection, search: Optional[str] = None, page: int = 1, limit: in
         cursor.close()
 
 
+def get_owners(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+    """사장님 리스트 (관리자용, 페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        count_query = 'SELECT COUNT(*) as total FROM owner WHERE deleted_at IS NULL'
+        count_params = []
+
+        if search:
+            count_query += ' AND (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                count_params = [search_pattern, search_pattern, search_pattern, search_id]
+            except ValueError:
+                count_params = [search_pattern, search_pattern, search_pattern, -1]
+
+        cursor.execute(count_query, count_params)
+        total_count = cursor.fetchone()['total']
+
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+
+        query = '''
+            SELECT id, name, email, phone, created_at
+            FROM owner
+            WHERE deleted_at IS NULL
+        '''
+        params = []
+        if search:
+            query += ' AND (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                params = [search_pattern, search_pattern, search_pattern, search_id]
+            except ValueError:
+                params = [search_pattern, search_pattern, search_pattern, -1]
+
+        query += ' ORDER BY id DESC LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+
+        cursor.execute(query, params)
+        owners = cursor.fetchall()
+
+        result = []
+        for owner in owners:
+            owner['created_at'] = owner['created_at'].isoformat() if owner.get('created_at') else None
+            result.append(owner)
+
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages,
+        }
+    finally:
+        cursor.close()
+
+
+def get_owner_detail(connection, owner_id: int) -> Dict:
+    """사장님 상세 정보 (기본정보 + 계좌 + 통장사본 + 매장 목록)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute(
+            'SELECT id, name, email, phone, created_at FROM owner WHERE id = %s AND deleted_at IS NULL',
+            (owner_id,)
+        )
+        owner = cursor.fetchone()
+        if not owner:
+            return None
+
+        owner['created_at'] = owner['created_at'].isoformat() if owner.get('created_at') else None
+
+        # 매장 목록 + 각 매장의 계좌 및 통장사본
+        cursor.execute(
+            'SELECT id, store_name, store_address FROM store WHERE owner_id = %s ORDER BY created_at DESC',
+            (owner_id,)
+        )
+        stores_raw = cursor.fetchall()
+
+        stores = []
+        for store in stores_raw:
+            store_id = store['id']
+
+            cursor.execute(
+                'SELECT name, code, bank, account FROM account WHERE store_id = %s LIMIT 1',
+                (store_id,)
+            )
+            account = cursor.fetchone()
+
+            bankbook_url = None
+            try:
+                s3.head_object(Bucket=bucket_name, Key=f'bankbook/bankbook_{store_id}.png')
+                bankbook_url = s3.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': bucket_name, 'Key': f'bankbook/bankbook_{store_id}.png'},
+                    ExpiresIn=3600,
+                )
+            except ClientError:
+                pass
+
+            stores.append({
+                'store_id': store_id,
+                'store_name': store['store_name'],
+                'store_address': store['store_address'],
+                'account': account,
+                'bankbook_url': bankbook_url,
+            })
+
+        owner['stores'] = stores
+        return owner
+    finally:
+        cursor.close()
+
+
 def get_user_detail(connection, user_id: int) -> Dict:
     """유저 상세 정보"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
