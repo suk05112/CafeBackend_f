@@ -896,7 +896,7 @@ def updateStore(store_id: int, store: StoreCreate):
             values.append(store.store_description)
 
         query += "inspection_status = %s, "
-        values.append(0)
+        values.append('PENDING')
 
         query = query[:-2]
         query += " WHERE id = %s"
