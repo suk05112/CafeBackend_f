@@ -1052,25 +1052,24 @@ async def registerPushToken(
         app_version = ua_info.get('app_version')
         os_version = ua_info.get('os_version')
         
-        # 기존 토큰이 있는지 확인
+        # device_type 기준으로 기존 행 확인 (토큰이 바뀌어도 같은 디바이스면 UPDATE)
         cursor.execute('''
-            SELECT id FROM user_push_tokens 
-            WHERE user_id = %s AND fcm_token = %s
-        ''', (user_id, push_token.fcm_token))
+            SELECT id FROM user_push_tokens
+            WHERE user_id = %s AND device_type = %s
+        ''', (user_id, push_token.device_type.value))
         existing = cursor.fetchone()
-        
+
         if existing:
-            # 기존 토큰이 있으면 업데이트
             cursor.execute('''
-                UPDATE user_push_tokens 
-                SET device_type = %s,
+                UPDATE user_push_tokens
+                SET fcm_token = %s,
                     allow_service_push = %s,
                     allow_marketing_push = %s,
                     app_version = %s,
                     os_version = %s
                 WHERE id = %s
             ''', (
-                push_token.device_type.value,
+                push_token.fcm_token,
                 1 if push_token.allow_service_push else 0,
                 1 if push_token.allow_marketing_push else 0,
                 app_version,
