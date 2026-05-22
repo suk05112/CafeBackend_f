@@ -80,10 +80,10 @@ def ensure_migration_history(connection):
 
 
 def get_applied_versions(connection):
-    """applied 상태인 version 목록 반환"""
+    """한 번이라도 applied된 적 있는 version 목록 반환 (롤백 후 재실행 방지)"""
     with connection.cursor() as cursor:
         cursor.execute(
-            "SELECT version FROM migration_history WHERE status = 'applied' ORDER BY version"
+            "SELECT DISTINCT version FROM migration_history ORDER BY version"
         )
         return {row[0] for row in cursor.fetchall()}
 
