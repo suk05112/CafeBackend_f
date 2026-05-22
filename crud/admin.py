@@ -167,7 +167,7 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
             search_pattern = f'%{search}%'
             params = [search_pattern, search_pattern]
         
-        query += ' ORDER BY s.id ASC'
+        query += ' ORDER BY s.created_at DESC'
         query += ' LIMIT %s OFFSET %s'
         params.extend([limit, offset])
         
