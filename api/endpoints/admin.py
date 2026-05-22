@@ -73,12 +73,24 @@ def get_store_detail(store_id: int):
 
 
 @router.get("/stores/{store_id}/menu")
-def get_store_menus(store_id: int):
-    """매장 메뉴 리스트"""
+def get_store_menus(
+    store_id: int,
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수")
+):
+    """매장 메뉴 리스트 (페이지네이션)"""
     connection = get_db_connection()
     try:
-        menus = admin_crud.get_store_menus(connection, store_id)
-        return {'menus': menus}
+        result = admin_crud.get_store_menus(connection, store_id, page, limit)
+        return {
+            'menus': result['items'],
+            'pagination': {
+                'total': result['total'],
+                'page': result['page'],
+                'limit': result['limit'],
+                'total_pages': result['total_pages'],
+            }
+        }
     except Exception as e:
         print(f"Error in get_store_menus: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))

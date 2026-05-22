@@ -241,11 +241,17 @@ def get_store_detail(connection, store_id: int) -> Dict:
         cursor.close()
 
 
-def get_store_menus(connection, store_id: int) -> List[Dict]:
-    """매장 메뉴 리스트"""
+def get_store_menus(connection, store_id: int, page: int = 1, limit: int = 10) -> Dict:
+    """매장 메뉴 리스트 (페이지네이션)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
+        cursor.execute('SELECT COUNT(*) as total FROM menu WHERE store_id = %s', (store_id,))
+        total_count = cursor.fetchone()['total']
+
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+
         cursor.execute('''
             SELECT
                 m.id,
@@ -256,7 +262,9 @@ def get_store_menus(connection, store_id: int) -> List[Dict]:
                 m.image_key
             FROM menu m
             WHERE m.store_id = %s
-        ''', (store_id,))
+            ORDER BY m.id ASC
+            LIMIT %s OFFSET %s
+        ''', (store_id, limit, offset))
 
         menus = cursor.fetchall()
 
@@ -268,8 +276,14 @@ def get_store_menus(connection, store_id: int) -> List[Dict]:
                     Params={'Bucket': bucket_name, 'Key': menu['image_key']}, ExpiresIn=3600)
             del menu['image_key']
             result.append(menu)
-        
-        return result
+
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages,
+        }
     finally:
         cursor.close()
 
