@@ -905,14 +905,14 @@ def updateStore(store_id: int, store: StoreCreate):
         cursor.execute(query, tuple(values))
 
         store_photos = []
-        store_photo_get_urls = []
 
         if store.image_count is not None:
             _delete_store_images(cursor, connection, store_id)
             store_photos = _insert_store_images(cursor, store_id, store.image_count)
-            store_photo_get_urls = [p['put_url'] for p in store_photos]
 
         connection.commit()
+
+        store_photo_get_urls = _get_store_photo_urls(cursor, store_id)
 
         return {
             'msg': "success",
