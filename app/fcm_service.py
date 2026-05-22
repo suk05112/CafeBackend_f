@@ -16,7 +16,6 @@ def send_fcm_notification_to_user(user_id: int, title: str, body: str):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # user_id로 활성화된 모든 FCM token 조회 (서비스 푸시 동의한 것만)
         cursor.execute('''
             SELECT fcm_token
             FROM user_push_tokens
@@ -32,38 +31,17 @@ def send_fcm_notification_to_user(user_id: int, title: str, body: str):
 
         fcm_tokens = [token['fcm_token'] for token in tokens]
 
-        notification = messaging.Notification(
-            title=title,
-            body=body
+        message = messaging.MulticastMessage(
+            notification=messaging.Notification(title=title, body=body),
+            tokens=fcm_tokens
         )
+        response = messaging.send_each_for_multicast(message, app=user_app)
 
-        try:
-            message = messaging.MulticastMessage(
-                notification=notification,
-                tokens=fcm_tokens
-            )
-            response = messaging.send_multicast(message, app=user_app)
-            sent_count = response.success_count
-            failed_count = response.failure_count
-        except AttributeError:
-            sent_count = 0
-            failed_count = 0
-            for token in fcm_tokens:
-                try:
-                    message = messaging.Message(
-                        notification=notification,
-                        token=token
-                    )
-                    messaging.send(message, app=user_app)
-                    sent_count += 1
-                except Exception:
-                    failed_count += 1
-
-        logger.info(f"FCM notification sent to user_id {user_id}: {sent_count} successful, {failed_count} failed")
+        logger.info(f"FCM notification sent to user_id {user_id}: {response.success_count} successful, {response.failure_count} failed")
 
         return {
-            "sent": sent_count,
-            "failed": failed_count,
+            "sent": response.success_count,
+            "failed": response.failure_count,
             "total": len(fcm_tokens)
         }
 
@@ -83,7 +61,6 @@ def send_fcm_notification_to_owner(owner_id: int, title: str, body: str):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # owner_id로 활성화된 모든 FCM token 조회 (서비스 푸시 동의한 것만)
         cursor.execute('''
             SELECT fcm_token
             FROM owner_push_tokens
@@ -99,38 +76,17 @@ def send_fcm_notification_to_owner(owner_id: int, title: str, body: str):
 
         fcm_tokens = [token['fcm_token'] for token in tokens]
 
-        notification = messaging.Notification(
-            title=title,
-            body=body
+        message = messaging.MulticastMessage(
+            notification=messaging.Notification(title=title, body=body),
+            tokens=fcm_tokens
         )
+        response = messaging.send_each_for_multicast(message, app=owner_app)
 
-        try:
-            message = messaging.MulticastMessage(
-                notification=notification,
-                tokens=fcm_tokens
-            )
-            response = messaging.send_multicast(message, app=owner_app)
-            sent_count = response.success_count
-            failed_count = response.failure_count
-        except AttributeError:
-            sent_count = 0
-            failed_count = 0
-            for token in fcm_tokens:
-                try:
-                    message = messaging.Message(
-                        notification=notification,
-                        token=token
-                    )
-                    messaging.send(message, app=owner_app)
-                    sent_count += 1
-                except Exception:
-                    failed_count += 1
-
-        logger.info(f"FCM notification sent to owner_id {owner_id}: {sent_count} successful, {failed_count} failed")
+        logger.info(f"FCM notification sent to owner_id {owner_id}: {response.success_count} successful, {response.failure_count} failed")
 
         return {
-            "sent": sent_count,
-            "failed": failed_count,
+            "sent": response.success_count,
+            "failed": response.failure_count,
             "total": len(fcm_tokens)
         }
 
@@ -152,17 +108,9 @@ def send_fcm_notification_to_all_users(title: str, body: str, use_marketing: boo
 
     try:
         if use_marketing:
-            cursor.execute('''
-                SELECT DISTINCT fcm_token
-                FROM user_push_tokens
-                WHERE allow_marketing_push = 1
-            ''')
+            cursor.execute('SELECT DISTINCT fcm_token FROM user_push_tokens WHERE allow_marketing_push = 1')
         else:
-            cursor.execute('''
-                SELECT DISTINCT fcm_token
-                FROM user_push_tokens
-                WHERE allow_service_push = 1
-            ''')
+            cursor.execute('SELECT DISTINCT fcm_token FROM user_push_tokens WHERE allow_service_push = 1')
 
         tokens = cursor.fetchall()
 
@@ -178,33 +126,13 @@ def send_fcm_notification_to_all_users(title: str, body: str, use_marketing: boo
 
         for i in range(0, len(fcm_tokens), batch_size):
             batch_tokens = fcm_tokens[i:i + batch_size]
-
-            try:
-                message = messaging.MulticastMessage(
-                    notification=messaging.Notification(
-                        title=title,
-                        body=body
-                    ),
-                    tokens=batch_tokens
-                )
-                response = messaging.send_multicast(message, app=user_app)
-                total_sent += response.success_count
-                total_failed += response.failure_count
-            except AttributeError:
-                notification = messaging.Notification(
-                    title=title,
-                    body=body
-                )
-                for token in batch_tokens:
-                    try:
-                        message = messaging.Message(
-                            notification=notification,
-                            token=token
-                        )
-                        messaging.send(message, app=user_app)
-                        total_sent += 1
-                    except Exception:
-                        total_failed += 1
+            message = messaging.MulticastMessage(
+                notification=messaging.Notification(title=title, body=body),
+                tokens=batch_tokens
+            )
+            response = messaging.send_each_for_multicast(message, app=user_app)
+            total_sent += response.success_count
+            total_failed += response.failure_count
 
         logger.info(f"FCM notification sent to all users: {total_sent} successful, {total_failed} failed")
 
@@ -232,17 +160,9 @@ def send_fcm_notification_to_all_owners(title: str, body: str, use_marketing: bo
 
     try:
         if use_marketing:
-            cursor.execute('''
-                SELECT DISTINCT fcm_token
-                FROM owner_push_tokens
-                WHERE allow_marketing_push = 1
-            ''')
+            cursor.execute('SELECT DISTINCT fcm_token FROM owner_push_tokens WHERE allow_marketing_push = 1')
         else:
-            cursor.execute('''
-                SELECT DISTINCT fcm_token
-                FROM owner_push_tokens
-                WHERE allow_service_push = 1
-            ''')
+            cursor.execute('SELECT DISTINCT fcm_token FROM owner_push_tokens WHERE allow_service_push = 1')
 
         tokens = cursor.fetchall()
 
@@ -258,33 +178,13 @@ def send_fcm_notification_to_all_owners(title: str, body: str, use_marketing: bo
 
         for i in range(0, len(fcm_tokens), batch_size):
             batch_tokens = fcm_tokens[i:i + batch_size]
-
-            try:
-                message = messaging.MulticastMessage(
-                    notification=messaging.Notification(
-                        title=title,
-                        body=body
-                    ),
-                    tokens=batch_tokens
-                )
-                response = messaging.send_multicast(message, app=owner_app)
-                total_sent += response.success_count
-                total_failed += response.failure_count
-            except AttributeError:
-                notification = messaging.Notification(
-                    title=title,
-                    body=body
-                )
-                for token in batch_tokens:
-                    try:
-                        message = messaging.Message(
-                            notification=notification,
-                            token=token
-                        )
-                        messaging.send(message, app=owner_app)
-                        total_sent += 1
-                    except Exception:
-                        total_failed += 1
+            message = messaging.MulticastMessage(
+                notification=messaging.Notification(title=title, body=body),
+                tokens=batch_tokens
+            )
+            response = messaging.send_each_for_multicast(message, app=owner_app)
+            total_sent += response.success_count
+            total_failed += response.failure_count
 
         logger.info(f"FCM notification sent to all owners: {total_sent} successful, {total_failed} failed")
 
