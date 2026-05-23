@@ -795,6 +795,22 @@ def create_fee_promotion(promotion: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/promotions/{promo_id}")
+def get_promotion_detail(promo_id: int):
+    """프로모션 상세 조회 (적용 매장 목록 포함)"""
+    try:
+        from crud import promotion as promotion_crud
+        detail = promotion_crud.get_fee_promotion_detail(promo_id)
+        if not detail:
+            raise HTTPException(status_code=404, detail="Promotion not found")
+        return detail
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_promotion_detail: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.delete("/promotions/{promo_id}")
 def delete_fee_promotion(promo_id: int):
     """프로모션 삭제"""
@@ -811,15 +827,15 @@ def delete_fee_promotion(promo_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/promotions/{store_id}")
-def get_fee_promotions(store_id: int):
-    """매장 프로모션 리스트 조회"""
+@router.get("/stores/{store_id}/promotions")
+def get_store_promotions(store_id: int):
+    """매장별 프로모션 리스트 조회"""
     try:
         from crud import promotion as promotion_crud
         promotions = promotion_crud.get_fee_promotions_by_store(store_id)
         return {'promotions': promotions}
     except Exception as e:
-        print(f"Error in get_fee_promotions: {traceback.format_exc()}")
+        print(f"Error in get_store_promotions: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
