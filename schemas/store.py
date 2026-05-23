@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Union
+from typing import Union, Optional
 
 class StoreCreate(BaseModel):
     owner_id: int
@@ -9,7 +9,7 @@ class StoreCreate(BaseModel):
     store_address: str
     store_lat: float
     store_lng: float
-    store_photo_cnt: int
+    image_count: Optional[int] = None
 
 
 class InspectionStatusUpdate(BaseModel):

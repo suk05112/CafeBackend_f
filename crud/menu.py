@@ -1,6 +1,7 @@
 """
 Menu CRUD 로직
 """
+import uuid
 import pymysql
 from typing import List, Dict, Optional
 
@@ -21,8 +22,8 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
     
     try:
         cursor.execute("""
-            SELECT id, menu_name, price, description, status 
-            FROM menu 
+            SELECT id, menu_name, price, description, status, image_key
+            FROM menu
             WHERE store_id = %s AND is_deleted = 0
         """, (store_id,))
         
@@ -30,21 +31,15 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
         menus = []
         
         for row in rows:
-            menu_id = row['id']
             menu_photo_url = None
-            
-            try:
-                menu_key = f'menu/menu_{store_id}_{menu_id}.png'
-                s3.head_object(Bucket=bucket_name, Key=menu_key)
+            if row['image_key']:
                 menu_photo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': menu_key},
+                    Params={'Bucket': bucket_name, 'Key': row['image_key']},
                     ExpiresIn=3600)
-            except:
-                pass
-            
+
             menus.append({
                 "menu_id": row['id'],
-                "menu_name": row['menu_name'],
+                "name": row['menu_name'],
                 "price": row['price'],
                 "description": row['description'],
                 "status": row['status'],
@@ -84,15 +79,16 @@ def create_menu(store_id: int, menu_data: Menu) -> int:
     
     try:
         query = """
-            INSERT INTO menu (store_id, menu_name, price, description)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO menu (store_id, menu_name, price, description, status)
+            VALUES (%s, %s, %s, %s, %s)
         """
-        
+
         cursor.execute(query, (
             store_id,
             menu_data.name,
             menu_data.price,
             menu_data.description,
+            menu_data.status,
         ))
         connection.commit()
         
@@ -106,48 +102,81 @@ def create_menu(store_id: int, menu_data: Menu) -> int:
 
 
 def generate_menu_s3_urls(store_id: int, menu_id: int) -> Dict:
-    """메뉴 S3 presigned URLs 생성"""
+    """메뉴 S3 presigned URLs 생성 (uuid 포함 고유 키 사용)"""
+    image_key = f'menu/menu_{store_id}_{menu_id}_{uuid.uuid4().hex[:8]}.png'
+
     menu_put_url = s3.generate_presigned_url('put_object',
-        Params={'Bucket': bucket_name, 'Key': f'menu/menu_{store_id}_{menu_id}.png'},
+        Params={'Bucket': bucket_name, 'Key': image_key},
         ExpiresIn=3600)
-    
+
     menu_get_url = s3.generate_presigned_url('get_object',
-        Params={'Bucket': bucket_name, 'Key': f'menu/menu_{store_id}_{menu_id}.png'},
+        Params={'Bucket': bucket_name, 'Key': image_key},
         ExpiresIn=3600)
-    
+
     return {
+        'image_key': image_key,
         'menu_put_url': menu_put_url,
         'menu_get_url': menu_get_url
     }
 
 
-def update_menu(menu_id: int, menu_data: Menu) -> bool:
+def save_menu_image_key(menu_id: int, image_key: str) -> None:
+    """메뉴 image_key DB 저장"""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE menu SET image_key = %s WHERE id = %s",
+            (image_key, menu_id)
+        )
+        connection.commit()
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_menu(menu_id: int, store_id: int, menu_data: Menu) -> bool:
     """메뉴 정보 업데이트"""
     connection = get_db_connection()
     cursor = connection.cursor()
-    
+
     try:
-        query = "UPDATE menu SET "
-        values = []
-        
-        if menu_data.name:
-            query += "menu_name = %s, "
-            values.append(menu_data.name)
-        if menu_data.price:
-            query += "price = %s, "
-            values.append(menu_data.price)
-        if menu_data.description:
-            query += "description = %s, "
+        query = "UPDATE menu SET menu_name = %s, price = %s, status = %s"
+        values = [menu_data.name, menu_data.price, menu_data.status]
+
+        if menu_data.description is not None:
+            query += ", description = %s"
             values.append(menu_data.description)
-        
-        query = query[:-2]  # 마지막 쉼표와 공백 제거
-        query += " WHERE id = %s"
+
+        query += " WHERE id = %s AND is_deleted = 0"
         values.append(menu_id)
-        
+
         cursor.execute(query, tuple(values))
         connection.commit()
-        
-        return cursor.rowcount > 0
+
+        if cursor.rowcount == 0:
+            # 동일한 값으로 업데이트 시 rowcount == 0 → 레코드 존재 여부로 판단
+            cursor.execute("SELECT id FROM menu WHERE id = %s AND is_deleted = 0", (menu_id,))
+            if cursor.fetchone() is None:
+                return False
+
+        cursor2 = connection.cursor(pymysql.cursors.DictCursor)
+        cursor2.execute("SELECT image_key FROM menu WHERE id = %s", (menu_id,))
+        row = cursor2.fetchone()
+        cursor2.close()
+        existing_key = row['image_key'] if row else None
+
+        if existing_key:
+            s3.delete_object(Bucket=bucket_name, Key=existing_key)
+
+        if menu_data.delete_image:
+            cursor.execute("UPDATE menu SET image_key = NULL WHERE id = %s", (menu_id,))
+            connection.commit()
+
+        return True
     except Exception as e:
         connection.rollback()
         raise e

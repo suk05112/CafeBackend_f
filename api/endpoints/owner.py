@@ -446,25 +446,24 @@ async def registerOwnerPushToken(
         ua_info = parse_user_agent(user_agent)
         app_version = ua_info.get('app_version')
         os_version = ua_info.get('os_version')
-        # 기존 토큰이 있는지 확인
+        # device_type 기준으로 기존 행 확인 (토큰이 바뀌어도 같은 디바이스면 UPDATE)
         cursor.execute('''
-            SELECT id FROM owner_push_tokens 
-            WHERE owner_id = %s AND fcm_token = %s
-        ''', (owner_id, push_token.fcm_token))
+            SELECT id FROM owner_push_tokens
+            WHERE owner_id = %s AND device_type = %s
+        ''', (owner_id, push_token.device_type.value))
         existing = cursor.fetchone()
-        
+
         if existing:
-            # 기존 토큰이 있으면 업데이트
             cursor.execute('''
-                UPDATE owner_push_tokens 
-                SET device_type = %s,
+                UPDATE owner_push_tokens
+                SET fcm_token = %s,
                     allow_service_push = %s,
                     allow_marketing_push = %s,
                     app_version = %s,
                     os_version = %s
                 WHERE id = %s
             ''', (
-                push_token.device_type.value,
+                push_token.fcm_token,
                 1 if push_token.allow_service_push else 0,
                 1 if push_token.allow_marketing_push else 0,
                 app_version,
@@ -770,7 +769,6 @@ def get_owner_store_list(owner_id: int):
                 s.store_address,
                 s.store_lat,
                 s.store_lng,
-                s.store_photo_cnt,
                 s.region_code,
                 s.district_code,
                 s.inspection_status,
@@ -805,16 +803,16 @@ def get_owner_store_list(owner_id: int):
                 # 로고가 없으면 None
                 store_logo_url = None
             
-            # S3에서 store_photo URLs 생성 (store_photo_cnt 값만큼)
-            store_photo_urls = []
-            store_photo_cnt = store.get('store_photo_cnt', 0) or 0
-            
-            for i in range(1, store_photo_cnt + 1):
-                image_key = f'store_image/store_image_{store_id_item}_{i}.png'
-                s3_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key},
+            cursor.execute(
+                "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
+                (store_id_item,)
+            )
+            store_photo_urls = [
+                s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': r['image_key']},
                     ExpiresIn=3600)
-                store_photo_urls.append(s3_url)
+                for r in cursor.fetchall()
+            ]
             
             store_data = {
                 'store_id': store['id'],
@@ -826,7 +824,6 @@ def get_owner_store_list(owner_id: int):
                 'store_address': store.get('store_address'),
                 'store_lat': float(store['store_lat']) if store.get('store_lat') else None,
                 'store_lng': float(store['store_lng']) if store.get('store_lng') else None,
-                'store_photo_cnt': store_photo_cnt,
                 'store_photo_urls': store_photo_urls,
                 'region_code': store.get('region_code'),
                 'district_code': store.get('district_code'),

@@ -22,7 +22,15 @@ class Settings(BaseSettings):
     apple_private_key_line5: str = Field(default="", description="Apple Private Key Line 5")
     apple_private_key_line6: str = Field(default="", description="Apple Private Key Line 6")
     apple_redirect_uri: str = Field(default="", description="Apple Redirect URI")
-    
+
+    # Payletter 설정
+    payletter_client_id: str = Field(default="", description="Payletter Client ID")
+    payletter_payment_api_key: str = Field(default="", description="Payletter Payment API Key")
+    payletter_api_host: str = Field(default="", description="Payletter API Host")
+    payletter_callback_url: str = Field(default="", description="Payletter 서버사이드 콜백 URL")
+    payletter_return_url: str = Field(default="", description="Payletter 결제 완료 후 리다이렉트 URL (앱 딥링크)")
+    payletter_cancel_url: str = Field(default="", description="Payletter 결제 취소 후 리다이렉트 URL (앱 딥링크)")
+
     def get_apple_private_key(self) -> str:
         """
         .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 반환

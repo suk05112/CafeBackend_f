@@ -167,7 +167,7 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
             search_pattern = f'%{search}%'
             params = [search_pattern, search_pattern]
         
-        query += ' ORDER BY s.id ASC'
+        query += ' ORDER BY s.created_at DESC'
         query += ' LIMIT %s OFFSET %s'
         params.extend([limit, offset])
         
@@ -177,7 +177,7 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
         result = []
         for store in stores:
             store['created_at'] = store['created_at'].isoformat() if store['created_at'] else None
-            store['approved'] = store['status'] == 'approved'
+            store['approved'] = store['status'].upper() == 'APPROVED' if store['status'] else False
             result.append(store)
         
         return {
@@ -220,19 +220,15 @@ def get_store_detail(connection, store_id: int) -> Dict:
         except ClientError:
             pass
         
-        # 매장 사진 URLs
-        store_photo_urls = []
-        store_photo_cnt = store.get('store_photo_cnt', 0) or 0
-        for i in range(1, store_photo_cnt + 1):
-            try:
-                image_key = f'store_image/store_image_{store_id}_{i}.png'
-                s3.head_object(Bucket=bucket_name, Key=image_key)
-                url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
-                store_photo_urls.append(url)
-            except ClientError:
-                pass
-        store['images'] = store_photo_urls
+        cursor.execute(
+            "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
+            (store_id,)
+        )
+        store['images'] = [
+            s3.generate_presigned_url('get_object',
+                Params={'Bucket': bucket_name, 'Key': r['image_key']}, ExpiresIn=3600)
+            for r in cursor.fetchall()
+        ]
         
         # 날짜 형식 변환
         if store.get('created_at'):
@@ -245,38 +241,49 @@ def get_store_detail(connection, store_id: int) -> Dict:
         cursor.close()
 
 
-def get_store_menus(connection, store_id: int) -> List[Dict]:
-    """매장 메뉴 리스트"""
+def get_store_menus(connection, store_id: int, page: int = 1, limit: int = 10) -> Dict:
+    """매장 메뉴 리스트 (페이지네이션)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
+        cursor.execute('SELECT COUNT(*) as total FROM menu WHERE store_id = %s', (store_id,))
+        total_count = cursor.fetchone()['total']
+
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+
         cursor.execute('''
-            SELECT 
+            SELECT
                 m.id,
                 m.menu_name as name,
                 m.price as price,
                 m.description as description,
-                m.store_id
+                m.store_id,
+                m.image_key
             FROM menu m
             WHERE m.store_id = %s
-        ''', (store_id,))
-        
+            ORDER BY m.id ASC
+            LIMIT %s OFFSET %s
+        ''', (store_id, limit, offset))
+
         menus = cursor.fetchall()
-        
+
         result = []
         for menu in menus:
-            menu_id = menu['id']
-            image_key = f'menu_image/menu_image_{menu_id}.png'
             menu['image'] = None
-            try:
-                s3.head_object(Bucket=bucket_name, Key=image_key)
+            if menu.get('image_key'):
                 menu['image'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
-            except ClientError:
-                pass
+                    Params={'Bucket': bucket_name, 'Key': menu['image_key']}, ExpiresIn=3600)
+            del menu['image_key']
             result.append(menu)
-        
-        return result
+
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages,
+        }
     finally:
         cursor.close()
 
@@ -401,6 +408,119 @@ def get_users(connection, search: Optional[str] = None, page: int = 1, limit: in
             'limit': limit,
             'total_pages': total_pages
         }
+    finally:
+        cursor.close()
+
+
+def get_owners(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+    """사장님 리스트 (관리자용, 페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        count_query = 'SELECT COUNT(*) as total FROM owner'
+        count_params = []
+
+        if search:
+            count_query += ' WHERE (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                count_params = [search_pattern, search_pattern, search_pattern, search_id]
+            except ValueError:
+                count_params = [search_pattern, search_pattern, search_pattern, -1]
+
+        cursor.execute(count_query, count_params)
+        total_count = cursor.fetchone()['total']
+
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+
+        query = 'SELECT id, name, email, phone, created_at FROM owner'
+        params = []
+        if search:
+            query += ' WHERE (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            search_pattern = f'%{search}%'
+            try:
+                search_id = int(search)
+                params = [search_pattern, search_pattern, search_pattern, search_id]
+            except ValueError:
+                params = [search_pattern, search_pattern, search_pattern, -1]
+
+        query += ' ORDER BY id DESC LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+
+        cursor.execute(query, params)
+        owners = cursor.fetchall()
+
+        result = []
+        for owner in owners:
+            owner['created_at'] = owner['created_at'].isoformat() if owner.get('created_at') else None
+            result.append(owner)
+
+        return {
+            'items': result,
+            'total': total_count,
+            'page': page,
+            'limit': limit,
+            'total_pages': total_pages,
+        }
+    finally:
+        cursor.close()
+
+
+def get_owner_detail(connection, owner_id: int) -> Dict:
+    """사장님 상세 정보 (기본정보 + 계좌 + 통장사본 + 매장 목록)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute(
+            'SELECT id, name, email, phone, created_at FROM owner WHERE id = %s',
+            (owner_id,)
+        )
+        owner = cursor.fetchone()
+        if not owner:
+            return None
+
+        owner['created_at'] = owner['created_at'].isoformat() if owner.get('created_at') else None
+
+        # 매장 목록 + 각 매장의 계좌 및 통장사본
+        cursor.execute(
+            'SELECT id, store_name, store_address FROM store WHERE owner_id = %s ORDER BY created_at DESC',
+            (owner_id,)
+        )
+        stores_raw = cursor.fetchall()
+
+        stores = []
+        for store in stores_raw:
+            store_id = store['id']
+
+            cursor.execute(
+                'SELECT name, code, bank, account FROM account WHERE store_id = %s LIMIT 1',
+                (store_id,)
+            )
+            account = cursor.fetchone()
+
+            bankbook_url = None
+            try:
+                s3.head_object(Bucket=bucket_name, Key=f'bankbook/bankbook_{store_id}.png')
+                bankbook_url = s3.generate_presigned_url(
+                    'get_object',
+                    Params={'Bucket': bucket_name, 'Key': f'bankbook/bankbook_{store_id}.png'},
+                    ExpiresIn=3600,
+                )
+            except ClientError:
+                pass
+
+            stores.append({
+                'store_id': store_id,
+                'store_name': store['store_name'],
+                'store_address': store['store_address'],
+                'account': account,
+                'bankbook_url': bankbook_url,
+            })
+
+        owner['stores'] = stores
+        return owner
     finally:
         cursor.close()
 

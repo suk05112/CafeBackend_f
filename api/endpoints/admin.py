@@ -73,12 +73,24 @@ def get_store_detail(store_id: int):
 
 
 @router.get("/stores/{store_id}/menu")
-def get_store_menus(store_id: int):
-    """매장 메뉴 리스트"""
+def get_store_menus(
+    store_id: int,
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수")
+):
+    """매장 메뉴 리스트 (페이지네이션)"""
     connection = get_db_connection()
     try:
-        menus = admin_crud.get_store_menus(connection, store_id)
-        return {'menus': menus}
+        result = admin_crud.get_store_menus(connection, store_id, page, limit)
+        return {
+            'menus': result['items'],
+            'pagination': {
+                'total': result['total'],
+                'page': result['page'],
+                'limit': result['limit'],
+                'total_pages': result['total_pages'],
+            }
+        }
     except Exception as e:
         print(f"Error in get_store_menus: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -682,14 +694,22 @@ def create_test_store(store: StoreCreate):
     """테스트 매장 추가"""
     try:
         store_id = store_crud.create_store(store)
-        s3_urls = store_crud.generate_store_s3_urls(store_id, store.store_photo_cnt)
-        
+
+        store_logo_url = S3_CLIENT.generate_presigned_url('put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f'store_logo/store_logo_{store_id}.png'},
+            ExpiresIn=3600)
+        bankBook_put_url = S3_CLIENT.generate_presigned_url('put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f'bankbook/bankbook_{store_id}.png'},
+            ExpiresIn=3600)
+        business_put_url = S3_CLIENT.generate_presigned_url('put_object',
+            Params={'Bucket': BUCKET_NAME, 'Key': f'business_registration/business_registration_{store_id}.png'},
+            ExpiresIn=3600)
+
         return {
             'store_id': store_id,
-            'store_logo_url': s3_urls['store_logo_url'],
-            'store_photo_urls': s3_urls['store_photo_urls'],
-            'bankBook_put_url': s3_urls['bankBook_put_url'],
-            'business_put_url': s3_urls['business_put_url']
+            'store_logo_url': store_logo_url,
+            'bankBook_put_url': bankBook_put_url,
+            'business_put_url': business_put_url
         }
     except Exception as e:
         print(f"Error in create_test_store: {traceback.format_exc()}")
@@ -724,45 +744,76 @@ def create_test_menu(store_id: int, menu: Menu):
         )
 
 
-@router.post("/promotions/{store_id}")
-def create_fee_promotion(store_id: int, promotion: dict):
-    """매장 프로모션 추가
-    
+@router.get("/promotions")
+def get_all_promotions():
+    """전체 프로모션 리스트 조회 (적용 매장 수 포함)"""
+    try:
+        from crud import promotion as promotion_crud
+        promotions = promotion_crud.get_all_fee_promotions()
+        return {'promotions': promotions}
+    except Exception as e:
+        print(f"Error in get_all_promotions: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/promotions")
+def create_fee_promotion(promotion: dict):
+    """프로모션 생성
+
     Body:
+        - title: 프로모션 제목
         - promo_fee_rate: 프로모션 수수료율 (%)
         - start_date: 시작일 (YYYY-MM-DD)
         - end_date: 종료일 (YYYY-MM-DD)
+        - store_ids: 적용할 매장 ID 목록 (list[int], 선택)
     """
-    connection = get_db_connection()
     try:
         from crud import promotion as promotion_crud
         from datetime import datetime
-        
+
+        title = (promotion.get('title') or '').strip()
         promo_fee_rate = promotion.get('promo_fee_rate')
         start_date_str = promotion.get('start_date')
         end_date_str = promotion.get('end_date')
-        
-        if not promo_fee_rate or not start_date_str or not end_date_str:
-            raise HTTPException(status_code=400, detail="promo_fee_rate, start_date, end_date are required")
-        
+        store_ids = promotion.get('store_ids') or []
+
+        if not title or not promo_fee_rate or not start_date_str or not end_date_str:
+            raise HTTPException(status_code=400, detail="title, promo_fee_rate, start_date, end_date are required")
+
+        if not isinstance(store_ids, list):
+            raise HTTPException(status_code=400, detail="store_ids must be a list")
+
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-        
-        promo_id = promotion_crud.create_fee_promotion(store_id, float(promo_fee_rate), start_date, end_date)
+
+        promo_id = promotion_crud.create_fee_promotion(store_ids, float(promo_fee_rate), start_date, end_date, title)
         return {'message': 'Promotion created successfully', 'promo_id': promo_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error in create_fee_promotion: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        connection.close()
+
+
+@router.delete("/promotions/{promo_id}")
+def delete_fee_promotion(promo_id: int):
+    """프로모션 삭제"""
+    try:
+        from crud import promotion as promotion_crud
+        deleted = promotion_crud.delete_fee_promotion(promo_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Promotion not found")
+        return {'message': 'Promotion deleted successfully'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_fee_promotion: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/promotions/{store_id}")
 def get_fee_promotions(store_id: int):
     """매장 프로모션 리스트 조회"""
-    connection = get_db_connection()
     try:
         from crud import promotion as promotion_crud
         promotions = promotion_crud.get_fee_promotions_by_store(store_id)
@@ -770,8 +821,6 @@ def get_fee_promotions(store_id: int):
     except Exception as e:
         print(f"Error in get_fee_promotions: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        connection.close()
 
 
 @router.get("/statistics/gifticons")
@@ -1003,3 +1052,47 @@ def update_refund_status_api(refund_id: int, body: dict):
         print(f"Error in update_refund_status: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+@router.get("/owners")
+def get_owners(
+    search: Optional[str] = Query(None, description="이름, 이메일, 전화번호, ID로 검색"),
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+):
+    """사장님 리스트 (관리자용, 페이지네이션)"""
+    connection = get_db_connection()
+    try:
+        result = admin_crud.get_owners(connection, search, page, limit)
+        return {
+            'owners': result['items'],
+            'pagination': {
+                'total': result['total'],
+                'page': result['page'],
+                'limit': result['limit'],
+                'total_pages': result['total_pages'],
+            },
+        }
+    except Exception as e:
+        print(f"Error in get_owners: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
+@router.get("/owners/{owner_id}")
+def get_owner_detail(owner_id: int):
+    """사장님 상세 정보"""
+    connection = get_db_connection()
+    try:
+        owner = admin_crud.get_owner_detail(connection, owner_id)
+        if not owner:
+            raise HTTPException(status_code=404, detail="Owner not found")
+        return owner
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_owner_detail: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()

@@ -9,7 +9,7 @@ class StoreCreate(BaseModel):
     store_address: str
     store_lat: float
     store_lng: float
-    store_photo_cnt: int
+    image_count: Optional[int] = None
     district_code: Optional[str] = None  # 군/구 코드 (예: "23" = 강남구)
 
 

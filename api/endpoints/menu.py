@@ -36,7 +36,8 @@ def add_menu(store_id: int, menu: Menu):
         
         menu_id = menu_crud.create_menu(store_id, menu)
         s3_urls = menu_crud.generate_menu_s3_urls(store_id, menu_id)
-        
+        menu_crud.save_menu_image_key(menu_id, s3_urls['image_key'])
+
         return {
             'menu_id': menu_id,
             'menu_put_url': s3_urls['menu_put_url'],
@@ -52,16 +53,38 @@ def add_menu(store_id: int, menu: Menu):
         )
 
 
+@router.delete("/delete/{menu_id}")
+def delete_menu(menu_id: int):
+    """메뉴 삭제 (soft delete)"""
+    try:
+        success = menu_crud.delete_menu(menu_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Menu not found")
+        return {"message": "메뉴가 삭제되었습니다.", "menu_id": menu_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in delete_menu: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"failed delete menu: {str(e)}"
+        )
+
+
 @router.post("/update/{menu_id}")
 def update_menu(menu_id: int, menu: Menu):
     """메뉴 정보 업데이트"""
     try:
-        success = menu_crud.update_menu(menu_id, menu)
+        success = menu_crud.update_menu(menu_id, menu.store_id, menu)
         if not success:
             raise HTTPException(status_code=404, detail="Menu not found")
-        
+
+        if menu.delete_image:
+            return {'menu_id': menu_id}
+
         s3_urls = menu_crud.generate_menu_s3_urls(menu.store_id, menu_id)
-        
+        menu_crud.save_menu_image_key(menu_id, s3_urls['image_key'])
+
         return {
             'menu_id': menu_id,
             'menu_put_url': s3_urls['menu_put_url'],
