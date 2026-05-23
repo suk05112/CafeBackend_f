@@ -81,68 +81,6 @@ def get_account_by_store(store_id: int) -> Optional[Dict]:
         connection.close()
 
 
-def create_or_update_order_settlement(connection, order_id: int, store_id: int, order_amount: float, 
-                                      order_date: datetime, commission_rate: float = 6.9) -> int:
-    """
-    주문건별 정산 정보 생성 또는 업데이트
-    
-    Args:
-        connection: DB 연결 (이미 열려있는 connection 사용)
-        order_id: 주문 ID
-        store_id: 매장 ID
-        order_amount: 주문 금액
-        order_date: 주문 일시
-        commission_rate: 수수료율 (기본 6.9%)
-    
-    Returns:
-        order_settlement.id
-    """
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
-    try:
-        # 수수료 계산: 공급가액 원미만 절사 + 부가세 소수점 첫째 자리 반올림
-        _, _, commission_amount = calc_fee_supply_and_vat(int(order_amount), float(commission_rate))
-        settlement_amount = order_amount - commission_amount
-        
-        # 주문건별 정산 정보 생성
-        insert_query = """
-            INSERT INTO order_settlement (
-                order_id, store_id, order_amount, commission_rate, commission_amount,
-                settlement_amount, order_date, status
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, 'PENDING')
-            ON DUPLICATE KEY UPDATE
-                order_amount = VALUES(order_amount),
-                commission_rate = VALUES(commission_rate),
-                commission_amount = VALUES(commission_amount),
-                settlement_amount = VALUES(settlement_amount),
-                order_date = VALUES(order_date),
-                updated_at = NOW()
-        """
-        cursor.execute(insert_query, (
-            order_id,
-            store_id,
-            order_amount,
-            commission_rate,
-            commission_amount,
-            settlement_amount,
-            order_date
-        ))
-        connection.commit()
-        
-        # 생성/업데이트된 order_settlement의 id 조회
-        cursor.execute("SELECT id FROM order_settlement WHERE order_id = %s", (order_id,))
-        result = cursor.fetchone()
-        return result['id'] if result else cursor.lastrowid
-        
-    finally:
-        cursor.close()
-
-
-def update_settlement_on_order(connection, order_id: int, store_id: int, order_amount: float,
-                                order_date: datetime, commission_rate: float = 6.9):
-    """주문 발생 시 건별 정산 정보 업데이트"""
-    create_or_update_order_settlement(connection, order_id, store_id, order_amount, order_date, commission_rate)
-
 
 def get_settlements_by_store(store_id: int) -> List[Dict]:
     """매장별 정산 리스트 조회"""
