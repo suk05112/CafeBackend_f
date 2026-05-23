@@ -42,13 +42,14 @@ def create_fee_promotion(store_ids: List[int], promo_fee_rate: float, start_date
         connection.close()
 
 
-def get_all_fee_promotions() -> List[Dict]:
+def get_all_fee_promotions(active_only: bool = False) -> List[Dict]:
     """전체 프로모션 리스트 조회 (적용 매장 수 포함)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute("""
+        where = "WHERE fp.is_active = TRUE" if active_only else ""
+        cursor.execute(f"""
             SELECT
                 fp.promo_id,
                 fp.title,
@@ -60,6 +61,7 @@ def get_all_fee_promotions() -> List[Dict]:
                 COUNT(fps.store_id) AS store_count
             FROM fee_promotions fp
             LEFT JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
+            {where}
             GROUP BY fp.promo_id
             ORDER BY fp.created_at DESC
         """)
@@ -127,12 +129,21 @@ def get_fee_promotion_detail(promo_id: int) -> Optional[Dict]:
         connection.close()
 
 
-def get_fee_promotions_by_store(store_id: int) -> List[Dict]:
-    """매장별 프로모션 리스트 조회"""
+def get_fee_promotions_by_store(store_id: int, page: int = 1, limit: int = 5) -> Dict:
+    """매장별 프로모션 이력 조회 (페이지네이션)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
+        cursor.execute("""
+            SELECT COUNT(*) AS total
+            FROM fee_promotions fp
+            JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
+            WHERE fps.store_id = %s
+        """, (store_id,))
+        total = cursor.fetchone()['total']
+
+        offset = (page - 1) * limit
         cursor.execute("""
             SELECT
                 fp.promo_id,
@@ -147,11 +158,12 @@ def get_fee_promotions_by_store(store_id: int) -> List[Dict]:
             JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
             WHERE fps.store_id = %s
             ORDER BY fp.start_date DESC
-        """, (store_id,))
+            LIMIT %s OFFSET %s
+        """, (store_id, limit, offset))
 
-        result = []
+        items = []
         for promo in cursor.fetchall():
-            result.append({
+            items.append({
                 'promo_id': promo['promo_id'],
                 'title': promo['title'],
                 'store_id': store_id,
@@ -162,7 +174,17 @@ def get_fee_promotions_by_store(store_id: int) -> List[Dict]:
                 'created_at': promo['created_at'].isoformat() if promo.get('created_at') else None,
                 'updated_at': promo['updated_at'].isoformat() if promo.get('updated_at') else None,
             })
-        return result
+
+        import math
+        return {
+            'promotions': items,
+            'pagination': {
+                'total': total,
+                'page': page,
+                'limit': limit,
+                'total_pages': math.ceil(total / limit) if total > 0 else 1,
+            }
+        }
     finally:
         cursor.close()
         connection.close()
@@ -251,6 +273,46 @@ def update_fee_promotion(promo_id: int, promo_fee_rate: Optional[float] = None,
         params.append(promo_id)
 
         cursor.execute(f"UPDATE fee_promotions SET {', '.join(updates)} WHERE promo_id = %s", params)
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def apply_promotion_to_store(promo_id: int, store_id: int) -> bool:
+    """매장에 프로모션 적용 (중복 방지)"""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            "INSERT IGNORE INTO fee_promotion_stores (promo_id, store_id) VALUES (%s, %s)",
+            (promo_id, store_id)
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def remove_promotion_from_store(promo_id: int, store_id: int) -> bool:
+    """매장의 프로모션 적용 해제"""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        cursor.execute(
+            "DELETE FROM fee_promotion_stores WHERE promo_id = %s AND store_id = %s",
+            (promo_id, store_id)
+        )
         connection.commit()
         return cursor.rowcount > 0
     except Exception as e:
