@@ -121,46 +121,51 @@ def get_active_fee_promotion(store_id: int, target_date: date = None) -> Optiona
         connection.close()
 
 
-def get_fee_rate_for_gifticon(store_id: int, gifticon_used_date: date) -> float:
-    """기프티콘 사용 시점 기준 수수료율 조회
-    
-    '기프티콘 최초사용 시점을 기준으로 30일' 프로모션이 있으면 프로모션 수수료율 반환
-    없으면 기본 수수료율 반환
+def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
+    """구매 시점 기준 수수료 정보 조회
+
+    Returns:
+        {
+            'base_fee_rate': float,       # 플랫폼 기본 수수료율
+            'applied_fee_rate': float,    # 최종 적용 수수료율 (프로모션 적용 후)
+            'applied_promo_id': int|None, # 적용된 프로모션 ID (없으면 None)
+        }
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
-        # 1. 기프티콘 최초 사용 시점 기준으로 30일 이내 프로모션 확인
-        # 프로모션 시작일이 기프티콘 사용일부터 30일 이내에 시작되어야 함
-        promo_start_limit = gifticon_used_date + timedelta(days=30)
-        
+        # 1. 플랫폼 기본 수수료율 조회
+        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+        config = cursor.fetchone()
+        base_fee_rate = float(config['base_fee_rate']) if config else 3.00
+
+        # 2. 구매일 기준 활성 프로모션 조회 (구매일이 프로모션 기간 내에 있는 것)
         cursor.execute("""
-            SELECT promo_fee_rate
+            SELECT promo_id, promo_fee_rate
             FROM fee_promotions
             WHERE store_id = %s
             AND is_active = TRUE
-            AND start_date >= %s
             AND start_date <= %s
             AND end_date >= %s
             ORDER BY start_date ASC
             LIMIT 1
-        """, (store_id, gifticon_used_date, promo_start_limit, gifticon_used_date))
-        
+        """, (store_id, order_date, order_date))
+
         promo = cursor.fetchone()
-        
+
         if promo:
-            return float(promo['promo_fee_rate'])
-        
-        # 2. 프로모션이 없으면 기본 수수료율 조회
-        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
-        config = cursor.fetchone()
-        
-        if config:
-            return float(config['base_fee_rate'])
-        
-        # 3. 기본값
-        return 3.00
+            return {
+                'base_fee_rate': base_fee_rate,
+                'applied_fee_rate': float(promo['promo_fee_rate']),
+                'applied_promo_id': int(promo['promo_id']),
+            }
+
+        return {
+            'base_fee_rate': base_fee_rate,
+            'applied_fee_rate': base_fee_rate,
+            'applied_promo_id': None,
+        }
     finally:
         cursor.close()
         connection.close()
