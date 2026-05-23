@@ -82,6 +82,52 @@ def get_all_fee_promotions() -> List[Dict]:
         connection.close()
 
 
+def get_fee_promotion_detail(promo_id: int) -> Optional[Dict]:
+    """프로모션 상세 조회 (적용 매장 목록 포함)"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute("""
+            SELECT promo_id, title, promo_fee_rate, start_date, end_date, is_active, created_at
+            FROM fee_promotions
+            WHERE promo_id = %s
+        """, (promo_id,))
+        promo = cursor.fetchone()
+        if not promo:
+            return None
+
+        cursor.execute("""
+            SELECT s.id AS store_id, s.name AS store_name, fps.created_at AS applied_at
+            FROM fee_promotion_stores fps
+            JOIN store s ON fps.store_id = s.id
+            WHERE fps.promo_id = %s
+            ORDER BY fps.created_at DESC
+        """, (promo_id,))
+        stores = cursor.fetchall()
+
+        return {
+            'promo_id': promo['promo_id'],
+            'title': promo['title'],
+            'promo_fee_rate': float(promo['promo_fee_rate']),
+            'start_date': promo['start_date'].isoformat() if promo['start_date'] else None,
+            'end_date': promo['end_date'].isoformat() if promo['end_date'] else None,
+            'is_active': bool(promo['is_active']),
+            'created_at': promo['created_at'].isoformat() if promo.get('created_at') else None,
+            'stores': [
+                {
+                    'store_id': s['store_id'],
+                    'store_name': s['store_name'],
+                    'applied_at': s['applied_at'].isoformat() if s.get('applied_at') else None,
+                }
+                for s in stores
+            ],
+        }
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_fee_promotions_by_store(store_id: int) -> List[Dict]:
     """매장별 프로모션 리스트 조회"""
     connection = get_db_connection()
