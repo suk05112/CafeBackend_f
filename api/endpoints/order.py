@@ -13,7 +13,6 @@ from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 from models.gifticon import Gifticon, PaymentResult, VALID_PGCODES
 from models.store import StoreCreate
-from crud import settlement as settlement_crud
 from crud import promotion as promotion_crud
 
 import http.client
@@ -558,20 +557,6 @@ async def updatePaymentResult(request: Request):
                 SET validity = %s, status = 'UNUSED'
                 WHERE id = %s
             ''', (validity_date, row['gifticon_id']))
-
-        # 5. 정산 정보 업데이트
-        cursor.execute('''SELECT store_id, amount, created_at FROM orders WHERE id = %s''', (order_id,))
-        order_info = cursor.fetchone()
-        if order_info:
-            order_datetime = order_info['created_at'] if order_info.get('created_at') else get_kst_now()
-            settlement_crud.update_settlement_on_order(
-                connection=connection,
-                order_id=order_id,
-                store_id=order_info['store_id'],
-                order_amount=float(order_info['amount'] or 0),
-                order_date=order_datetime,
-                commission_rate=6.9
-            )
 
         connection.commit()
 
