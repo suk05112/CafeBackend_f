@@ -212,146 +212,82 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         # 커서를 일반 cursor로 변경 (DictCursor는 조회용)
         cursor.close()
         cursor = connection.cursor()
-        
+
         # 1. 주문번호 생성
         order_no = generate_order_no(connection)
-        
-        # 2. Order 테이블에 데이터 삽입 (결제 전이므로 payment_key는 NULL, status는 PENDING)
-        order_query = """
-            INSERT INTO `orders` (
-                store_id, user_id, payment_key, amount, status, order_no, payment
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s);
-        """
+
+        # 2~5. orders, gifticon, gift_code, orders_gifticon을 하나의 트랜잭션으로 처리
+        connection.begin()
+
+        # 2. Order 테이블에 데이터 삽입
         cursor.execute(
-            order_query,
-            (
-                gifticon.store_id,
-                user_id,
-                None,  # 결제 전이므로 payment_key는 NULL
-                gifticon.total_price,
-                'PENDING',  # 결제 전이므로 PENDING 상태
-                order_no,
-                gifticon.payment  # gifticon.payment 값 저장
-            )
+            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment)
         )
-        connection.commit()
         order_id = cursor.lastrowid
 
-        # 3. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
-        from crud import promotion as promotion_crud
-        from datetime import date as date_type
-        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date_type.today())
+        # 3. 구매 시점 수수료율 확정
+        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date.today())
 
-        # 4. Gifticon 테이블에 데이터 삽입 (order_id 포함, gift_code는 나중에 업데이트)
-        # gifticon 테이블에는 total_price 컬럼이 없으므로 제외
-        query = """
-            INSERT INTO gifticon (
+        # 4. Gifticon 테이블에 데이터 삽입
+        cursor.execute(
+            """INSERT INTO gifticon (
                 user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
                 base_fee_rate, applied_promo_id, applied_fee_rate
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-        """
-        cursor.execute(
-            query,
+               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (
-                user_id,
-                gifticon.type,
-                gifticon.sender,
-                gifticon.receiver,
-                gifticon.receiver_phone_number,
-                gifticon.menu_id,
-                gifticon.store_id,
-                order_id,
-                fee_info['base_fee_rate'],
-                fee_info['applied_promo_id'],
-                fee_info['applied_fee_rate'],
+                user_id, gifticon.type, gifticon.sender, gifticon.receiver,
+                gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
+                fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'],
             )
         )
-        connection.commit()
         gifticon_id = cursor.lastrowid
-        
-        # 4. 기프티콘 번호 생성 및 업데이트 (중복 방지 로직 포함)
-        max_retries = 10
-        retry_count = 0
+
+        # 5. gift_code 생성 및 업데이트 (중복 방지 재시도)
         gift_code = None
-        
-        while retry_count < max_retries:
+        for retry_count in range(10):
             try:
-                # 기프티콘 번호 생성
                 gift_code = generate_gift_code(connection, cursor, gifticon.store_id, user_id, gifticon_id + retry_count)
-                
-                # gift_code 업데이트 시도
-                update_query = """
-                    UPDATE gifticon 
-                    SET gift_code = %s 
-                    WHERE id = %s AND (gift_code IS NULL OR gift_code = '')
-                """
-                cursor.execute(update_query, (gift_code, gifticon_id))
-                
+                cursor.execute(
+                    "UPDATE gifticon SET gift_code = %s WHERE id = %s AND (gift_code IS NULL OR gift_code = '')",
+                    (gift_code, gifticon_id)
+                )
                 if cursor.rowcount > 0:
-                    connection.commit()
                     break
-                else:
-                    # 이미 gift_code가 설정되어 있으면 조회
-                    check_query = "SELECT gift_code FROM gifticon WHERE id = %s"
-                    cursor.execute(check_query, (gifticon_id,))
-                    result = cursor.fetchone()
-                    if result and result[0]:
-                        gift_code = result[0]
-                        break
-                    
-                    # 재시도
-                    retry_count += 1
-                    
+                cursor.execute("SELECT gift_code FROM gifticon WHERE id = %s", (gifticon_id,))
+                result = cursor.fetchone()
+                if result and result[0]:
+                    gift_code = result[0]
+                    break
             except pymysql.IntegrityError as e:
-                # UNIQUE 제약조건 위반 시 재시도
                 if "Duplicate entry" in str(e) or "gift_code" in str(e).lower():
-                    retry_count += 1
-                    if retry_count >= max_retries:
+                    if retry_count >= 9:
                         raise HTTPException(
                             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                             detail="Failed to generate unique gift code after multiple retries"
                         )
                 else:
                     raise
-        
+
         if not gift_code:
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                 detail="Failed to generate gift code"
             )
-        
+
         print(f"gifticon_id: {gifticon_id}, gift_code: {gift_code}, order_no: {order_no}")
 
-        # 5. Order_Gifticon 테이블에 데이터 삽입
-        # user_id는 항상 설정, type이 2이면 receiver_id를 NULL로 설정 (선물하기인 경우)
+        # 6. orders_gifticon 테이블에 데이터 삽입
         receiver_id = None if gifticon.type == 2 else user_id
-        
-        # receiver_id가 user_id로 설정되는 경우 (type != 2), gifticon 테이블의 receiver_id도 업데이트
         if receiver_id is not None:
-            update_gifticon_query = """
-                UPDATE gifticon 
-                SET receiver_id = %s 
-                WHERE id = %s
-            """
-            cursor.execute(update_gifticon_query, (receiver_id, gifticon_id))
-        
-        order_gifticon_query = """
-            INSERT INTO orders_gifticon (
-                user_id, receiver_id, order_id, menu_id, gifticon_id
-            ) VALUES (%s, %s, %s, %s, %s);
-        """
+            cursor.execute("UPDATE gifticon SET receiver_id = %s WHERE id = %s", (receiver_id, gifticon_id))
         cursor.execute(
-            order_gifticon_query,
-            (
-                user_id,
-                receiver_id,
-                order_id,
-                gifticon.menu_id,
-                gifticon_id,
-            )
+            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id) VALUES (%s, %s, %s, %s, %s)",
+            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id)
         )
         connection.commit()
-        
+
         return {
             "message": "Order registered successfully. Please proceed with payment.",
             "order_id": order_id,
@@ -359,7 +295,11 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
             "gifticon_id": gifticon_id,
             "gift_code": gift_code
         }
+    except HTTPException:
+        connection.rollback()
+        raise
     except Exception as e:
+        connection.rollback()
         print(f"Error during purchaseGifticon: {e}")
         traceback.print_exc()
         logger.error(f"Error during purchaseGifticon: {str(e)}")
@@ -410,19 +350,19 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
         # 2. 주문번호 생성
         order_no = generate_order_no(connection)
 
+        # 3~7. orders, gifticon, gift_code, orders_gifticon을 하나의 트랜잭션으로 처리
+        connection.begin()
+
         # 3. orders INSERT (PENDING)
         cursor.execute(
             """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment)
                VALUES (%s, %s, %s, %s, %s, %s, %s)""",
             (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment)
         )
-        connection.commit()
         order_id = cursor.lastrowid
 
         # 4. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
-        from crud import promotion as promotion_crud
-        from datetime import date as date_type
-        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date_type.today())
+        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date.today())
 
         # 5. gifticon INSERT
         cursor.execute(
@@ -433,7 +373,6 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
              gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
              fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'])
         )
-        connection.commit()
         gifticon_id = cursor.lastrowid
 
         # 6. gift_code 생성 (중복 방지 재시도)
@@ -446,7 +385,6 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
                     (gift_code, gifticon_id)
                 )
                 if cursor.rowcount > 0:
-                    connection.commit()
                     break
                 cursor.execute("SELECT gift_code FROM gifticon WHERE id = %s", (gifticon_id,))
                 row = cursor.fetchone()
@@ -524,31 +462,12 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
         }
 
     except HTTPException:
-        # 페이레터 요청 실패 또는 검증 실패 시 생성된 주문 rollback
-        if order_id:
-            try:
-                rb = connection.cursor()
-                rb.execute("DELETE FROM orders_gifticon WHERE order_id = %s", (order_id,))
-                rb.execute("DELETE FROM gifticon WHERE order_id = %s", (order_id,))
-                rb.execute("DELETE FROM orders WHERE id = %s", (order_id,))
-                connection.commit()
-                rb.close()
-            except Exception as rb_err:
-                logger.error(f"Rollback failed for order {order_id}: {rb_err}")
+        connection.rollback()
         raise
     except Exception as e:
+        connection.rollback()
         traceback.print_exc()
         logger.error(f"Error during requestPaymentUrl: {str(e)}")
-        if order_id:
-            try:
-                rb = connection.cursor()
-                rb.execute("DELETE FROM orders_gifticon WHERE order_id = %s", (order_id,))
-                rb.execute("DELETE FROM gifticon WHERE order_id = %s", (order_id,))
-                rb.execute("DELETE FROM orders WHERE id = %s", (order_id,))
-                connection.commit()
-                rb.close()
-            except Exception as rb_err:
-                logger.error(f"Rollback failed for order {order_id}: {rb_err}")
         raise HTTPException(status_code=500, detail=f"Error during requestPaymentUrl: {str(e)}")
     finally:
         cursor.close()
