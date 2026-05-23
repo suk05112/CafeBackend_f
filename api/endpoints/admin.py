@@ -744,39 +744,41 @@ def create_test_menu(store_id: int, menu: Menu):
         )
 
 
-@router.post("/promotions/{store_id}")
-def create_fee_promotion(store_id: int, promotion: dict):
-    """매장 프로모션 추가
-    
+@router.post("/promotions")
+def create_fee_promotion(promotion: dict):
+    """프로모션 추가 (복수 매장 적용 가능)
+
     Body:
+        - store_ids: 적용할 매장 ID 목록 (list[int])
         - promo_fee_rate: 프로모션 수수료율 (%)
         - start_date: 시작일 (YYYY-MM-DD)
         - end_date: 종료일 (YYYY-MM-DD)
     """
-    connection = get_db_connection()
     try:
         from crud import promotion as promotion_crud
         from datetime import datetime
-        
+
+        store_ids = promotion.get('store_ids')
         promo_fee_rate = promotion.get('promo_fee_rate')
         start_date_str = promotion.get('start_date')
         end_date_str = promotion.get('end_date')
-        
-        if not promo_fee_rate or not start_date_str or not end_date_str:
-            raise HTTPException(status_code=400, detail="promo_fee_rate, start_date, end_date are required")
-        
+
+        if not store_ids or not promo_fee_rate or not start_date_str or not end_date_str:
+            raise HTTPException(status_code=400, detail="store_ids, promo_fee_rate, start_date, end_date are required")
+
+        if not isinstance(store_ids, list) or len(store_ids) == 0:
+            raise HTTPException(status_code=400, detail="store_ids must be a non-empty list")
+
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
-        
-        promo_id = promotion_crud.create_fee_promotion(store_id, float(promo_fee_rate), start_date, end_date)
+
+        promo_id = promotion_crud.create_fee_promotion(store_ids, float(promo_fee_rate), start_date, end_date)
         return {'message': 'Promotion created successfully', 'promo_id': promo_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error in create_fee_promotion: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        connection.close()
 
 
 @router.get("/promotions/{store_id}")
