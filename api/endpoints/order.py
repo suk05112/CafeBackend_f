@@ -237,25 +237,18 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         connection.commit()
         order_id = cursor.lastrowid
 
-        # 3. 현재 수수료율 조회 (기본 수수료율, 프로모션은 사용 시점에 적용)
-        # 생성 시점에는 기본 수수료율 저장
-        current_fee_rate = 3.00  # 기본값
-        try:
-            cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
-            config = cursor.fetchone()
-            if config:
-                current_fee_rate = float(config['base_fee_rate'])
-        except Exception as e:
-            # platform_config 테이블이 없으면 기본값 사용
-            logger.warning(f"platform_config 테이블 조회 실패, 기본 수수료율 사용: {str(e)}")
-            current_fee_rate = 3.00
-        
-        # 4. Gifticon 테이블에 데이터 삽입 (order_id 포함, gift_code는 나중에 업데이트, applied_fee_rate 저장)
+        # 3. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
+        from crud import promotion as promotion_crud
+        from datetime import date as date_type
+        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date_type.today())
+
+        # 4. Gifticon 테이블에 데이터 삽입 (order_id 포함, gift_code는 나중에 업데이트)
         # gifticon 테이블에는 total_price 컬럼이 없으므로 제외
         query = """
             INSERT INTO gifticon (
-                user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, applied_fee_rate
-            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s);
+                user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
+                base_fee_rate, applied_promo_id, applied_fee_rate
+            ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
         """
         cursor.execute(
             query,
@@ -267,8 +260,10 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
                 gifticon.receiver_phone_number,
                 gifticon.menu_id,
                 gifticon.store_id,
-                order_id,  # order_id 추가
-                current_fee_rate,  # applied_fee_rate 저장
+                order_id,
+                fee_info['base_fee_rate'],
+                fee_info['applied_promo_id'],
+                fee_info['applied_fee_rate'],
             )
         )
         connection.commit()
@@ -424,22 +419,19 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
         connection.commit()
         order_id = cursor.lastrowid
 
-        # 4. 수수료율 조회
-        current_fee_rate = 3.00
-        try:
-            cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
-            config = cursor.fetchone()
-            if config:
-                current_fee_rate = float(config["base_fee_rate"])
-        except Exception:
-            pass
+        # 4. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
+        from crud import promotion as promotion_crud
+        from datetime import date as date_type
+        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date_type.today())
 
         # 5. gifticon INSERT
         cursor.execute(
-            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, applied_fee_rate)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
+                base_fee_rate, applied_promo_id, applied_fee_rate)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
-             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id, current_fee_rate)
+             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
+             fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'])
         )
         connection.commit()
         gifticon_id = cursor.lastrowid
