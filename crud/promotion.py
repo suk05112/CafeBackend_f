@@ -98,11 +98,11 @@ def get_fee_promotion_detail(promo_id: int) -> Optional[Dict]:
             return None
 
         cursor.execute("""
-            SELECT s.id AS store_id, s.name AS store_name, fps.created_at AS applied_at
+            SELECT s.id AS store_id, s.store_name
             FROM fee_promotion_stores fps
             JOIN store s ON fps.store_id = s.id
             WHERE fps.promo_id = %s
-            ORDER BY fps.created_at DESC
+            ORDER BY s.store_name ASC
         """, (promo_id,))
         stores = cursor.fetchall()
 
@@ -118,7 +118,6 @@ def get_fee_promotion_detail(promo_id: int) -> Optional[Dict]:
                 {
                     'store_id': s['store_id'],
                     'store_name': s['store_name'],
-                    'applied_at': s['applied_at'].isoformat() if s.get('applied_at') else None,
                 }
                 for s in stores
             ],
