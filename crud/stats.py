@@ -6,7 +6,6 @@ from typing import List, Dict, Optional
 from datetime import date, datetime
 
 from db.session import get_db_connection, close_db_connection
-from crud.settlement import calc_fee_supply_and_vat
 
 
 def get_admin_statistics() -> Dict:
@@ -95,71 +94,59 @@ def create_settlement_data(cycle_id: int) -> Dict:
         period_start = cycle['period_start_date']
         period_end = cycle['period_end_date']
         
-        # 2. 해당 기간에 사용된 기프티콘 조회 (아직 정산되지 않은 것만). 매출액은 주문(orders) 금액 사용 (gifticon에는 total_price 컬럼 없음)
+        # 2. 미정산 settlement_details 조회 (settlement_id IS NULL, 기간 내 사용된 기프티콘)
         cursor.execute("""
-            SELECT 
-                g.id as gifticon_id,
+            SELECT
+                sd.id as detail_id,
+                sd.gifticon_id,
+                sd.sales_amount,
+                sd.fee_amount,
+                sd.settlement_amount,
                 g.store_id,
-                COALESCE(o.amount, 0) as sales_amount,
-                g.applied_fee_rate,
                 COALESCE(a.bank, '') as bank_name,
                 COALESCE(a.account, '') as account_number
-            FROM gifticon g
-            LEFT JOIN orders o ON g.order_id = o.id
+            FROM settlement_details sd
+            JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN account a ON g.store_id = a.store_id
-            WHERE g.status = 'USED'
+            WHERE sd.settlement_id IS NULL
             AND DATE(g.used_at) >= %s
             AND DATE(g.used_at) <= %s
-            AND g.id NOT IN (SELECT gifticon_id FROM settlement_details)
         """, (period_start, period_end))
-        
-        gifticons = cursor.fetchall()
-        
-        if not gifticons:
+
+        details = cursor.fetchall()
+
+        if not details:
             return {'message': '정산할 기프티콘이 없습니다.', 'settlement_count': 0}
-        
-        # 3. 매장별로 그룹화하여 정산 데이터 생성
+
+        # 3. 매장별로 그룹화
         store_settlements = {}
-        
-        for gifticon in gifticons:
-            store_id = gifticon['store_id']
+
+        for row in details:
+            store_id = row['store_id']
             if store_id not in store_settlements:
                 store_settlements[store_id] = {
-                    'gifticons': [],
-                    'bank_name': gifticon['bank_name'],
-                    'account_number': gifticon['account_number']
+                    'details': [],
+                    'bank_name': row['bank_name'],
+                    'account_number': row['account_number']
                 }
-            
-            # 수수료 계산: 공급가액 원미만 절사 + 부가세 소수점 첫째 자리 반올림
-            fee_rate = float(gifticon['applied_fee_rate'] or 3.00)
-            sales_amount = int(gifticon['sales_amount'] or 0)
-            _, _, fee_amount = calc_fee_supply_and_vat(sales_amount, fee_rate)
-            settlement_amount = sales_amount - fee_amount
-            
-            store_settlements[store_id]['gifticons'].append({
-                'gifticon_id': gifticon['gifticon_id'],
-                'sales_amount': sales_amount,
-                'fee_amount': fee_amount,
-                'settlement_amount': settlement_amount
-            })
-        
-        # 4. 각 매장별로 settlement 생성 (실패 시 해당 매장만 FAILED 행 저장)
+            store_settlements[store_id]['details'].append(row)
+
+        # 4. 각 매장별로 settlement 마스터 생성 후 settlement_details.settlement_id 업데이트
         created_count = 0
         failed_count = 0
         failed_reasons = []
-        
+
         for store_id, data in store_settlements.items():
-            total_sales = sum(g['sales_amount'] for g in data['gifticons'])
-            total_fee = sum(g['fee_amount'] for g in data['gifticons'])
-            total_payout = sum(g['settlement_amount'] for g in data['gifticons'])
+            total_sales = sum(d['sales_amount'] for d in data['details'])
+            total_fee = sum(d['fee_amount'] for d in data['details'])
+            total_payout = sum(d['settlement_amount'] for d in data['details'])
             bank_name = data.get('bank_name') or ''
             account_number = data.get('account_number') or ''
-            
+
             try:
-                # 계좌 정보 없으면 실패 처리
                 if not bank_name.strip() and not account_number.strip():
                     raise ValueError('계좌 정보가 없습니다.')
-                
+
                 cursor.execute("""
                     INSERT INTO settlement (
                         store_id, cycle_id, period_start, period_end,
@@ -172,23 +159,15 @@ def create_settlement_data(cycle_id: int) -> Dict:
                     cycle['payout_date'], bank_name, account_number
                 ))
                 settlement_id = cursor.lastrowid
-                
-                for gifticon in data['gifticons']:
-                    cursor.execute("""
-                        INSERT INTO settlement_details (
-                            settlement_id, gifticon_id, sales_amount, fee_amount, settlement_amount
-                        ) VALUES (%s, %s, %s, %s, %s)
-                    """, (
-                        settlement_id,
-                        gifticon['gifticon_id'],
-                        gifticon['sales_amount'],
-                        gifticon['fee_amount'],
-                        gifticon['settlement_amount']
-                    ))
-                
+
+                detail_ids = [d['detail_id'] for d in data['details']]
+                cursor.execute(
+                    f"UPDATE settlement_details SET settlement_id = %s WHERE id IN ({','.join(['%s'] * len(detail_ids))})",
+                    [settlement_id] + detail_ids
+                )
+
                 created_count += 1
             except Exception as e:
-                # 매장별 실패 시 FAILED 행 저장
                 fail_reason = str(e)[:500]
                 failed_count += 1
                 if len(failed_reasons) < 5:

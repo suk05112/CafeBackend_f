@@ -283,8 +283,8 @@ def purchaseGifticon(user_id: int, gifticon: Gifticon):
         if receiver_id is not None:
             cursor.execute("UPDATE gifticon SET receiver_id = %s WHERE id = %s", (receiver_id, gifticon_id))
         cursor.execute(
-            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id)
+            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id, store_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id, gifticon.store_id)
         )
         connection.commit()
 
@@ -403,8 +403,8 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
         if receiver_id is not None:
             cursor.execute("UPDATE gifticon SET receiver_id = %s WHERE id = %s", (receiver_id, gifticon_id))
         cursor.execute(
-            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id)
+            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id, store_id) VALUES (%s, %s, %s, %s, %s, %s)",
+            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id, gifticon.store_id)
         )
         connection.commit()
 
