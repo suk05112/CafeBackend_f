@@ -745,11 +745,11 @@ def create_test_menu(store_id: int, menu: Menu):
 
 
 @router.get("/promotions")
-def get_all_promotions():
+def get_all_promotions(active_only: bool = Query(False, description="활성 프로모션만 조회")):
     """전체 프로모션 리스트 조회 (적용 매장 수 포함)"""
     try:
         from crud import promotion as promotion_crud
-        promotions = promotion_crud.get_all_fee_promotions()
+        promotions = promotion_crud.get_all_fee_promotions(active_only=active_only)
         return {'promotions': promotions}
     except Exception as e:
         print(f"Error in get_all_promotions: {traceback.format_exc()}")
@@ -829,13 +829,59 @@ def delete_fee_promotion(promo_id: int):
 
 @router.get("/stores/{store_id}/promotions")
 def get_store_promotions(store_id: int):
-    """매장별 프로모션 리스트 조회"""
+    """매장별 프로모션 리스트 조회 (하위 호환)"""
     try:
         from crud import promotion as promotion_crud
-        promotions = promotion_crud.get_fee_promotions_by_store(store_id)
-        return {'promotions': promotions}
+        result = promotion_crud.get_fee_promotions_by_store(store_id)
+        return result
     except Exception as e:
         print(f"Error in get_store_promotions: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/promotions/{store_id}/history")
+def get_store_promotion_history(
+    store_id: int,
+    page: int = Query(1, ge=1),
+    limit: int = Query(5, ge=1, le=100)
+):
+    """매장 프로모션 이력 조회 (페이지네이션)"""
+    try:
+        from crud import promotion as promotion_crud
+        result = promotion_crud.get_fee_promotions_by_store(store_id, page=page, limit=limit)
+        return result
+    except Exception as e:
+        print(f"Error in get_store_promotion_history: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/stores/{store_id}/promotions/{promo_id}/apply")
+def apply_promotion_to_store(store_id: int, promo_id: int):
+    """매장에 프로모션 적용"""
+    try:
+        from crud import promotion as promotion_crud
+        applied = promotion_crud.apply_promotion_to_store(promo_id, store_id)
+        if not applied:
+            return {'message': 'Already applied'}
+        return {'message': 'Promotion applied successfully'}
+    except Exception as e:
+        print(f"Error in apply_promotion_to_store: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/stores/{store_id}/promotions/{promo_id}")
+def remove_promotion_from_store(store_id: int, promo_id: int):
+    """매장 프로모션 적용 해제"""
+    try:
+        from crud import promotion as promotion_crud
+        removed = promotion_crud.remove_promotion_from_store(promo_id, store_id)
+        if not removed:
+            raise HTTPException(status_code=404, detail="Promotion mapping not found")
+        return {'message': 'Promotion removed successfully'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in remove_promotion_from_store: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
