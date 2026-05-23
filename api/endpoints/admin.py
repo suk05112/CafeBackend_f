@@ -744,35 +744,49 @@ def create_test_menu(store_id: int, menu: Menu):
         )
 
 
+@router.get("/promotions")
+def get_all_promotions():
+    """전체 프로모션 리스트 조회 (적용 매장 수 포함)"""
+    try:
+        from crud import promotion as promotion_crud
+        promotions = promotion_crud.get_all_fee_promotions()
+        return {'promotions': promotions}
+    except Exception as e:
+        print(f"Error in get_all_promotions: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/promotions")
 def create_fee_promotion(promotion: dict):
-    """프로모션 추가 (복수 매장 적용 가능)
+    """프로모션 생성
 
     Body:
-        - store_ids: 적용할 매장 ID 목록 (list[int])
+        - title: 프로모션 제목
         - promo_fee_rate: 프로모션 수수료율 (%)
         - start_date: 시작일 (YYYY-MM-DD)
         - end_date: 종료일 (YYYY-MM-DD)
+        - store_ids: 적용할 매장 ID 목록 (list[int], 선택)
     """
     try:
         from crud import promotion as promotion_crud
         from datetime import datetime
 
-        store_ids = promotion.get('store_ids')
+        title = (promotion.get('title') or '').strip()
         promo_fee_rate = promotion.get('promo_fee_rate')
         start_date_str = promotion.get('start_date')
         end_date_str = promotion.get('end_date')
+        store_ids = promotion.get('store_ids') or []
 
-        if not store_ids or not promo_fee_rate or not start_date_str or not end_date_str:
-            raise HTTPException(status_code=400, detail="store_ids, promo_fee_rate, start_date, end_date are required")
+        if not title or not promo_fee_rate or not start_date_str or not end_date_str:
+            raise HTTPException(status_code=400, detail="title, promo_fee_rate, start_date, end_date are required")
 
-        if not isinstance(store_ids, list) or len(store_ids) == 0:
-            raise HTTPException(status_code=400, detail="store_ids must be a non-empty list")
+        if not isinstance(store_ids, list):
+            raise HTTPException(status_code=400, detail="store_ids must be a list")
 
         start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
         end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
 
-        promo_id = promotion_crud.create_fee_promotion(store_ids, float(promo_fee_rate), start_date, end_date)
+        promo_id = promotion_crud.create_fee_promotion(store_ids, float(promo_fee_rate), start_date, end_date, title)
         return {'message': 'Promotion created successfully', 'promo_id': promo_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -781,10 +795,25 @@ def create_fee_promotion(promotion: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/promotions/{promo_id}")
+def delete_fee_promotion(promo_id: int):
+    """프로모션 삭제"""
+    try:
+        from crud import promotion as promotion_crud
+        deleted = promotion_crud.delete_fee_promotion(promo_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Promotion not found")
+        return {'message': 'Promotion deleted successfully'}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_fee_promotion: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/promotions/{store_id}")
 def get_fee_promotions(store_id: int):
     """매장 프로모션 리스트 조회"""
-    connection = get_db_connection()
     try:
         from crud import promotion as promotion_crud
         promotions = promotion_crud.get_fee_promotions_by_store(store_id)
@@ -792,8 +821,6 @@ def get_fee_promotions(store_id: int):
     except Exception as e:
         print(f"Error in get_fee_promotions: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        connection.close()
 
 
 @router.get("/statistics/gifticons")

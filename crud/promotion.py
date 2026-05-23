@@ -8,7 +8,7 @@ from datetime import date, datetime, timedelta
 from db.session import get_db_connection, close_db_connection
 
 
-def create_fee_promotion(store_ids: List[int], promo_fee_rate: float, start_date: date, end_date: date) -> int:
+def create_fee_promotion(store_ids: List[int], promo_fee_rate: float, start_date: date, end_date: date, title: str = '') -> int:
     """수수료 프로모션 생성 (복수 매장 적용 가능)"""
     connection = get_db_connection()
     cursor = connection.cursor()
@@ -21,21 +21,62 @@ def create_fee_promotion(store_ids: List[int], promo_fee_rate: float, start_date
             raise ValueError("프로모션 기간은 최대 30일입니다.")
 
         cursor.execute(
-            "INSERT INTO fee_promotions (promo_fee_rate, start_date, end_date, is_active) VALUES (%s, %s, %s, TRUE)",
-            (promo_fee_rate, start_date, end_date)
+            "INSERT INTO fee_promotions (title, promo_fee_rate, start_date, end_date, is_active) VALUES (%s, %s, %s, %s, TRUE)",
+            (title, promo_fee_rate, start_date, end_date)
         )
         promo_id = cursor.lastrowid
 
-        cursor.executemany(
-            "INSERT INTO fee_promotion_stores (promo_id, store_id) VALUES (%s, %s)",
-            [(promo_id, sid) for sid in store_ids]
-        )
+        if store_ids:
+            cursor.executemany(
+                "INSERT INTO fee_promotion_stores (promo_id, store_id) VALUES (%s, %s)",
+                [(promo_id, sid) for sid in store_ids]
+            )
 
         connection.commit()
         return promo_id
     except Exception as e:
         connection.rollback()
         raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def get_all_fee_promotions() -> List[Dict]:
+    """전체 프로모션 리스트 조회 (적용 매장 수 포함)"""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute("""
+            SELECT
+                fp.promo_id,
+                fp.title,
+                fp.promo_fee_rate,
+                fp.start_date,
+                fp.end_date,
+                fp.is_active,
+                fp.created_at,
+                COUNT(fps.store_id) AS store_count
+            FROM fee_promotions fp
+            LEFT JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
+            GROUP BY fp.promo_id
+            ORDER BY fp.created_at DESC
+        """)
+
+        result = []
+        for promo in cursor.fetchall():
+            result.append({
+                'promo_id': promo['promo_id'],
+                'title': promo['title'],
+                'promo_fee_rate': float(promo['promo_fee_rate']),
+                'start_date': promo['start_date'].isoformat() if promo['start_date'] else None,
+                'end_date': promo['end_date'].isoformat() if promo['end_date'] else None,
+                'is_active': bool(promo['is_active']),
+                'store_count': int(promo['store_count']),
+                'created_at': promo['created_at'].isoformat() if promo.get('created_at') else None,
+            })
+        return result
     finally:
         cursor.close()
         connection.close()
@@ -50,6 +91,7 @@ def get_fee_promotions_by_store(store_id: int) -> List[Dict]:
         cursor.execute("""
             SELECT
                 fp.promo_id,
+                fp.title,
                 fp.promo_fee_rate,
                 fp.start_date,
                 fp.end_date,
@@ -66,6 +108,7 @@ def get_fee_promotions_by_store(store_id: int) -> List[Dict]:
         for promo in cursor.fetchall():
             result.append({
                 'promo_id': promo['promo_id'],
+                'title': promo['title'],
                 'store_id': store_id,
                 'promo_fee_rate': float(promo['promo_fee_rate']),
                 'start_date': promo['start_date'].isoformat() if promo['start_date'] else None,
