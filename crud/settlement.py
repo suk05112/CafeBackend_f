@@ -512,6 +512,141 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         connection.close()
 
 
+def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
+    """현재 진행 중인 정산 주기의 미리보기 상세.
+    settlement_id가 null인 PENDING 항목의 상세 조회용.
+    진행 중인 주기가 없거나 매출이 없으면 None 반환."""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        today = date.today()
+        cursor.execute("""
+            SELECT cycle_id, period_start_date, period_end_date, payout_date
+            FROM settlement_cycles
+            WHERE period_start_date <= %s AND period_end_date >= %s
+            LIMIT 1
+        """, (today, today))
+        cycle = cursor.fetchone()
+        if not cycle:
+            return None
+
+        cycle_id = cycle['cycle_id']
+        period_start = cycle['period_start_date']
+        period_end = cycle['period_end_date']
+        payout_date = cycle['payout_date']
+
+        if hasattr(period_start, 'date'):
+            period_start = period_start.date()
+        if hasattr(period_end, 'date'):
+            period_end = period_end.date()
+
+        period_start_str = period_start.isoformat()
+        period_end_str = period_end.isoformat()
+        payout_date_str = payout_date.isoformat() if payout_date else None
+
+        # 기본 수수료율
+        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+        config = cursor.fetchone()
+        base_fee_rate = float(config['base_fee_rate']) if config else 3.0
+
+        # 프로모션 수수료율
+        cursor.execute("""
+            SELECT fp.promo_fee_rate
+            FROM fee_promotions fp
+            JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
+            WHERE fps.store_id = %s
+              AND fp.is_active = TRUE
+              AND fp.start_date <= %s
+              AND fp.end_date >= %s
+            ORDER BY fp.start_date ASC
+            LIMIT 1
+        """, (store_id, period_start_str, period_start_str))
+        promo = cursor.fetchone()
+        applied_fee_rate = float(promo['promo_fee_rate']) if promo else base_fee_rate
+        promo_fee_rate = float(promo['promo_fee_rate']) if promo else None
+
+        # 건별 내역 조회
+        cursor.execute("""
+            SELECT g.id AS gifticon_id, g.used_at, g.applied_fee_rate,
+                   COALESCE(o.amount, 0) AS sales_amount,
+                   m.menu_name
+            FROM gifticon g
+            LEFT JOIN orders o ON g.order_id = o.id
+            LEFT JOIN menu m ON g.menu_id = m.id
+            WHERE g.store_id = %s AND g.status = 'USED'
+              AND g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            ORDER BY g.used_at ASC
+        """, (store_id, period_start_str, period_end_str))
+        rows = cursor.fetchall()
+
+        if not rows:
+            return None
+
+        total_sales = 0
+        total_fee = 0
+        details = []
+        for r in rows:
+            sales = int(r['sales_amount'] or 0)
+            rate = float(r['applied_fee_rate'] or base_fee_rate)
+            _, _, fee = calc_fee_supply_and_vat(sales, rate)
+            settlement_amt = sales - fee
+            total_sales += sales
+            total_fee += fee
+
+            used_at = r.get('used_at')
+            if used_at and hasattr(used_at, 'strftime'):
+                used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
+            else:
+                used_at_str = str(used_at) if used_at else None
+
+            details.append({
+                'id': None,
+                'gifticon_id': r['gifticon_id'],
+                'menu_name': r.get('menu_name'),
+                'used_at': used_at_str,
+                'amount': sales,
+                'fee_amount': fee,
+                'settlement_amount': settlement_amt,
+                'status': 'PENDING',
+            })
+
+        net = total_sales - total_fee
+
+        if promo:
+            _, _, base_fee_total = calc_fee_supply_and_vat(total_sales, base_fee_rate)
+            supply, vat, promo_fee_total = calc_fee_supply_and_vat(total_sales, applied_fee_rate)
+            promo_discount_amount = base_fee_total - promo_fee_total
+        else:
+            supply, vat, _ = calc_fee_supply_and_vat(total_sales, base_fee_rate)
+            promo_discount_amount = None
+
+        return {
+            'settlement': {
+                'settlement_id': None,
+                'store_id': store_id,
+                'cycle_id': cycle_id,
+                'period_start': period_start_str,
+                'period_end': period_end_str,
+                'total_sales_amount': total_sales,
+                'total_fee_amount': total_fee,
+                'net_payout_amount': net,
+                'status': 'PENDING',
+                'payout_date': None,
+                'failure_reason': None,
+                'base_fee_rate': base_fee_rate,
+                'promo_fee_rate': promo_fee_rate,
+                'promo_discount_amount': promo_discount_amount,
+                'supply_amount': supply,
+                'vat_amount': vat,
+                'expected_payout_date': payout_date_str,
+            },
+            'details': details,
+        }
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
     """관리자: 정산 주기별 매장 정산 리스트 (페이지네이션)"""
     connection = get_db_connection()
