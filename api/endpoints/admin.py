@@ -932,14 +932,31 @@ def get_admin_settlement_statistics(
 
 @router.get("/settlement/cycles")
 def get_settlement_cycles(
-    status: Optional[str] = Query(None, description="'OPEN' 또는 'CLOSED', None이면 전체")
+    status: Optional[str] = Query(None, description="'OPEN' 또는 'CLOSED', None이면 전체"),
+    start_date: Optional[str] = Query(None, description="조회 시작일 (YYYY-MM-DD)"),
+    end_date: Optional[str] = Query(None, description="조회 종료일 (YYYY-MM-DD)"),
 ):
     """정산 주기 리스트 조회"""
+    from datetime import date as date_type
     connection = get_db_connection()
     try:
+        parsed_start = None
+        parsed_end = None
+        if start_date:
+            try:
+                parsed_start = date_type.fromisoformat(start_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid start_date format: {start_date}")
+        if end_date:
+            try:
+                parsed_end = date_type.fromisoformat(end_date)
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid end_date format: {end_date}")
         from crud import settlement_cycle as cycle_crud
-        cycles = cycle_crud.get_settlement_cycles(status)
+        cycles = cycle_crud.get_settlement_cycles(status, parsed_start, parsed_end)
         return {'cycles': cycles}
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"Error in get_settlement_cycles: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
