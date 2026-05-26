@@ -25,15 +25,18 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# 1. 기존 컨테이너 완전 제거
-echo -e "${YELLOW}[1/4] 기존 개발 서버 컨테이너 제거 중...${NC}"
+# 1. 이미지 빌드 (기존 컨테이너 유지한 채로 먼저 빌드)
+echo -e "${YELLOW}[1/4] 이미지 빌드 중...${NC}"
+if ! sudo docker-compose -f "$COMPOSE_FILE" build --no-cache app-dev; then
+    echo -e "${RED}❌ 이미지 빌드 실패! 기존 서버는 유지됩니다.${NC}"
+    exit 1
+fi
+
+# 2. 기존 컨테이너 제거
+echo -e "${YELLOW}[2/4] 기존 개발 서버 컨테이너 제거 중...${NC}"
 sudo docker-compose -f "$COMPOSE_FILE" stop app-dev 2>/dev/null || true
 sudo docker-compose -f "$COMPOSE_FILE" rm -f app-dev 2>/dev/null || true
 sudo docker rm -f app-dev 2>/dev/null || true
-
-# 2. 이미지 빌드
-echo -e "${YELLOW}[2/4] 이미지 빌드 중...${NC}"
-sudo docker-compose -f "$COMPOSE_FILE" build --no-cache app-dev
 
 # 3. 컨테이너 시작
 echo -e "${YELLOW}[3/4] 컨테이너 시작 중...${NC}"
