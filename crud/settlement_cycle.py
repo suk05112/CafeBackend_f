@@ -8,50 +8,59 @@ from datetime import date, datetime, timedelta
 from db.session import get_db_connection, close_db_connection
 
 
-def get_settlement_cycles(status: Optional[str] = None) -> List[Dict]:
-    """정산 주기 리스트 조회"""
+def get_settlement_cycles(
+    status: Optional[str] = None,
+    start_date: Optional[date] = None,
+    end_date: Optional[date] = None,
+) -> List[Dict]:
+    """정산 주기 리스트 조회 (매장 수 포함, 최신순)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
+        conditions = []
+        params = []
+
         if status:
-            query = """
-                SELECT 
-                    cycle_id,
-                    period_start_date,
-                    period_end_date,
-                    payout_date,
-                    status
-                FROM settlement_cycles
-                WHERE status = %s
-                ORDER BY period_start_date ASC
-            """
-            cursor.execute(query, (status,))
-        else:
-            query = """
-                SELECT 
-                    cycle_id,
-                    period_start_date,
-                    period_end_date,
-                    payout_date,
-                    status
-                FROM settlement_cycles
-                ORDER BY period_start_date ASC
-            """
-            cursor.execute(query)
-        
+            conditions.append("sc.status = %s")
+            params.append(status)
+        if start_date:
+            conditions.append("sc.period_start_date >= %s")
+            params.append(start_date)
+        if end_date:
+            conditions.append("sc.period_end_date <= %s")
+            params.append(end_date)
+
+        where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+        query = f"""
+            SELECT
+                sc.cycle_id,
+                sc.period_start_date,
+                sc.period_end_date,
+                sc.payout_date,
+                sc.status,
+                COUNT(s.settlement_id) AS store_count
+            FROM settlement_cycles sc
+            LEFT JOIN settlement s ON sc.cycle_id = s.cycle_id
+            {where_clause}
+            GROUP BY sc.cycle_id
+            ORDER BY sc.period_start_date DESC
+        """
+        cursor.execute(query, params)
+
         cycles = cursor.fetchall()
         result = []
-        
+
         for cycle in cycles:
             result.append({
                 'cycle_id': cycle['cycle_id'],
                 'period_start_date': cycle['period_start_date'].isoformat() if cycle['period_start_date'] else None,
                 'period_end_date': cycle['period_end_date'].isoformat() if cycle['period_end_date'] else None,
                 'payout_date': cycle['payout_date'].isoformat() if cycle['payout_date'] else None,
-                'status': cycle['status']
+                'status': cycle['status'],
+                'store_count': int(cycle['store_count'] or 0),
             })
-        
+
         return result
     finally:
         cursor.close()
@@ -179,16 +188,39 @@ def close_settlement_cycle(cycle_id: int) -> bool:
     """정산 주기 마감"""
     connection = get_db_connection()
     cursor = connection.cursor()
-    
+
     try:
         cursor.execute("""
             UPDATE settlement_cycles
             SET status = 'CLOSED'
             WHERE cycle_id = %s
         """, (cycle_id,))
-        
+
         connection.commit()
         return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_settlement_cycle_status(cycle_id: int, new_status: str) -> Optional[str]:
+    """정산 주기 상태 변경. 변경 후 새 status 반환, 없으면 None."""
+    if new_status not in ('OPEN', 'CLOSED'):
+        raise ValueError(f"Invalid status: {new_status}")
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE settlement_cycles SET status = %s WHERE cycle_id = %s",
+            (new_status, cycle_id),
+        )
+        connection.commit()
+        if cursor.rowcount == 0:
+            return None
+        return new_status
     except Exception as e:
         connection.rollback()
         raise e
