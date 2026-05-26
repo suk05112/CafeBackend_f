@@ -341,6 +341,81 @@ def get_store_giftcards(connection, store_id: int, page: int = 1, limit: int = 1
         cursor.close()
 
 
+def get_store_orders(connection, store_id: int, cycle_id: Optional[int] = None, page: int = 1, limit: int = 10) -> Dict:
+    """매장별 주문내역 (관리자용, 정산주기 필터, 페이지네이션)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        base_where = "WHERE o.store_id = %s"
+        base_params = [store_id]
+
+        if cycle_id:
+            base_where += """
+                AND EXISTS (
+                    SELECT 1 FROM settlement_cycles sc
+                    WHERE sc.cycle_id = %s
+                      AND o.created_at >= sc.period_start_date
+                      AND o.created_at < DATE_ADD(sc.period_end_date, INTERVAL 1 DAY)
+                )
+            """
+            base_params.append(cycle_id)
+
+        cursor.execute(f"SELECT COUNT(*) as total, COALESCE(SUM(o.amount), 0) as total_amount FROM `orders` o {base_where}", base_params)
+        agg = cursor.fetchone()
+        total_count = agg['total']
+        total_amount = int(agg['total_amount'])
+
+        offset = (page - 1) * limit
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
+
+        cursor.execute(f"""
+            SELECT
+                o.id,
+                o.user_id,
+                o.amount,
+                o.created_at,
+                (
+                    SELECT GROUP_CONCAT(m.menu_name ORDER BY g.id SEPARATOR '||')
+                    FROM gifticon g
+                    LEFT JOIN menu m ON g.menu_id = m.id
+                    WHERE g.order_id = o.id
+                ) AS menu_names,
+                (
+                    SELECT MIN(g.used_at)
+                    FROM gifticon g
+                    WHERE g.order_id = o.id AND g.used_at IS NOT NULL
+                ) AS used_at
+            FROM `orders` o
+            {base_where}
+            ORDER BY o.created_at DESC
+            LIMIT %s OFFSET %s
+        """, base_params + [limit, offset])
+
+        rows = cursor.fetchall()
+        result = []
+        for r in rows:
+            names = (r['menu_names'] or '').split('||')
+            names = [n for n in names if n]
+            if len(names) == 0:
+                menu_display = '-'
+            elif len(names) == 1:
+                menu_display = names[0]
+            else:
+                menu_display = f"{names[0]} 외 {len(names)-1}건"
+
+            result.append({
+                'id': r['id'],
+                'user_id': r['user_id'],
+                'menu_name': menu_display,
+                'amount': r['amount'] or 0,
+                'created_at': r['created_at'].isoformat() if r['created_at'] else None,
+                'used_at': r['used_at'].isoformat() if r['used_at'] else None,
+            })
+
+        return {'items': result, 'total': total_count, 'total_amount': total_amount, 'page': page, 'limit': limit, 'total_pages': total_pages}
+    finally:
+        cursor.close()
+
+
 def get_users(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
     """유저 리스트 (관리자용, 페이지네이션)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)

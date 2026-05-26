@@ -124,6 +124,34 @@ def get_store_giftcards(
         connection.close()
 
 
+@router.get("/stores/{store_id}/orders")
+def get_store_orders(
+    store_id: int,
+    cycle_id: Optional[int] = Query(None, description="정산주기 ID 필터"),
+    page: int = Query(1, ge=1),
+    limit: int = Query(10, ge=1, le=100),
+):
+    """매장별 주문내역 (정산주기 필터, 페이지네이션)"""
+    connection = get_db_connection()
+    try:
+        result = admin_crud.get_store_orders(connection, store_id, cycle_id, page, limit)
+        return {
+            'orders': result['items'],
+            'total_amount': result['total_amount'],
+            'pagination': {
+                'total': result['total'],
+                'page': result['page'],
+                'limit': result['limit'],
+                'total_pages': result['total_pages'],
+            }
+        }
+    except Exception as e:
+        print(f"Error in get_store_orders: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        connection.close()
+
+
 @router.get("/users")
 def get_users(
     search: Optional[str] = Query(None, description="이름, 아이디, 전화번호, ID로 검색"),
