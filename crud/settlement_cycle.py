@@ -188,16 +188,39 @@ def close_settlement_cycle(cycle_id: int) -> bool:
     """정산 주기 마감"""
     connection = get_db_connection()
     cursor = connection.cursor()
-    
+
     try:
         cursor.execute("""
             UPDATE settlement_cycles
             SET status = 'CLOSED'
             WHERE cycle_id = %s
         """, (cycle_id,))
-        
+
         connection.commit()
         return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_settlement_cycle_status(cycle_id: int, new_status: str) -> Optional[str]:
+    """정산 주기 상태 변경. 변경 후 새 status 반환, 없으면 None."""
+    if new_status not in ('OPEN', 'CLOSED'):
+        raise ValueError(f"Invalid status: {new_status}")
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE settlement_cycles SET status = %s WHERE cycle_id = %s",
+            (new_status, cycle_id),
+        )
+        connection.commit()
+        if cursor.rowcount == 0:
+            return None
+        return new_status
     except Exception as e:
         connection.rollback()
         raise e

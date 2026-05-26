@@ -1016,6 +1016,25 @@ def close_settlement_cycle_post(cycle_id: int):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.patch("/settlement/cycles/{cycle_id}/status")
+@router.post("/settlement/cycles/{cycle_id}/status")
+def update_settlement_cycle_status(cycle_id: int, status: str = Query(..., description="변경할 상태: 'OPEN' 또는 'CLOSED'")):
+    """정산 주기 상태 변경 (OPEN ↔ CLOSED)"""
+    try:
+        from crud import settlement_cycle as cycle_crud
+        new_status = cycle_crud.update_settlement_cycle_status(cycle_id, status)
+        if new_status is None:
+            raise HTTPException(status_code=404, detail="정산 주기를 찾을 수 없습니다.")
+        return {"success": True, "cycle_id": cycle_id, "status": new_status}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error in update_settlement_cycle_status: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/settlement/cycles/generate")
 def generate_settlement_cycles(
     start_date: Optional[str] = Query(None, description="시작일 (YYYY-MM-DD), 기본값: 오늘"),
