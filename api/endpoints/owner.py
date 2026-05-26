@@ -721,6 +721,22 @@ def get_owner_settlement_data(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/settlement/preview/{store_id}")
+def get_owner_settlement_preview(store_id: int):
+    """진행 중인 정산 주기 미리보기 상세: settlement_id가 null인 PENDING 항목 상세 조회용"""
+    try:
+        from crud import settlement as settlement_crud
+        data = settlement_crud.get_owner_settlement_preview(store_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="진행 중인 정산 주기가 없거나 매출 데이터가 없습니다.")
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_owner_settlement_preview: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/settlement/detail/{settlement_id}")
 def get_owner_settlement_detail(settlement_id: int):
     """사장님 정산 상세: settlement 헤더 + details 건별 내역"""
