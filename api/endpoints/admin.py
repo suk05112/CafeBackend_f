@@ -1068,24 +1068,29 @@ def generate_settlement_cycles(
 
 @router.get("/settlement/list")
 def get_settlement_list_by_cycle(
-    cycle_id: int = Query(..., description="정산 주기 ID")
+    cycle_id: int = Query(..., description="정산 주기 ID"),
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수"),
 ):
-    """정산 주기별 매장 정산 리스트 (매장별 row)"""
+    """정산 주기별 매장 정산 리스트 (페이지네이션)"""
     try:
         from crud import settlement as settlement_crud
-        items = settlement_crud.get_settlements_by_cycle(cycle_id)
-        return {'settlements': items}
+        return settlement_crud.get_settlements_by_cycle(cycle_id, page, limit)
     except Exception as e:
         print(f"Error in get_settlement_list_by_cycle: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/settlement/{settlement_id}/details")
-def get_settlement_details_admin(settlement_id: int):
-    """정산 상세 (헤더 + 건별 내역: 인덱스, 사용일, 금액, 수수료, 최종 정산금액)"""
+def get_settlement_details_admin(
+    settlement_id: int,
+    detail_page: int = Query(1, ge=1, description="건별 내역 페이지 번호"),
+    detail_limit: int = Query(10, ge=1, le=100, description="건별 내역 페이지당 항목 수"),
+):
+    """정산 상세 (헤더 + 건별 내역, 페이지네이션)"""
     try:
         from crud import settlement as settlement_crud
-        data = settlement_crud.get_settlement_detail_for_admin(settlement_id)
+        data = settlement_crud.get_settlement_detail_for_admin(settlement_id, detail_page, detail_limit)
         if not data:
             raise HTTPException(status_code=404, detail="Settlement not found")
         return data

@@ -427,6 +427,38 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         settlement = cursor.fetchone()
         if not settlement:
             return None
+
+        # 기본 수수료율
+        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+        config = cursor.fetchone()
+        base_fee_rate = float(config['base_fee_rate']) if config else 3.0
+
+        # 정산 기간 내 적용된 프로모션 조회 (period_start 기준)
+        cursor.execute("""
+            SELECT fp.promo_fee_rate
+            FROM fee_promotions fp
+            JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
+            WHERE fps.store_id = %s
+              AND fp.is_active = TRUE
+              AND fp.start_date <= %s
+              AND fp.end_date >= %s
+            ORDER BY fp.start_date ASC
+            LIMIT 1
+        """, (settlement['store_id'], settlement['period_start'], settlement['period_start']))
+        promo = cursor.fetchone()
+
+        total_sales = int(settlement['total_sales_amount'] or 0)
+
+        if promo:
+            promo_fee_rate = float(promo['promo_fee_rate'])
+            _, _, base_fee_total = calc_fee_supply_and_vat(total_sales, base_fee_rate)
+            supply, vat, promo_fee_total = calc_fee_supply_and_vat(total_sales, promo_fee_rate)
+            promo_discount_amount = base_fee_total - promo_fee_total
+        else:
+            promo_fee_rate = None
+            supply, vat, _ = calc_fee_supply_and_vat(total_sales, base_fee_rate)
+            promo_discount_amount = None
+
         cursor.execute("""
             SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
                 g.used_at, m.menu_name
@@ -461,12 +493,17 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'cycle_id': settlement['cycle_id'],
                 'period_start': settlement['period_start'].isoformat() if settlement.get('period_start') else None,
                 'period_end': settlement['period_end'].isoformat() if settlement.get('period_end') else None,
-                'total_sales_amount': int(settlement['total_sales_amount'] or 0),
+                'total_sales_amount': total_sales,
                 'total_fee_amount': int(settlement['total_fee_amount'] or 0),
                 'net_payout_amount': int(settlement['net_payout_amount'] or 0),
                 'status': settlement['status'],
                 'payout_date': settlement['payout_date'].isoformat() if settlement.get('payout_date') else None,
                 'failure_reason': settlement.get('failure_reason'),
+                'base_fee_rate': base_fee_rate,
+                'promo_fee_rate': promo_fee_rate,
+                'promo_discount_amount': promo_discount_amount,
+                'supply_amount': supply,
+                'vat_amount': vat,
             },
             'details': details,
         }
@@ -475,14 +512,18 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         connection.close()
 
 
-def get_settlements_by_cycle(cycle_id: int) -> List[Dict]:
-    """관리자: 정산 주기별 매장 정산 리스트 (매장별 정산 row)"""
+def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
+    """관리자: 정산 주기별 매장 정산 리스트 (페이지네이션)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
+        cursor.execute("SELECT COUNT(*) AS cnt FROM settlement WHERE cycle_id = %s", (cycle_id,))
+        total = int((cursor.fetchone() or {}).get('cnt') or 0)
+        offset = (page - 1) * limit
+
         cursor.execute("""
-            SELECT 
+            SELECT
                 s.settlement_id,
                 s.store_id,
                 st.store_name,
@@ -493,17 +534,22 @@ def get_settlements_by_cycle(cycle_id: int) -> List[Dict]:
                 s.total_fee_amount,
                 s.net_payout_amount,
                 s.status,
+                s.tax_invoice_issued,
                 s.payout_date,
                 s.bank_name,
                 s.account_number,
-                a.name AS account_holder
+                a.name AS account_holder,
+                COUNT(sd.id) AS detail_count
             FROM settlement s
             LEFT JOIN store st ON s.store_id = st.id
             LEFT JOIN account a ON s.store_id = a.store_id
+            LEFT JOIN settlement_details sd ON s.settlement_id = sd.settlement_id
             WHERE s.cycle_id = %s
+            GROUP BY s.settlement_id
             ORDER BY s.store_id
-        """, (cycle_id,))
-        
+            LIMIT %s OFFSET %s
+        """, (cycle_id, limit, offset))
+
         rows = cursor.fetchall()
         result = []
         for row in rows:
@@ -518,25 +564,36 @@ def get_settlements_by_cycle(cycle_id: int) -> List[Dict]:
                 'total_fee_amount': int(row['total_fee_amount'] or 0),
                 'net_payout_amount': int(row['net_payout_amount'] or 0),
                 'status': row['status'],
+                'tax_invoice_issued': bool(row.get('tax_invoice_issued')),
                 'payout_date': row['payout_date'].isoformat() if row['payout_date'] else None,
                 'bank_name': row.get('bank_name'),
                 'account_number': row.get('account_number'),
                 'account_holder': row.get('account_holder'),
+                'detail_count': int(row.get('detail_count') or 0),
             })
-        return result
+        import math
+        return {
+            'settlements': result,
+            'pagination': {
+                'total': total,
+                'page': page,
+                'limit': limit,
+                'total_pages': math.ceil(total / limit) if total else 1,
+            },
+        }
     finally:
         cursor.close()
         connection.close()
 
 
-def get_settlement_detail_for_admin(settlement_id: int) -> Dict:
+def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, detail_limit: int = 10) -> Dict:
     """관리자: 정산 상세 (헤더 + 건별 내역, 사용일 포함)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
         cursor.execute("""
-            SELECT 
+            SELECT
                 s.settlement_id,
                 s.store_id,
                 st.store_name,
@@ -547,8 +604,11 @@ def get_settlement_detail_for_admin(settlement_id: int) -> Dict:
                 s.total_fee_amount,
                 s.net_payout_amount,
                 s.status,
+                s.failure_reason,
+                s.tax_invoice_issued,
                 s.payout_date,
                 s.bank_name,
+                a.bank AS account_bank,
                 s.account_number,
                 a.name AS account_holder
             FROM settlement s
@@ -559,22 +619,29 @@ def get_settlement_detail_for_admin(settlement_id: int) -> Dict:
         settlement = cursor.fetchone()
         if not settlement:
             return None
-        
+
+        cursor.execute("SELECT COUNT(*) AS cnt FROM settlement_details WHERE settlement_id = %s", (settlement_id,))
+        detail_total = int((cursor.fetchone() or {}).get('cnt') or 0)
+        detail_offset = (detail_page - 1) * detail_limit
+
         cursor.execute("""
-            SELECT 
+            SELECT
                 sd.id,
                 sd.gifticon_id,
                 g.used_at,
+                m.menu_name,
                 sd.sales_amount,
                 sd.fee_amount,
                 sd.settlement_amount
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
+            LEFT JOIN menu m ON g.menu_id = m.id
             WHERE sd.settlement_id = %s
             ORDER BY sd.id
-        """, (settlement_id,))
+            LIMIT %s OFFSET %s
+        """, (settlement_id, detail_limit, detail_offset))
         details = cursor.fetchall()
-        
+
         header = {
             'settlement_id': settlement['settlement_id'],
             'store_id': settlement['store_id'],
@@ -586,28 +653,40 @@ def get_settlement_detail_for_admin(settlement_id: int) -> Dict:
             'total_fee_amount': int(settlement['total_fee_amount'] or 0),
             'net_payout_amount': int(settlement['net_payout_amount'] or 0),
             'status': settlement['status'],
+            'failure_reason': settlement.get('failure_reason'),
+            'tax_invoice_issued': bool(settlement.get('tax_invoice_issued')),
             'payout_date': settlement['payout_date'].isoformat() if settlement.get('payout_date') else None,
-            'bank_name': settlement.get('bank_name'),
+            'bank_name': settlement.get('bank_name') or settlement.get('account_bank'),
             'account_number': settlement.get('account_number'),
             'account_holder': settlement.get('account_holder'),
         }
         items = []
         for i, d in enumerate(details, 1):
             used_at = d.get('used_at')
-            if used_at and hasattr(used_at, 'strftime'):
-                used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
-            else:
-                used_at_str = str(used_at) if used_at is not None else '-'
+            used_at_str = used_at.strftime('%Y-%m-%d %H:%M') if used_at and hasattr(used_at, 'strftime') else (str(used_at) if used_at else '-')
+            sales = int(d.get('sales_amount') or 0)
+            fee = int(d.get('fee_amount') or 0)
             items.append({
                 'index': i,
                 'id': d.get('id'),
                 'gifticon_id': d.get('gifticon_id'),
+                'menu_name': d.get('menu_name') or '-',
                 'used_at': used_at_str,
-                'sales_amount': int(d.get('sales_amount') or 0),
-                'fee_amount': int(d.get('fee_amount') or 0),
+                'sales_amount': sales,
+                'fee_amount': fee,
                 'settlement_amount': int(d.get('settlement_amount') or 0),
             })
-        return {'settlement': header, 'details': items}
+        import math as _math
+        return {
+            'settlement': header,
+            'details': items,
+            'detail_pagination': {
+                'total': detail_total,
+                'page': detail_page,
+                'limit': detail_limit,
+                'total_pages': _math.ceil(detail_total / detail_limit) if detail_total else 1,
+            },
+        }
     finally:
         cursor.close()
         connection.close()
