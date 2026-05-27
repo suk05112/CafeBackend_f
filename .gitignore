@@ -52,3 +52,4 @@ Thumbs.db
 # Firebase keys (보안상 제외하지 않음 - 프로젝트별로 결정)
 # *.json
 # *.p8
+db_backups/
