@@ -512,6 +512,53 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         connection.close()
 
 
+def update_settlement_status(settlement_id: int, status: str, failure_reason: Optional[str] = None) -> bool:
+    """정산 상태 변경. failure_reason은 FAILED 시에만 사용."""
+    allowed = {'READY', 'PENDING', 'COMPLETED', 'HOLD', 'FAILED'}
+    if status not in allowed:
+        raise ValueError(f"Invalid status: {status}")
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            "UPDATE settlement SET status = %s, failure_reason = %s WHERE settlement_id = %s",
+            (status, failure_reason if status == 'FAILED' else None, settlement_id)
+        )
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
+def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) -> bool:
+    """세금계산서 발행 여부 변경."""
+    connection = get_db_connection()
+    cursor = connection.cursor()
+    try:
+        if tax_invoice_issued:
+            cursor.execute(
+                "UPDATE settlement SET tax_invoice_issued = 1, tax_invoice_issued_date = CURDATE() WHERE settlement_id = %s",
+                (settlement_id,)
+            )
+        else:
+            cursor.execute(
+                "UPDATE settlement SET tax_invoice_issued = 0, tax_invoice_issued_date = NULL WHERE settlement_id = %s",
+                (settlement_id,)
+            )
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+        connection.close()
+
+
 def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
     """관리자: 정산 주기별 매장 정산 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -632,7 +679,11 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 m.menu_name,
                 sd.sales_amount,
                 sd.fee_amount,
-                sd.settlement_amount
+                sd.settlement_amount,
+                sd.base_fee_rate,
+                sd.applied_fee_rate,
+                sd.fee_supply,
+                sd.fee_vat
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -675,6 +726,10 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 'sales_amount': sales,
                 'fee_amount': fee,
                 'settlement_amount': int(d.get('settlement_amount') or 0),
+                'base_fee_rate': float(d['base_fee_rate']) if d.get('base_fee_rate') is not None else None,
+                'applied_fee_rate': float(d['applied_fee_rate']) if d.get('applied_fee_rate') is not None else None,
+                'fee_supply': int(d.get('fee_supply') or 0),
+                'fee_vat': int(d.get('fee_vat') or 0),
             })
         import math as _math
         return {

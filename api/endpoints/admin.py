@@ -1101,6 +1101,49 @@ def get_settlement_details_admin(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.patch("/settlement/{settlement_id}/status")
+@router.post("/settlement/{settlement_id}/status")
+def update_settlement_status(settlement_id: int, body: dict):
+    """정산 상태 변경. body: { "status": "PAID", "failure_reason": "..." }"""
+    status = (body.get("status") or "").strip().upper()
+    if not status:
+        raise HTTPException(status_code=400, detail="status is required")
+    failure_reason = body.get("failure_reason")
+    try:
+        from crud import settlement as settlement_crud
+        updated = settlement_crud.update_settlement_status(settlement_id, status, failure_reason)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Settlement not found")
+        return {"success": True, "settlement_id": settlement_id, "status": status}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_settlement_status: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/settlement/{settlement_id}/tax-invoice")
+@router.post("/settlement/{settlement_id}/tax-invoice")
+def update_settlement_tax_invoice(settlement_id: int, body: dict):
+    """세금계산서 발행 여부 변경. body: { "tax_invoice_issued": true }"""
+    if "tax_invoice_issued" not in body:
+        raise HTTPException(status_code=400, detail="tax_invoice_issued is required")
+    tax_invoice_issued = bool(body["tax_invoice_issued"])
+    try:
+        from crud import settlement as settlement_crud
+        updated = settlement_crud.update_settlement_tax_invoice(settlement_id, tax_invoice_issued)
+        if not updated:
+            raise HTTPException(status_code=404, detail="Settlement not found")
+        return {"success": True, "settlement_id": settlement_id, "tax_invoice_issued": tax_invoice_issued}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_settlement_tax_invoice: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/settlement/create/{cycle_id}")
 def create_settlement_data(cycle_id: int):
     """정산 데이터 생성 (정산 주기별)
