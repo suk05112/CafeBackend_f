@@ -706,21 +706,6 @@ def update_account(store_id: int, account: AccountUpdateRequest):
         connection.close()
 
 
-@router.get("/settlement/{store_id}")
-def get_owner_settlement_data(
-    store_id: int,
-    past_months: int = Query(3, description="과거 몇 달 기준으로 정산 목록 조회 (1~24)", ge=1, le=24),
-):
-    """사장님 정산 목록. 과거 N달 기준은 쿼리 파라미터 past_months로 지정 (기본 3)."""
-    try:
-        from crud import settlement as settlement_crud
-        items = settlement_crud.get_owner_settlement_list_unified(store_id, past_months=past_months)
-        return {'settlements': items}
-    except Exception as e:
-        print(f"Error in get_owner_settlement_data: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
 @router.get("/settlement/preview/{store_id}")
 def get_owner_settlement_preview(store_id: int):
     """진행 중인 정산 주기 미리보기 상세: settlement_id가 null인 PENDING 항목 상세 조회용"""
@@ -734,6 +719,21 @@ def get_owner_settlement_preview(store_id: int):
         raise
     except Exception as e:
         print(f"Error in get_owner_settlement_preview: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/settlement/{store_id}")
+def get_owner_settlement_data(
+    store_id: int,
+    past_months: int = Query(3, description="과거 몇 달 기준으로 정산 목록 조회 (1~24)", ge=1, le=24),
+):
+    """사장님 정산 목록. 과거 N달 기준은 쿼리 파라미터 past_months로 지정 (기본 3)."""
+    try:
+        from crud import settlement as settlement_crud
+        items = settlement_crud.get_owner_settlement_list_unified(store_id, past_months=past_months)
+        return {'settlements': items}
+    except Exception as e:
+        print(f"Error in get_owner_settlement_data: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

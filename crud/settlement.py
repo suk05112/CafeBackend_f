@@ -427,40 +427,9 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         settlement = cursor.fetchone()
         if not settlement:
             return None
-
-        # 기본 수수료율
-        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
-        config = cursor.fetchone()
-        base_fee_rate = float(config['base_fee_rate']) if config else 3.0
-
-        # 정산 기간 내 적용된 프로모션 조회 (period_start 기준)
-        cursor.execute("""
-            SELECT fp.promo_fee_rate
-            FROM fee_promotions fp
-            JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
-            WHERE fps.store_id = %s
-              AND fp.is_active = TRUE
-              AND fp.start_date <= %s
-              AND fp.end_date >= %s
-            ORDER BY fp.start_date ASC
-            LIMIT 1
-        """, (settlement['store_id'], settlement['period_start'], settlement['period_start']))
-        promo = cursor.fetchone()
-
-        total_sales = int(settlement['total_sales_amount'] or 0)
-
-        if promo:
-            promo_fee_rate = float(promo['promo_fee_rate'])
-            _, _, base_fee_total = calc_fee_supply_and_vat(total_sales, base_fee_rate)
-            supply, vat, promo_fee_total = calc_fee_supply_and_vat(total_sales, promo_fee_rate)
-            promo_discount_amount = base_fee_total - promo_fee_total
-        else:
-            promo_fee_rate = None
-            supply, vat, _ = calc_fee_supply_and_vat(total_sales, base_fee_rate)
-            promo_discount_amount = None
-
         cursor.execute("""
             SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
+                sd.base_fee_rate, sd.applied_promo_id, sd.applied_fee_rate, sd.fee_supply, sd.fee_vat,
                 g.used_at, m.menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
@@ -470,12 +439,23 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         """, (sid,))
         rows = cursor.fetchall()
         details = []
+        supply_amount = 0
+        vat_amount = 0
+        base_fee_rate = None
+        promo_fee_rate = None
+        promo_discount_amount = None
         for d in rows:
             used_at = d.get('used_at')
             if used_at and hasattr(used_at, 'strftime'):
                 used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
             else:
                 used_at_str = str(used_at) if used_at else None
+            supply_amount += int(d['fee_supply'] or 0)
+            vat_amount += int(d['fee_vat'] or 0)
+            if base_fee_rate is None and d.get('base_fee_rate') is not None:
+                base_fee_rate = float(d['base_fee_rate'])
+            if d.get('applied_promo_id') is not None:
+                promo_fee_rate = float(d['applied_fee_rate']) if d.get('applied_fee_rate') is not None else promo_fee_rate
             details.append({
                 'id': d['id'],
                 'gifticon_id': d['gifticon_id'],
@@ -486,6 +466,12 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'settlement_amount': int(d['settlement_amount'] or 0),
                 'status': settlement.get('status'),
             })
+        if promo_fee_rate is not None and base_fee_rate is not None:
+            total_sales = int(settlement['total_sales_amount'] or 0)
+            base_fee = int(total_sales * base_fee_rate / 100)
+            actual_fee = int(settlement['total_fee_amount'] or 0)
+            diff = base_fee - actual_fee
+            promo_discount_amount = diff if diff > 0 else None
         return {
             'settlement': {
                 'settlement_id': settlement['settlement_id'],
@@ -502,8 +488,8 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'base_fee_rate': base_fee_rate,
                 'promo_fee_rate': promo_fee_rate,
                 'promo_discount_amount': promo_discount_amount,
-                'supply_amount': supply,
-                'vat_amount': vat,
+                'supply_amount': supply_amount,
+                'vat_amount': vat_amount,
             },
             'details': details,
         }
@@ -630,7 +616,7 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
                 'total_sales_amount': total_sales,
                 'total_fee_amount': total_fee,
                 'net_payout_amount': net,
-                'status': 'PENDING',
+                'status': None,
                 'payout_date': None,
                 'failure_reason': None,
                 'base_fee_rate': base_fee_rate,
