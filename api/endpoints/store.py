@@ -108,6 +108,7 @@ def searchStore(
                 MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
             FROM store s
             WHERE s.inspection_status = 'APPROVED'
+              AND s.contract_completed = TRUE
               AND MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE)
               AND s.id < %s
               AND EXISTS (
@@ -130,6 +131,7 @@ def searchStore(
                 MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
             FROM store s
             WHERE s.inspection_status = 'APPROVED'
+              AND s.contract_completed = TRUE
               AND MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE)
               AND EXISTS (
                   SELECT 1 FROM menu m WHERE m.store_id = s.id
@@ -240,6 +242,7 @@ def getStoreList():
         FROM store s
         INNER JOIN menu m ON s.id = m.store_id
         WHERE (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+          AND s.contract_completed = TRUE
         ORDER BY s.updated_at DESC
         ''')
         
@@ -381,6 +384,7 @@ def getRegionsAndDistricts(offset: Optional[int] = Query(0, description="페이�
         WHERE s.region_code IS NOT NULL 
           AND s.district_code IS NOT NULL
           AND s.inspection_status = 'APPROVED'
+          AND s.contract_completed = TRUE
         GROUP BY s.region_code, s.district_code
         HAVING COUNT(m.id) >= 1
         ORDER BY s.region_code, s.district_code
@@ -502,6 +506,7 @@ def getStoreListByDistrict(
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
+              AND s.contract_completed = TRUE
               AND (
                   s.updated_at < %s
                   OR (s.updated_at = %s AND s.id < %s)
@@ -524,6 +529,7 @@ def getStoreListByDistrict(
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
+              AND s.contract_completed = TRUE
             GROUP BY s.id
             HAVING COUNT(m.id) >= 1
             ORDER BY s.updated_at DESC, s.id DESC
@@ -649,6 +655,7 @@ def getStoreListByLocation(lat: float, lng: float):
         WHERE s.store_lat IS NOT NULL 
           AND s.store_lng IS NOT NULL
           AND s.inspection_status = 'APPROVED'
+          AND s.contract_completed = TRUE
         GROUP BY s.id
         HAVING COUNT(m.id) >= 1
           AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) * 
@@ -981,7 +988,7 @@ def searchStore(item: str, lat: float, lng: float):
         from store'''
 
         if item and item.strip():
-            itemQuery += " WHERE store_name LIKE %s"
+            itemQuery += " WHERE store_name LIKE %s AND inspection_status = 'APPROVED' AND contract_completed = TRUE"
             item_param = f"%{item}%"
             cursor.execute(itemQuery, (item_param,))
         
@@ -1021,7 +1028,9 @@ def searchStore(item: str, lat: float, lng: float):
                 FROM
                     store
                 WHERE
-                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
+                    inspection_status = 'APPROVED'
+                    AND contract_completed = TRUE
+                    AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
                 ORDER BY distance ASC;'''
 
                 cursor.execute(geoQuery, (lat, lng, lat, lat, lng, lat))
@@ -1050,7 +1059,7 @@ def searchStore(item: str, lat: float, lng: float):
 
                 return {"storeList": storeList}
             else:
-                return {"storeList": []}  
+                return {"storeList": []}
         else:
             geoQuery = '''SELECT
                     owner_id,
@@ -1065,7 +1074,9 @@ def searchStore(item: str, lat: float, lng: float):
                 FROM
                     store
                 WHERE
-                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
+                    inspection_status = 'APPROVED'
+                    AND contract_completed = TRUE
+                    AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
                 ORDER BY distance ASC;'''
 
             cursor.execute(geoQuery, (lat, lng, lat, lat, lng, lat))
@@ -1124,7 +1135,9 @@ def getCurrentLocationStore(item: str, lat: float, lng: float):
                 FROM
                     store
                 WHERE
-                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
+                    inspection_status = 'APPROVED'
+                    AND contract_completed = TRUE
+                    AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) <= 1
                 ORDER BY distance ASC;'''
 
         cursor.execute(geoQuery, (lat, lng, lat, lat, lng, lat))
