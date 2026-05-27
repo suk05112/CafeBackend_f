@@ -429,6 +429,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
             return None
         cursor.execute("""
             SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
+                sd.base_fee_rate, sd.applied_promo_id, sd.applied_fee_rate, sd.fee_supply, sd.fee_vat,
                 g.used_at, m.menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
@@ -438,12 +439,23 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         """, (sid,))
         rows = cursor.fetchall()
         details = []
+        supply_amount = 0
+        vat_amount = 0
+        base_fee_rate = None
+        promo_fee_rate = None
+        promo_discount_amount = None
         for d in rows:
             used_at = d.get('used_at')
             if used_at and hasattr(used_at, 'strftime'):
                 used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
             else:
                 used_at_str = str(used_at) if used_at else None
+            supply_amount += int(d['fee_supply'] or 0)
+            vat_amount += int(d['fee_vat'] or 0)
+            if base_fee_rate is None and d.get('base_fee_rate') is not None:
+                base_fee_rate = float(d['base_fee_rate'])
+            if d.get('applied_promo_id') is not None:
+                promo_fee_rate = float(d['applied_fee_rate']) if d.get('applied_fee_rate') is not None else promo_fee_rate
             details.append({
                 'id': d['id'],
                 'gifticon_id': d['gifticon_id'],
@@ -454,6 +466,12 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'settlement_amount': int(d['settlement_amount'] or 0),
                 'status': settlement.get('status'),
             })
+        if promo_fee_rate is not None and base_fee_rate is not None:
+            total_sales = int(settlement['total_sales_amount'] or 0)
+            base_fee = int(total_sales * base_fee_rate / 100)
+            actual_fee = int(settlement['total_fee_amount'] or 0)
+            diff = base_fee - actual_fee
+            promo_discount_amount = diff if diff > 0 else None
         return {
             'settlement': {
                 'settlement_id': settlement['settlement_id'],
@@ -467,6 +485,11 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'status': settlement['status'],
                 'payout_date': settlement['payout_date'].isoformat() if settlement.get('payout_date') else None,
                 'failure_reason': settlement.get('failure_reason'),
+                'base_fee_rate': base_fee_rate,
+                'promo_fee_rate': promo_fee_rate,
+                'promo_discount_amount': promo_discount_amount,
+                'supply_amount': supply_amount,
+                'vat_amount': vat_amount,
             },
             'details': details,
         }
