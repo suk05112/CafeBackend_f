@@ -25,6 +25,22 @@ s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
 
 
+def _generate_logo_key(store_id: int) -> str:
+    return f'store_logo/store_logo_{store_id}_{uuid.uuid4().hex[:8]}.png'
+
+def _generate_bankbook_key(store_id: int) -> str:
+    return f'bankbook/bankbook_{store_id}_{uuid.uuid4().hex[:8]}.png'
+
+def _generate_business_key(store_id: int) -> str:
+    return f'business_registration/business_registration_{store_id}_{uuid.uuid4().hex[:8]}.png'
+
+def _get_store_logo_url(store_logo_key: str) -> Optional[str]:
+    if not store_logo_key:
+        return None
+    return s3.generate_presigned_url('get_object',
+        Params={'Bucket': bucket_name, 'Key': store_logo_key},
+        ExpiresIn=3600)
+
 def _get_store_photo_urls(cursor, store_id: int) -> List[str]:
     """store_images 테이블에서 매장 사진 presigned GET URL 목록 반환"""
     cursor.execute(
@@ -105,6 +121,7 @@ def searchStore(
                 s.open_yn,
                 s.store_description,
                 s.store_address,
+                s.store_logo_key,
                 MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
             FROM store s
             WHERE s.inspection_status = 'APPROVED'
@@ -128,6 +145,7 @@ def searchStore(
                 s.open_yn,
                 s.store_description,
                 s.store_address,
+                s.store_logo_key,
                 MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE) AS relevance
             FROM store s
             WHERE s.inspection_status = 'APPROVED'
@@ -139,41 +157,15 @@ def searchStore(
             ORDER BY relevance DESC, s.id DESC
             LIMIT %s
             ''', (query, query, limit))
-        
+
         # DB에서 데이터를 가져오기
         rows = db_cursor.fetchall()
         storeList = []
-        
+
         for row in rows:
             store_id = row['id']
+            store_logo_url = _get_store_logo_url(row['store_logo_key'])
 
-            # S3에서 store_logo 존재 여부 확인
-            logo_key = f'store_logo/store_logo_{store_id}.png'
-            store_logo_url = None
-            
-            try:
-                s3.head_object(Bucket=bucket_name, Key=logo_key)
-                # 로고가 존재하면 로고 URL 생성
-                store_logo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': logo_key},
-                    ExpiresIn=3600)
-            except ClientError as e:
-                # 로고가 없으면 store_image_1 사용
-                if e.response['Error']['Code'] == '404':
-                    try:
-                        image_key = f'store_image/store_image_{store_id}_1.png'
-                        s3.head_object(Bucket=bucket_name, Key=image_key)
-                        store_logo_url = s3.generate_presigned_url('get_object',
-                            Params={'Bucket': bucket_name,
-                                    'Key': image_key},
-                            ExpiresIn=3600)
-                    except ClientError:
-                        # store_image_1도 없으면 None
-                        store_logo_url = None
-                else:
-                    store_logo_url = None
-            
             # store 데이터를 구성
             store = {
                 "owner_id": row['owner_id'],
@@ -238,48 +230,22 @@ def getStoreList():
             s.updated_at,
             s.store_telephone,
             s.store_description,
-            s.store_address
+            s.store_address,
+            s.store_logo_key
         FROM store s
         INNER JOIN menu m ON s.id = m.store_id
         WHERE (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
           AND s.contract_completed = TRUE
         ORDER BY s.updated_at DESC
         ''')
-        
+
         # DB에서 데이터를 가져오기
         rows = cursor.fetchall()
         storeList = []
-        
+
         for row in rows:
             store_id = row['id']
-
-            # S3에서 store_logo 존재 여부 확인
-            logo_key = f'store_logo/store_logo_{store_id}.png'
-            store_logo_url = None
-            
-            try:
-                s3.head_object(Bucket=bucket_name, Key=logo_key)
-                # 로고가 존재하면 로고 URL 생성
-                store_logo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': logo_key},
-                    ExpiresIn=3600)
-            except ClientError as e:
-                # 로고가 없으면 store_image_1 사용
-                if e.response['Error']['Code'] == '404':
-                    try:
-                        image_key = f'store_image/store_image_{store_id}_1.png'
-                        s3.head_object(Bucket=bucket_name, Key=image_key)
-                        store_logo_url = s3.generate_presigned_url('get_object',
-                            Params={'Bucket': bucket_name,
-                                    'Key': image_key},
-                            ExpiresIn=3600)
-                    except ClientError:
-                        # store_image_1도 없으면 None
-                        store_logo_url = None
-                else:
-                    store_logo_url = None
-            
+            store_logo_url = _get_store_logo_url(row['store_logo_key'])
             store_photo_urls = _get_store_photo_urls(cursor, store_id)
 
             # store 데이터를 구성
@@ -496,12 +462,13 @@ def getStoreListByDistrict(
         if cursor_updated_at and cursor_store_id:
             db_cursor.execute('''
             SELECT DISTINCT
-                s.id, 
-                s.store_name, 
+                s.id,
+                s.store_name,
                 s.open_yn,
                 s.store_address,
                 s.store_description,
-                s.updated_at
+                s.updated_at,
+                s.store_logo_key
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
@@ -519,12 +486,13 @@ def getStoreListByDistrict(
         else:
             db_cursor.execute('''
             SELECT DISTINCT
-                s.id, 
-                s.store_name, 
+                s.id,
+                s.store_name,
                 s.open_yn,
                 s.store_address,
                 s.store_description,
-                s.updated_at
+                s.updated_at,
+                s.store_logo_key
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
@@ -535,40 +503,14 @@ def getStoreListByDistrict(
             ORDER BY s.updated_at DESC, s.id DESC
             LIMIT %s
             ''', (region_code, limit))
-        
+
         # DB에서 데이터를 가져오기
         rows = db_cursor.fetchall()
         storeList = []
-        
+
         for row in rows:
             store_id = row['id']
-
-            # S3에서 store_logo 존재 여부 확인
-            logo_key = f'store_logo/store_logo_{store_id}.png'
-            store_logo_url = None
-            
-            try:
-                s3.head_object(Bucket=bucket_name, Key=logo_key)
-                # 로고가 존재하면 로고 URL 생성
-                store_logo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': logo_key},
-                    ExpiresIn=3600)
-            except ClientError as e:
-                # 로고가 없으면 store_image_1 사용
-                if e.response['Error']['Code'] == '404':
-                    try:
-                        image_key = f'store_image/store_image_{store_id}_1.png'
-                        s3.head_object(Bucket=bucket_name, Key=image_key)
-                        store_logo_url = s3.generate_presigned_url('get_object',
-                            Params={'Bucket': bucket_name,
-                                    'Key': image_key},
-                            ExpiresIn=3600)
-                    except ClientError:
-                        # store_image_1도 없으면 None
-                        store_logo_url = None
-                else:
-                    store_logo_url = None
+            store_logo_url = _get_store_logo_url(row['store_logo_key'])
 
             # 리스트용 간단한 store 데이터 구성
             store = {
@@ -640,63 +582,38 @@ def getStoreListByLocation(lat: float, lng: float):
         # inspection_status는 'APPROVED'만, 메뉴 1개 이상인 것만
         cursor.execute('''
         SELECT DISTINCT
-            s.id, 
-            s.store_name, 
+            s.id,
+            s.store_name,
             s.open_yn,
             s.store_address,
             s.store_description,
             s.store_lat,
             s.store_lng,
-            (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) * 
-                COS(RADIANS(s.store_lng) - RADIANS(%s)) + 
+            s.store_logo_key,
+            (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) *
+                COS(RADIANS(s.store_lng) - RADIANS(%s)) +
                 SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) AS distance
         FROM store s
         INNER JOIN menu m ON s.id = m.store_id
-        WHERE s.store_lat IS NOT NULL 
+        WHERE s.store_lat IS NOT NULL
           AND s.store_lng IS NOT NULL
           AND s.inspection_status = 'APPROVED'
           AND s.contract_completed = TRUE
         GROUP BY s.id
         HAVING COUNT(m.id) >= 1
-          AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) * 
-                COS(RADIANS(s.store_lng) - RADIANS(%s)) + 
+          AND (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) *
+                COS(RADIANS(s.store_lng) - RADIANS(%s)) +
                 SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) <= 3
         ORDER BY distance ASC
         ''', (lat, lng, lat, lat, lng, lat))
-        
+
         # DB에서 데이터를 가져오기
         rows = cursor.fetchall()
         storeList = []
-        
+
         for row in rows:
             store_id = row['id']
-
-            # S3에서 store_logo 존재 여부 확인
-            logo_key = f'store_logo/store_logo_{store_id}.png'
-            store_logo_url = None
-            
-            try:
-                s3.head_object(Bucket=bucket_name, Key=logo_key)
-                # 로고가 존재하면 로고 URL 생성
-                store_logo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': logo_key},
-                    ExpiresIn=3600)
-            except ClientError as e:
-                # 로고가 없으면 store_image_1 사용
-                if e.response['Error']['Code'] == '404':
-                    try:
-                        image_key = f'store_image/store_image_{store_id}_1.png'
-                        s3.head_object(Bucket=bucket_name, Key=image_key)
-                        store_logo_url = s3.generate_presigned_url('get_object',
-                            Params={'Bucket': bucket_name,
-                                    'Key': image_key},
-                            ExpiresIn=3600)
-                    except ClientError:
-                        # store_image_1도 없으면 None
-                        store_logo_url = None
-                else:
-                    store_logo_url = None
+            store_logo_url = _get_store_logo_url(row['store_logo_key'])
 
             # 리스트용 간단한 store 데이터 구성
             store = {
@@ -710,7 +627,6 @@ def getStoreListByLocation(lat: float, lng: float):
                 "store_lng": row['store_lng'],
             }
             storeList.append(store)
-            print(storeList)
 
         return {"store": storeList}
     
@@ -746,25 +662,20 @@ def getStore(owner_id: int):
         s.store_lng,
         s.store_address,
         s.updated_at,
-        s.inspection_msg
+        s.inspection_msg,
+        s.store_logo_key
         FROM store s
         INNER JOIN menu m ON s.id = m.store_id
         WHERE s.owner_id = %s
           AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
         ORDER BY s.updated_at DESC''', (owner_id,))
-        
-        rows = cursor.fetchall()   
+
+        rows = cursor.fetchall()
         storeList = []
-        
+
         for row in rows:
             store_id = row['id']
-
-            store_logo_url = s3.generate_presigned_url('get_object',
-                                                    Params={'Bucket': bucket_name,
-                                                            'Key': f'store_logo/store_logo_{store_id}.png',
-                                                            },
-                                                  ExpiresIn=3600)
-                                                  
+            store_logo_url = _get_store_logo_url(row['store_logo_key'])
             store_photo_urls = _get_store_photo_urls(cursor, store_id)
 
             store = {
@@ -838,32 +749,29 @@ async def registerStore(store: StoreCreate):
         store_id = cursor.lastrowid
         print(store_id)
 
-        store_logo_url = s3.generate_presigned_url('put_object',
-                                                    Params={'Bucket': bucket_name,
-                                                            'Key': f'store_logo/store_logo_{store_id}.png',
-                                                            },
-                                                  ExpiresIn=3600)
-                                                  
+        logo_key = _generate_logo_key(store_id)
+        bankbook_key = _generate_bankbook_key(store_id)
+        business_key = _generate_business_key(store_id)
 
+        cursor.execute(
+            "UPDATE store SET store_logo_key = %s, bankbook_key = %s, business_registration_key = %s WHERE id = %s",
+            (logo_key, bankbook_key, business_key, store_id)
+        )
+
+        store_logo_put_url = s3.generate_presigned_url('put_object',
+            Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
         bankBook_put_url = s3.generate_presigned_url('put_object',
-                                                    Params={'Bucket': bucket_name,
-                                                            'Key': f'bankbook/bankbook_{store_id}.png',
-                                                            },
-                                                  ExpiresIn=3600)
-        
+            Params={'Bucket': bucket_name, 'Key': bankbook_key}, ExpiresIn=3600)
         business_put_url = s3.generate_presigned_url('put_object',
-                                                    Params={'Bucket': bucket_name,
-                                                            'Key': f'business_registration/business_registration_{store_id}.png',
-                                                            },
-                                                  ExpiresIn=3600)                      
-    
+            Params={'Bucket': bucket_name, 'Key': business_key}, ExpiresIn=3600)
+
         image_count = store.image_count if store.image_count is not None else 0
         store_photos = _insert_store_images(cursor, store_id, image_count)
         connection.commit()
 
         return {
             'store_id': store_id,
-            'store_logo_url': store_logo_url,
+            'store_logo_put_url': store_logo_put_url,
             'store_photos': store_photos,
             'bankBook_put_url': bankBook_put_url,
             'business_put_url': business_put_url
@@ -902,6 +810,13 @@ def updateStore(store_id: int, store: StoreCreate):
             query += "store_description = %s, "
             values.append(store.store_description)
 
+        logo_key = _generate_logo_key(store_id)
+        bankbook_key = _generate_bankbook_key(store_id)
+        business_key = _generate_business_key(store_id)
+
+        query += "store_logo_key = %s, bankbook_key = %s, business_registration_key = %s, "
+        values.extend([logo_key, bankbook_key, business_key])
+
         query += "inspection_status = %s, "
         values.append('PENDING')
 
@@ -921,8 +836,18 @@ def updateStore(store_id: int, store: StoreCreate):
 
         store_photo_get_urls = _get_store_photo_urls(cursor, store_id)
 
+        store_logo_put_url = s3.generate_presigned_url('put_object',
+            Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
+        bankBook_put_url = s3.generate_presigned_url('put_object',
+            Params={'Bucket': bucket_name, 'Key': bankbook_key}, ExpiresIn=3600)
+        business_put_url = s3.generate_presigned_url('put_object',
+            Params={'Bucket': bucket_name, 'Key': business_key}, ExpiresIn=3600)
+
         return {
             'msg': "success",
+            'store_logo_put_url': store_logo_put_url,
+            'bankBook_put_url': bankBook_put_url,
+            'business_put_url': business_put_url,
             'store_photos': store_photos,
             'store_photo_get_urls': store_photo_get_urls
         }
@@ -1189,19 +1114,15 @@ def getStoreInfo(store_id: int):
         store_lng,
         updated_at,
         inspection_status,
-        inspection_msg
+        inspection_msg,
+        store_logo_key
         from store WHERE id=%s ;''', (store_id, ))
-        
+
         store = cursor.fetchone()
 
 
         if store:
-            store_logo_url = s3.generate_presigned_url('get_object',
-                                                    Params={'Bucket': bucket_name,
-                                                            'Key': f'store_logo/store_logo_{store_id}.png',
-                                                            },
-                                                  ExpiresIn=3600)
-                                                  
+            store_logo_url = _get_store_logo_url(store['store_logo_key'])
             store_photo_urls = _get_store_photo_urls(cursor, store_id)
 
             store = {
