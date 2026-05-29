@@ -1,5 +1,6 @@
 """Admin API endpoints"""
 import traceback
+import uuid
 from fastapi import APIRouter, HTTPException, status, Query
 from typing import Optional
 from db.session import get_db_connection
@@ -695,15 +696,27 @@ def create_test_store(store: StoreCreate):
     try:
         store_id = store_crud.create_store(store)
 
+        logo_key = f'store_logo/store_logo_{store_id}_{uuid.uuid4().hex[:8]}.png'
+        bankbook_key = f'bankbook/bankbook_{store_id}_{uuid.uuid4().hex[:8]}.png'
+        business_key = f'business_registration/business_registration_{store_id}_{uuid.uuid4().hex[:8]}.png'
+
+        conn2 = get_db_connection()
+        try:
+            cur2 = conn2.cursor()
+            cur2.execute(
+                "UPDATE store SET store_logo_key = %s, bankbook_key = %s, business_registration_key = %s WHERE id = %s",
+                (logo_key, bankbook_key, business_key, store_id)
+            )
+            conn2.commit()
+        finally:
+            conn2.close()
+
         store_logo_url = S3_CLIENT.generate_presigned_url('put_object',
-            Params={'Bucket': BUCKET_NAME, 'Key': f'store_logo/store_logo_{store_id}.png'},
-            ExpiresIn=3600)
+            Params={'Bucket': BUCKET_NAME, 'Key': logo_key}, ExpiresIn=3600)
         bankBook_put_url = S3_CLIENT.generate_presigned_url('put_object',
-            Params={'Bucket': BUCKET_NAME, 'Key': f'bankbook/bankbook_{store_id}.png'},
-            ExpiresIn=3600)
+            Params={'Bucket': BUCKET_NAME, 'Key': bankbook_key}, ExpiresIn=3600)
         business_put_url = S3_CLIENT.generate_presigned_url('put_object',
-            Params={'Bucket': BUCKET_NAME, 'Key': f'business_registration/business_registration_{store_id}.png'},
-            ExpiresIn=3600)
+            Params={'Bucket': BUCKET_NAME, 'Key': business_key}, ExpiresIn=3600)
 
         return {
             'store_id': store_id,

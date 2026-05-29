@@ -909,7 +909,8 @@ def searchStore(item: str, lat: float, lng: float):
         inspection_status,
         open_yn,
         store_lat,
-        store_lng
+        store_lng,
+        store_logo_key
         from store'''
 
         if item and item.strip():
@@ -925,12 +926,7 @@ def searchStore(item: str, lat: float, lng: float):
             if rows:
                 for row in rows:
                     print(row)
-                    store_logo_url = s3.generate_presigned_url('get_object',
-                                                            Params={'Bucket': bucket_name,
-                                                                    'Key': f'store_logo/store_logo_{row[1]}.png',
-                                                                    },
-                                                        ExpiresIn=3600)
-                                                                            
+                    store_logo_url = _get_store_logo_url(row[8])
                     store = {
                         "store_id": row[1],
                         "store_name": row[2],
@@ -949,7 +945,8 @@ def searchStore(item: str, lat: float, lng: float):
                     open_yn,
                     store_lat,
                     store_lng,
-                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance,
+                    store_logo_key
                 FROM
                     store
                 WHERE
@@ -962,11 +959,7 @@ def searchStore(item: str, lat: float, lng: float):
                 rows = cursor.fetchall()
 
                 for row in rows:
-                    store_logo_url = s3.generate_presigned_url('get_object',
-                                                            Params={'Bucket': bucket_name,
-                                                                    'Key': f'store_logo/store_logo_{row[1]}.png',
-                                                                    },
-                                                        ExpiresIn=3600)
+                    store_logo_url = _get_store_logo_url(row[9])
                     store = {
                         "store_id": row[1],
                         "store_name": row[2],
@@ -995,7 +988,8 @@ def searchStore(item: str, lat: float, lng: float):
                     open_yn,
                     store_lat,
                     store_lng,
-                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance
+                    (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(store_lat)) * COS(RADIANS(store_lng) - RADIANS(%s)) + SIN(RADIANS(%s)) * SIN(RADIANS(store_lat)))) AS distance,
+                    store_logo_key
                 FROM
                     store
                 WHERE
@@ -1008,11 +1002,7 @@ def searchStore(item: str, lat: float, lng: float):
             rows = cursor.fetchall()
 
             for row in rows:
-                store_logo_url = s3.generate_presigned_url('get_object',
-                                                            Params={'Bucket': bucket_name,
-                                                                    'Key': f'store_logo/store_logo_{row[1]}.png',
-                                                                    },
-                                                        ExpiresIn=3600)
+                store_logo_url = _get_store_logo_url(row[9])
                 store = {
                     "store_id": row[1],
                     "store_name": row[2],
