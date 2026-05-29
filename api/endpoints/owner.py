@@ -8,6 +8,7 @@ from loguru import logger
 import traceback
 import re
 
+import uuid
 import pymysql
 import boto3
 from botocore.client import Config
@@ -687,12 +688,17 @@ def update_account(store_id: int, account: AccountUpdateRequest):
 
         s3 = S3_CLIENT
         bucket_name = BUCKET_NAME
+        bankbook_key = f'bankbook/bankbook_{store_id}_{uuid.uuid4().hex[:8]}.png'
+        conn2 = get_db_connection()
+        try:
+            cur2 = conn2.cursor()
+            cur2.execute("UPDATE store SET bankbook_key = %s WHERE id = %s", (bankbook_key, store_id))
+            conn2.commit()
+        finally:
+            conn2.close()
         bank_book_put_url = s3.generate_presigned_url(
             "put_object",
-            Params={
-                "Bucket": bucket_name,
-                "Key": f"bankbook/bankbook_{store_id}.png",
-            },
+            Params={"Bucket": bucket_name, "Key": bankbook_key},
             ExpiresIn=3600,
         )
         return {
@@ -776,7 +782,7 @@ def get_owner_store_list(owner_id: int):
         
         # 해당 owner_id의 모든 매장 조회
         cursor.execute('''
-            SELECT 
+            SELECT
                 s.id,
                 s.owner_id,
                 s.store_name,
@@ -792,7 +798,8 @@ def get_owner_store_list(owner_id: int):
                 s.status,
                 s.open_yn,
                 s.created_at,
-                s.updated_at
+                s.updated_at,
+                s.store_logo_key
             FROM store s
             WHERE s.owner_id = %s
             ORDER BY s.created_at DESC
@@ -803,33 +810,11 @@ def get_owner_store_list(owner_id: int):
         # 결과 포맷팅 (S3 이미지 URL 포함)
         store_list = []
         for store in stores:
-            store_id_item = store['id']
-            
-            # S3에서 store_logo URL 생성 (존재 여부 확인)
-            logo_key = f'store_logo/store_logo_{store_id_item}.png'
-            store_logo_url = None
-            
-            try:
-                s3.head_object(Bucket=bucket_name, Key=logo_key)
-                # 로고가 존재하면 presigned URL 생성
-                store_logo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': logo_key},
-                    ExpiresIn=3600)
-            except ClientError:
-                # 로고가 없으면 None
-                store_logo_url = None
-            
-            cursor.execute(
-                "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
-                (store_id_item,)
-            )
-            store_photo_urls = [
-                s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': r['image_key']},
-                    ExpiresIn=3600)
-                for r in cursor.fetchall()
-            ]
-            
+            store_logo_key = store.get('store_logo_key')
+            store_logo_url = s3.generate_presigned_url('get_object',
+                Params={'Bucket': bucket_name, 'Key': store_logo_key},
+                ExpiresIn=3600) if store_logo_key else None
+
             store_data = {
                 'store_id': store['id'],
                 'owner_id': store['owner_id'],
@@ -840,7 +825,6 @@ def get_owner_store_list(owner_id: int):
                 'store_address': store.get('store_address'),
                 'store_lat': float(store['store_lat']) if store.get('store_lat') else None,
                 'store_lng': float(store['store_lng']) if store.get('store_lng') else None,
-                'store_photo_urls': store_photo_urls,
                 'region_code': store.get('region_code'),
                 'district_code': store.get('district_code'),
                 'inspection_status': store.get('inspection_status'),
