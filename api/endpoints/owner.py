@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, status, Header, Depends, Query
+from fastapi import APIRouter, HTTPException, status, Header, Depends, Query, Request
 from fastapi import FastAPI
 
 from fastapi import FastAPI
@@ -7,6 +7,8 @@ from pydantic import BaseModel
 from loguru import logger
 import traceback
 import re
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 import uuid
 import pymysql
@@ -31,6 +33,49 @@ from models.user import User
 from schemas.settlement import AccountUpdateRequest
 
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
+
+
+@router.get("/check-duplicate")
+@limiter.limit("10/minute")
+async def check_duplicate(
+    request: Request,
+    email: Optional[str] = Query(None),
+    phone_number: Optional[str] = Query(None),
+):
+    if email is None and phone_number is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="email 또는 phone_number 중 하나 이상 전달해야 합니다."
+        )
+
+    connection = get_db_connection()
+    cursor = connection.cursor()
+
+    try:
+        email_exists = False
+        phone_exists = False
+
+        if email is not None:
+            normalized_email = email if "@" in email else f"{email}@gifnut.com"
+            cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE email = %s", (normalized_email,))
+            email_exists = cursor.fetchone()["cnt"] > 0
+
+        if phone_number is not None:
+            cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE phone = %s", (phone_number,))
+            phone_exists = cursor.fetchone()["cnt"] > 0
+
+        return {"email_exists": email_exists, "phone_exists": phone_exists}
+
+    except Exception as e:
+        logger.error(f"check_duplicate 오류: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"중복 체크 실패: {str(e)}"
+        )
+    finally:
+        close_db_connection(connection)
+
 
 @router.post("/register")
 async def registerOwner(owner: Owner):
@@ -58,6 +103,12 @@ async def registerOwner(owner: Owner):
         
         print("owner_id", owner_id)
         return {'owner_id': owner_id}
+    except pymysql.err.IntegrityError as e:
+        logger.error(f"서버 오류 발생: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="이미 사용 중인 이메일 또는 전화번호입니다."
+        )
     except Exception as e:
         print(e)
         logger.error(f"서버 오류 발생: {str(e)}")
