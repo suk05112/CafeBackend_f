@@ -7,6 +7,9 @@ from fastapi import FastAPI, Header, Request, APIRouter, Depends, HTTPException
 from typing import Union
 from pydantic import BaseModel
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
 from contextlib import asynccontextmanager
 from starlette.concurrency import iterate_in_threadpool
 from app import firebase_init  
@@ -134,8 +137,13 @@ async def lifespan(app: FastAPI):
         close_db_connection(connection)
     print("DB 연결 종료")
 
+# Rate Limiter 설정
+limiter = Limiter(key_func=get_remote_address)
+
 # FastAPI 앱 생성
 app = FastAPI(lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # app = FastAPI(redirect_slashes=False)
 # app.include_router(router)
 

@@ -14,3 +14,4 @@ firebase-admin
 httpx
 PyJWT
 cryptography
+slowapi
