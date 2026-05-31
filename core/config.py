@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     payletter_return_url: str = Field(default="", description="Payletter 결제 완료 후 리다이렉트 URL (앱 딥링크)")
     payletter_cancel_url: str = Field(default="", description="Payletter 결제 취소 후 리다이렉트 URL (앱 딥링크)")
 
+    # Payletter 네이버페이 전용 설정
+    payletter_naver_client_id: str = Field(default="", description="Payletter 네이버페이 Client ID")
+    payletter_naver_payment_api_key: str = Field(default="", description="Payletter 네이버페이 Payment API Key")
+
     def get_apple_private_key(self) -> str:
         """
         .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 반환

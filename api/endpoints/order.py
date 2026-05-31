@@ -418,9 +418,13 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"유효하지 않은 pgcode입니다: {gifticon.pgcode}"
             )
+        is_naverpay = gifticon.pgcode == "naverpay"
+        pl_client_id = settings.payletter_naver_client_id if is_naverpay else settings.payletter_client_id
+        pl_api_key = settings.payletter_naver_payment_api_key if is_naverpay else settings.payletter_payment_api_key
+
         payletter_payload = {
             "pgcode": gifticon.pgcode,
-            "client_id": settings.payletter_client_id,
+            "client_id": pl_client_id,
             "user_id": str(user_id),
             "user_name": gifticon.sender,
             "order_no": order_no,
@@ -437,7 +441,7 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
             "/v1.0/payments/request",
             json.dumps(payletter_payload, ensure_ascii=False).encode("utf-8"),
             {
-                "Authorization": f"PLKEY {settings.payletter_payment_api_key}",
+                "Authorization": f"PLKEY {pl_api_key}",
                 "Content-Type": "application/json; charset=utf-8",
             }
         )
@@ -770,18 +774,30 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                     detail=f"Payment key not found for order {order_id}",
                 )
 
+            # 기프티콘에서 pgcode 조회 (네이버페이 키 분기용)
+            refund_pgcode = ""
+            if gifticon_ids:
+                cursor.execute("SELECT pgcode FROM gifticon WHERE id=%s", (gifticon_ids[0],))
+                g_row = cursor.fetchone()
+                if g_row:
+                    refund_pgcode = g_row.get("pgcode", "")
+
+            is_naverpay_refund = refund_pgcode == "naverpay"
+            refund_client_id = settings.payletter_naver_client_id if is_naverpay_refund else settings.payletter_client_id
+            refund_api_key = settings.payletter_naver_payment_api_key if is_naverpay_refund else settings.payletter_payment_api_key
+
             # 페이레터 결제 취소 API 호출
             conn = http.client.HTTPSConnection(settings.payletter_api_host)
             client_ip = request.headers.get("X-Forwarded-For", request.client.host)
             payload_dict = {
-                "client_id": settings.payletter_client_id,
+                "client_id": refund_client_id,
                 "tid": payment_key,
                 "user_id": str(order.get("user_id")),
                 "ip_addr": client_ip,
             }
             payload = json.dumps(payload_dict, ensure_ascii=False).encode("utf-8")
             headers = {
-                "Authorization": f"PLKEY {settings.payletter_payment_api_key}",
+                "Authorization": f"PLKEY {refund_api_key}",
                 "Content-Type": "application/json; charset=utf-8",
             }
             conn.request("POST", "/v1.0/payments/cancel", payload, headers)

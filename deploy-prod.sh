@@ -91,7 +91,7 @@ sudo docker-compose -f "$COMPOSE_FILE" build --no-cache "$NEW_ENV"
 
 # 컨테이너 시작
 echo -e "${YELLOW}컨테이너 시작 중...${NC}"
-if ! sudo docker-compose -f "$COMPOSE_FILE" up -d "$NEW_ENV"; then
+if ! sudo docker-compose -f "$COMPOSE_FILE" up -d --force-recreate "$NEW_ENV"; then
     echo -e "${RED}❌ 컨테이너 시작 실패!${NC}"
     sudo docker-compose -f "$COMPOSE_FILE" logs "$NEW_ENV" 2>&1 | tail -20
     exit 1
