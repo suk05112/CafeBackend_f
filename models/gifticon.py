@@ -19,6 +19,7 @@ class Gifticon(BaseModel):
     pgcode: str = "creditcard"
     payment_key: Optional[str] = None  # 결제 전에는 None
     payment: Optional[str] = None  # 결제 정보 (String)
+    idempotency_key: Optional[str] = None  # 앱에서 생성한 UUID, 이중 결제 방지용
 
 class PaymentResult(BaseModel):
     # Payletter 결제 결과 콜백 필드

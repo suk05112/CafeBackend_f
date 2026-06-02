@@ -15,3 +15,4 @@ httpx
 PyJWT
 cryptography
 slowapi
+apscheduler

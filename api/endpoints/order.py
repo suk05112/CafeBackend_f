@@ -94,6 +94,58 @@ def generate_gift_code(connection, cursor, store_id: int, user_id: int, gifticon
     formatted_code = f"{gift_code[:4]}-{gift_code[4:8]}-{gift_code[8:12]}-{gift_code[12:16]}"
     return formatted_code
 
+def _request_payletter_url(gifticon, user_id: int, order_no: str) -> dict:
+    """페이레터에 결제 URL 발급 요청. 성공 시 pl_data 반환, 실패 시 HTTPException."""
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("SELECT menu_name FROM menu WHERE id = %s", (gifticon.menu_id,))
+        row = cursor.fetchone()
+        product_name = row["menu_name"] if row else "기프티콘"
+    finally:
+        cursor.close()
+        connection.close()
+
+    if gifticon.pgcode not in VALID_PGCODES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"유효하지 않은 pgcode입니다: {gifticon.pgcode}"
+        )
+    is_naverpay = gifticon.pgcode == "naverpay"
+    pl_client_id = settings.payletter_naver_client_id if is_naverpay else settings.payletter_client_id
+    pl_api_key = settings.payletter_naver_payment_api_key if is_naverpay else settings.payletter_payment_api_key
+
+    payload = {
+        "pgcode": gifticon.pgcode,
+        "client_id": pl_client_id,
+        "user_id": str(user_id),
+        "user_name": gifticon.sender,
+        "order_no": order_no,
+        "amount": gifticon.total_price,
+        "product_name": product_name,
+        "service_name": "gifnut",
+        "return_url": settings.payletter_return_url,
+        "callback_url": settings.payletter_callback_url,
+        "cancel_url": settings.payletter_cancel_url,
+    }
+    pl_conn = http.client.HTTPSConnection(settings.payletter_api_host)
+    pl_conn.request(
+        "POST", "/v1.0/payments/request",
+        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+        {"Authorization": f"PLKEY {pl_api_key}", "Content-Type": "application/json; charset=utf-8"}
+    )
+    pl_res = pl_conn.getresponse()
+    pl_data = json.loads(pl_res.read().decode("utf-8"))
+
+    if pl_res.status != 200 or not pl_data.get("token"):
+        logger.error(f"Payletter request failed: {pl_data}")
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"결제 요청 실패: {pl_data.get('message', '페이레터 오류')}"
+        )
+    return pl_data
+
+
 # S3 설정은 app.s3_config에서 가져옴
 s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
@@ -163,153 +215,6 @@ def getOrderList(user_id: int):
         cursor.close()
         connection.close()
 
-@router.post("/{user_id}")
-def purchaseGifticon(user_id: int, gifticon: Gifticon):
-    """
-    결제 전 gifticon과 order 정보를 등록하는 API
-    결제는 아직 진행되지 않았으므로 status는 PENDING으로 설정
-    """
-    connection = get_db_connection()  # 환경에 맞는 DB 연결
-    cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
-      
-    try:
-        # 0. 중복 주문 체크 (결제 완료된 주문만 체크: payment_key가 있는 주문)
-        # 결제 전(PENDING) 주문은 중복으로 간주하지 않음
-        five_minutes_ago = get_kst_now() - timedelta(minutes=5)
-        cursor.execute('''
-            SELECT o.id, o.order_no, o.created_at, o.payment_key
-            FROM orders o
-            JOIN gifticon g ON o.id = g.order_id
-            WHERE o.user_id = %s
-            AND o.store_id = %s
-            AND g.menu_id = %s
-            AND o.amount = %s
-            AND g.receiver = %s
-            AND g.receiver_phone = %s
-            AND o.payment_key IS NOT NULL
-            AND o.created_at >= %s
-            ORDER BY o.created_at DESC
-            LIMIT 1
-        ''', (
-            user_id,
-            gifticon.store_id,
-            gifticon.menu_id,
-            gifticon.total_price,
-            gifticon.receiver,
-            gifticon.receiver_phone_number,
-            five_minutes_ago
-        ))
-        
-        existing_order = cursor.fetchone()
-        
-        if existing_order:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="중복된 주문입니다. 최근 5분 내 동일한 결제 완료 주문이 존재합니다."
-            )
-        
-        # 커서를 일반 cursor로 변경 (DictCursor는 조회용)
-        cursor.close()
-        cursor = connection.cursor()
-
-        # 1. 주문번호 생성
-        order_no = generate_order_no(connection)
-
-        # 2~5. orders, gifticon, gift_code, orders_gifticon을 하나의 트랜잭션으로 처리
-        connection.begin()
-
-        # 2. Order 테이블에 데이터 삽입
-        cursor.execute(
-            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment)
-        )
-        order_id = cursor.lastrowid
-
-        # 3. 구매 시점 수수료율 확정
-        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date.today())
-
-        # 4. Gifticon 테이블에 데이터 삽입
-        cursor.execute(
-            """INSERT INTO gifticon (
-                user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
-                base_fee_rate, applied_promo_id, applied_fee_rate
-               ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (
-                user_id, gifticon.type, gifticon.sender, gifticon.receiver,
-                gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
-                fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'],
-            )
-        )
-        gifticon_id = cursor.lastrowid
-
-        # 5. gift_code 생성 및 업데이트 (중복 방지 재시도)
-        gift_code = None
-        for retry_count in range(10):
-            try:
-                gift_code = generate_gift_code(connection, cursor, gifticon.store_id, user_id, gifticon_id + retry_count)
-                cursor.execute(
-                    "UPDATE gifticon SET gift_code = %s WHERE id = %s AND (gift_code IS NULL OR gift_code = '')",
-                    (gift_code, gifticon_id)
-                )
-                if cursor.rowcount > 0:
-                    break
-                cursor.execute("SELECT gift_code FROM gifticon WHERE id = %s", (gifticon_id,))
-                result = cursor.fetchone()
-                if result and result[0]:
-                    gift_code = result[0]
-                    break
-            except pymysql.IntegrityError as e:
-                if "Duplicate entry" in str(e) or "gift_code" in str(e).lower():
-                    if retry_count >= 9:
-                        raise HTTPException(
-                            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                            detail="Failed to generate unique gift code after multiple retries"
-                        )
-                else:
-                    raise
-
-        if not gift_code:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to generate gift code"
-            )
-
-        print(f"gifticon_id: {gifticon_id}, gift_code: {gift_code}, order_no: {order_no}")
-
-        # 6. orders_gifticon 테이블에 데이터 삽입
-        receiver_id = None if gifticon.type == 2 else user_id
-        if receiver_id is not None:
-            cursor.execute("UPDATE gifticon SET receiver_id = %s WHERE id = %s", (receiver_id, gifticon_id))
-        cursor.execute(
-            "INSERT INTO orders_gifticon (user_id, receiver_id, order_id, menu_id, gifticon_id, store_id) VALUES (%s, %s, %s, %s, %s, %s)",
-            (user_id, receiver_id, order_id, gifticon.menu_id, gifticon_id, gifticon.store_id)
-        )
-        connection.commit()
-
-        return {
-            "message": "Order registered successfully. Please proceed with payment.",
-            "order_id": order_id,
-            "order_no": order_no,
-            "gifticon_id": gifticon_id,
-            "gift_code": gift_code
-        }
-    except HTTPException:
-        connection.rollback()
-        raise
-    except Exception as e:
-        connection.rollback()
-        print(f"Error during purchaseGifticon: {e}")
-        traceback.print_exc()
-        logger.error(f"Error during purchaseGifticon: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during purchaseGifticon: {str(e)}"
-        )
-
-    finally:        
-        cursor.close()
-        connection.close()
 
 @router.post("/{user_id}/payment-url")
 def requestPaymentUrl(user_id: int, gifticon: Gifticon):
@@ -326,22 +231,39 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
     order_id = None
 
     try:
-        # 1. 중복 주문 체크
-        five_minutes_ago = get_kst_now() - timedelta(minutes=5)
-        cursor.execute('''
-            SELECT o.id FROM orders o
-            JOIN gifticon g ON o.id = g.order_id
-            WHERE o.user_id = %s AND o.store_id = %s AND g.menu_id = %s
-            AND o.amount = %s AND g.receiver = %s AND g.receiver_phone = %s
-            AND o.payment_key IS NOT NULL AND o.created_at >= %s
-            ORDER BY o.created_at DESC LIMIT 1
-        ''', (user_id, gifticon.store_id, gifticon.menu_id, gifticon.total_price,
-              gifticon.receiver, gifticon.receiver_phone_number, five_minutes_ago))
-        if cursor.fetchone():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="중복된 주문입니다. 최근 5분 내 동일한 결제 완료 주문이 존재합니다."
-            )
+        # 1. idempotency_key 기반 중복 체크
+        if gifticon.idempotency_key:
+            cursor.execute("""
+                SELECT o.id, o.order_no, o.status, og.gifticon_id
+                FROM orders o
+                LEFT JOIN orders_gifticon og ON o.id = og.order_id
+                WHERE o.idempotency_key = %s
+                LIMIT 1
+            """, (gifticon.idempotency_key,))
+            existing = cursor.fetchone()
+            if existing:
+                if existing['status'] == 'COMPLETED':
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="이미 결제 완료된 주문입니다."
+                    )
+                if existing['status'] == 'EXPIRED':
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail="만료된 주문입니다. 새로 주문해 주세요."
+                    )
+                # PENDING: 페이레터에 결제 URL만 재발급 (DB 변경 없음)
+                pl_data = _request_payletter_url(
+                    gifticon, user_id, existing['order_no']
+                )
+                return {
+                    "order_id": existing['id'],
+                    "order_no": existing['order_no'],
+                    "gifticon_id": existing['gifticon_id'],
+                    "online_url": pl_data.get("online_url"),
+                    "mobile_url": pl_data.get("mobile_url"),
+                    "token": pl_data.get("token"),
+                }
 
         cursor.close()
         cursor = connection.cursor()
@@ -354,20 +276,21 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
 
         # 3. orders INSERT (PENDING)
         cursor.execute(
-            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
-            (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment)
+            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment, idempotency_key)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment,
+             gifticon.idempotency_key)
         )
         order_id = cursor.lastrowid
 
         # 4. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
         fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date.today())
 
-        # 5. gifticon INSERT
+        # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
         cursor.execute(
             """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
-                base_fee_rate, applied_promo_id, applied_fee_rate)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                base_fee_rate, applied_promo_id, applied_fee_rate, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
              gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
              fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'])
@@ -407,53 +330,8 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
         )
         connection.commit()
 
-        # 8. 메뉴명 조회 (페이레터 product_name용)
-        cursor.execute("SELECT menu_name FROM menu WHERE id = %s", (gifticon.menu_id,))
-        menu_row = cursor.fetchone()
-        product_name = menu_row["menu_name"] if menu_row else "기프티콘"
-
-        # 9. 페이레터 결제 요청
-        if gifticon.pgcode not in VALID_PGCODES:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"유효하지 않은 pgcode입니다: {gifticon.pgcode}"
-            )
-        is_naverpay = gifticon.pgcode == "naverpay"
-        pl_client_id = settings.payletter_naver_client_id if is_naverpay else settings.payletter_client_id
-        pl_api_key = settings.payletter_naver_payment_api_key if is_naverpay else settings.payletter_payment_api_key
-
-        payletter_payload = {
-            "pgcode": gifticon.pgcode,
-            "client_id": pl_client_id,
-            "user_id": str(user_id),
-            "user_name": gifticon.sender,
-            "order_no": order_no,
-            "amount": gifticon.total_price,
-            "product_name": product_name,
-            "service_name": "gifnut",
-            "return_url": settings.payletter_return_url,
-            "callback_url": settings.payletter_callback_url,
-            "cancel_url": settings.payletter_cancel_url,
-        }
-        pl_conn = http.client.HTTPSConnection(settings.payletter_api_host)
-        pl_conn.request(
-            "POST",
-            "/v1.0/payments/request",
-            json.dumps(payletter_payload, ensure_ascii=False).encode("utf-8"),
-            {
-                "Authorization": f"PLKEY {pl_api_key}",
-                "Content-Type": "application/json; charset=utf-8",
-            }
-        )
-        pl_res = pl_conn.getresponse()
-        pl_data = json.loads(pl_res.read().decode("utf-8"))
-
-        if pl_res.status != 200 or not pl_data.get("token"):
-            logger.error(f"Payletter request failed: {pl_data}")
-            raise HTTPException(
-                status_code=status.HTTP_502_BAD_GATEWAY,
-                detail=f"결제 요청 실패: {pl_data.get('message', '페이레터 오류')}"
-            )
+        # 8. 페이레터 결제 URL 발급
+        pl_data = _request_payletter_url(gifticon, user_id, order_no)
 
         return {
             "order_id": order_id,
@@ -510,6 +388,7 @@ async def updatePaymentResult(request: Request):
     tid = data.get("tid", "")
     order_no = data.get("order_no", "")
     payhash = data.get("payhash", "")
+    pay_info = data.get("pay_info", "")
 
     # 1. payhash 검증: SHA256(user_id + amount + tid + API_Key) 대문자
     expected_hash = hashlib.sha256(
@@ -540,10 +419,10 @@ async def updatePaymentResult(request: Request):
         order_id = order["id"]
         new_status = 'COMPLETED'
 
-        # 3. order 테이블 업데이트 (tid를 payment_key에 저장)
+        # 3. order 테이블 업데이트 (tid를 payment_key에, 실제 결제수단을 payment에 저장)
         cursor.execute(
-            "UPDATE orders SET payment_key = %s, status = %s WHERE id = %s",
-            (tid, new_status, order_id)
+            "UPDATE orders SET payment_key = %s, status = %s, payment = %s WHERE id = %s",
+            (tid, new_status, pay_info, order_id)
         )
 
         # 4. 연결된 gifticon validity를 1년 후로 설정하고 status를 UNUSED로 변경
