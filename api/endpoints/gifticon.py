@@ -175,6 +175,7 @@ def getGifticon(gifticon_id: int):
             "menu_url" : menu_url,
             "msg" : gifticon.get('msg'),
             "created_time" : gifticon['created_at'],
+            "store_id" : gifticon['store_id'],
             "store_lat" : store_info["store_lat"],
             "store_lng" : store_info["store_lng"],
             "store_name" : store_info["store_name"],
@@ -223,7 +224,7 @@ def useGifticon(gifticon_id: int):
         if gifticon:
             if gifticon['status'] == 'USED' or gifticon['status'] == 'CANCELED':
                 result = 1 # 이미 사용된 기프티콘 또는 취소된 기프티콘
-            elif gifticon['validity'] and gifticon['validity'] < get_kst_now():
+            elif gifticon['validity'] and gifticon['validity'].replace(tzinfo=KST) < get_kst_now():
                 result = 2 # 기프티콘 유효기간 만료
         else:
             result = 3 #기프티콘 찾을 수 없음
