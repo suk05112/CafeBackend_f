@@ -411,10 +411,10 @@ async def updatePaymentResult(request: Request):
         order = cursor.fetchone()
 
         if not order:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Order with order_no {order_no} not found"
-            )
+            return {"code": 0, "message": "success"}
+
+        if order["status"] == "COMPLETED":
+            return {"code": 0, "message": "success"}
 
         order_id = order["id"]
         new_status = 'COMPLETED'
