@@ -55,12 +55,11 @@ def generate_order_no(connection) -> str:
         today = get_kst_now()
         yyddd = today.strftime("%y") + str(today.timetuple().tm_yday).zfill(3)
         
-        # 오늘 날짜의 주문 개수 조회하여 seq 계산 (PENDING/EXPIRED 제외)
+        # 오늘 날짜의 주문 개수 조회하여 seq 계산
         query = """
             SELECT COUNT(*) as cnt
             FROM orders
             WHERE DATE(created_at) = CURDATE()
-            AND status NOT IN ('PENDING', 'EXPIRED')
         """
         cursor.execute(query)
         result = cursor.fetchone()
