@@ -1,0 +1,1 @@
+ALTER TABLE orders ADD COLUMN pgcode VARCHAR(50) NULL AFTER payment;

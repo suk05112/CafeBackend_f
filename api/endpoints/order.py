@@ -276,10 +276,10 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
 
         # 3. orders INSERT (PENDING)
         cursor.execute(
-            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment, idempotency_key)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            """INSERT INTO `orders` (store_id, user_id, payment_key, amount, status, order_no, payment, pgcode, idempotency_key)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
             (gifticon.store_id, user_id, None, gifticon.total_price, 'PENDING', order_no, gifticon.payment,
-             gifticon.idempotency_key)
+             gifticon.pgcode, gifticon.idempotency_key)
         )
         order_id = cursor.lastrowid
 
@@ -608,7 +608,7 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
     try:
         # 1. 주문 조회 (id, payment_key, amount, created_at, status)
         cursor.execute(
-            """SELECT id, user_id, payment_key, amount, created_at, status FROM orders WHERE id=%s""",
+            """SELECT id, user_id, payment_key, amount, created_at, status, pgcode FROM orders WHERE id=%s""",
             (order_id,),
         )
         order = cursor.fetchone()
@@ -653,15 +653,8 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                     detail=f"Payment key not found for order {order_id}",
                 )
 
-            # 기프티콘에서 pgcode 조회 (네이버페이 키 분기용)
-            refund_pgcode = ""
-            if gifticon_ids:
-                cursor.execute("SELECT pgcode FROM gifticon WHERE id=%s", (gifticon_ids[0],))
-                g_row = cursor.fetchone()
-                if g_row:
-                    refund_pgcode = g_row.get("pgcode", "")
-
-            is_naverpay_refund = refund_pgcode == "naverpay"
+            # orders.pgcode로 네이버페이 여부 판단
+            is_naverpay_refund = order.get("pgcode") == "naverpay"
             refund_client_id = settings.payletter_naver_client_id if is_naverpay_refund else settings.payletter_client_id
             refund_api_key = settings.payletter_naver_payment_api_key if is_naverpay_refund else settings.payletter_payment_api_key
 
