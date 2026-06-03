@@ -16,7 +16,7 @@ import boto3
 from botocore.client import Config
 from botocore.exceptions import ClientError
 from db.session import get_db_connection, close_db_connection
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, TERMS_BUCKET_NAME
 
 from models.owner import Owner
 from models.owner import OwnerFind
@@ -156,7 +156,72 @@ async def login(uid: str):
         close_db_connection(connection)
 
 
+_OWNER_TERM_TYPE_TO_PREFIX = {
+    "SERVICE": "partner_service_term",
+    "MARKETING": "partner_marketing_term",
+    "PRIVACY": "partner_privacy_term",
+    "PRIVACY_CONSENT": "partner_privacy_consent_term",
+    "LOCATION": "partner_location_term",
+    "FEE": "partner_fee_term",
+}
+_TERM_TYPE_TO_CATEGORY = {
+    "SERVICE": "service",
+    "MARKETING": "marketing",
+    "PRIVACY": "privacy",
+    "PRIVACY_CONSENT": "privacy_consent",
+    "LOCATION": "location",
+    "FEE": "fee",
+}
+
+VALID_OWNER_TERM_TYPES = set(_OWNER_TERM_TYPE_TO_PREFIX.keys())
+
+
 # ---------- 약관 동의 (사장님) ----------
+
+@router.get("/terms/content")
+def get_owner_term_content(
+    term_type: str = Query(..., description="SERVICE | PRIVACY | MARKETING | PRIVACY_CONSENT | LOCATION | FEE"),
+):
+    """사장님 약관 본문 조회. DB에서 현재 시행 중인 최신 버전 확인 후 S3에서 HTML 반환."""
+    term_type = term_type.upper()
+    if term_type not in VALID_OWNER_TERM_TYPES:
+        raise HTTPException(status_code=400, detail=f"term_type must be one of {sorted(VALID_OWNER_TERM_TYPES)}")
+
+    connection = get_db_connection()
+    try:
+        info = terms_crud.get_owner_term_content_info(connection, term_type)
+        if not info:
+            raise HTTPException(status_code=404, detail="현재 시행 중인 약관 버전이 없습니다.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_owner_term_content DB error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+    version = info["version"]
+    prefix = _OWNER_TERM_TYPE_TO_PREFIX[term_type]
+    filename = f"{prefix}_{version}.html"
+    category = _TERM_TYPE_TO_CATEGORY[term_type]
+    key = f"terms/owner/{category}/{filename}"
+
+    try:
+        obj = S3_CLIENT.get_object(Bucket=TERMS_BUCKET_NAME, Key=key)
+        content = obj["Body"].read().decode("utf-8", errors="replace")
+        return {"content": content, "term_type": term_type, "version": version}
+    except Exception as e:
+        err_str = str(e)
+        err_lower = err_str.lower()
+        logger.error(f"get_owner_term_content S3 error: bucket={TERMS_BUCKET_NAME}, key={key}, error={err_str}")
+        if "nosuchkey" in err_lower or "404" in err_lower or "no such key" in err_lower:
+            raise HTTPException(status_code=404, detail=f"약관 파일을 찾을 수 없습니다. key: {key}")
+        if "accessdenied" in err_lower or "forbidden" in err_lower:
+            raise HTTPException(status_code=403, detail="S3 access denied")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=err_str)
+
 
 @router.get("/terms/current")
 def get_owner_terms_current():

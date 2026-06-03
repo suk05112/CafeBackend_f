@@ -523,15 +523,17 @@ def update_term_version(version_id: int, body: dict):
 @router.get("/terms/content")
 def get_term_content(
     target: str = Query(..., description="user 또는 owner"),
-    filename: str = Query(..., description="파일명 예: service_term_260101.txt"),
+    filename: str = Query(..., description="파일명 예: service_term_260101.html"),
 ):
     """S3에서 약관 본문 파일 조회. key: terms/{user|partner}/{filename}"""
     if target not in ("user", "owner"):
         raise HTTPException(status_code=400, detail="target must be 'user' or 'owner'")
     if ".." in filename or "/" in filename:
         raise HTTPException(status_code=400, detail="invalid filename")
-    s3_dir = "user" if target == "user" else "partner"
-    key = f"terms/{s3_dir}/{filename}"
+    parsed = _parse_terms_filename(filename, target)
+    if not parsed:
+        raise HTTPException(status_code=400, detail="invalid filename format")
+    key = _build_s3_key(target, parsed["term_type"], filename)
     bucket = TERMS_BUCKET_NAME
     try:
         obj = S3_CLIENT.get_object(Bucket=bucket, Key=key)
@@ -554,7 +556,7 @@ def get_term_content(
         raise HTTPException(status_code=500, detail=err_str)
 
 
-# 파일명 prefix -> term_type (Manager와 동일 규칙)
+# 파일명 prefix -> term_type
 _FILENAME_PREFIX_TO_TERM_TYPE_USER = {
     "service_term": "SERVICE",
     "marketing_term": "MARKETING",
@@ -578,14 +580,29 @@ _TERM_TYPE_DEFAULT_TITLE = {
     "LOCATION": "위치정보 이용약관",
     "FEE": "수수료 약관",
 }
+# term_type -> S3 카테고리 폴더명
+_TERM_TYPE_TO_CATEGORY = {
+    "SERVICE": "service",
+    "MARKETING": "marketing",
+    "PRIVACY": "privacy",
+    "PRIVACY_CONSENT": "privacy_consent",
+    "LOCATION": "location",
+    "FEE": "fee",
+}
+
+def _build_s3_key(target: str, term_type: str, filename: str) -> str:
+    """terms/{user|owner}/{category}/{filename}"""
+    s3_target = "user" if target == "user" else "owner"
+    category = _TERM_TYPE_TO_CATEGORY.get(term_type, term_type.lower())
+    return f"terms/{s3_target}/{category}/{filename}"
 
 
 def _parse_terms_filename(filename: str, target: str):
-    """filename(예: service_term_260101.txt) -> (term_type, version, effective_date, notice_date). 실패 시 None."""
+    """filename(예: service_term_260101.html) -> (term_type, version, effective_date, notice_date). 실패 시 None."""
     from datetime import datetime, timedelta
-    if not filename or not filename.endswith(".txt"):
+    if not filename or not filename.endswith(".html"):
         return None
-    base = filename[:-4]
+    base = filename[:-5]
     parts = base.rsplit("_", 1)
     if len(parts) != 2:
         return None
@@ -619,14 +636,12 @@ def upload_term_file(body: dict):
         raise HTTPException(status_code=400, detail="filename is required")
     if ".." in filename or "/" in filename:
         raise HTTPException(status_code=400, detail="invalid filename")
-    s3_dir = "user" if target == "user" else "partner"
-    key = f"terms/{s3_dir}/{filename}"
 
     parsed = _parse_terms_filename(filename, target)
     if not parsed:
         raise HTTPException(
             status_code=400,
-            detail="filename must be like service_term_260101.txt or partner_service_term_260101.txt",
+            detail="filename must be like service_term_260101.html or partner_service_term_260101.html",
         )
     term_type = parsed["term_type"]
     version = parsed["version"]
@@ -681,9 +696,10 @@ def upload_term_file(body: dict):
         except Exception:
             pass
 
+    key = _build_s3_key(target, term_type, filename)
     try:
         body_bytes = content.encode("utf-8")
-        S3_CLIENT.put_object(Bucket=TERMS_BUCKET_NAME, Key=key, Body=body_bytes, ContentType="text/plain; charset=utf-8")
+        S3_CLIENT.put_object(Bucket=TERMS_BUCKET_NAME, Key=key, Body=body_bytes, ContentType="text/html; charset=utf-8")
         return {"message": "Uploaded", "key": key, "term_type": term_type, "version": version}
     except Exception as e:
         traceback.print_exc()
