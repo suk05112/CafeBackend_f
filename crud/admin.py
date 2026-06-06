@@ -421,13 +421,13 @@ def get_owners(connection, search: Optional[str] = None, page: int = 1, limit: i
         count_params = []
 
         if search:
-            count_query += ' WHERE (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            count_query += ' WHERE (name LIKE %s OR login_id LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
             search_pattern = f'%{search}%'
             try:
                 search_id = int(search)
-                count_params = [search_pattern, search_pattern, search_pattern, search_id]
+                count_params = [search_pattern, search_pattern, search_pattern, search_pattern, search_id]
             except ValueError:
-                count_params = [search_pattern, search_pattern, search_pattern, -1]
+                count_params = [search_pattern, search_pattern, search_pattern, search_pattern, -1]
 
         cursor.execute(count_query, count_params)
         total_count = cursor.fetchone()['total']
@@ -435,16 +435,16 @@ def get_owners(connection, search: Optional[str] = None, page: int = 1, limit: i
         offset = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
 
-        query = 'SELECT id, name, email, phone, created_at FROM owner'
+        query = 'SELECT id, name, login_id, email, phone, created_at FROM owner'
         params = []
         if search:
-            query += ' WHERE (name LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
+            query += ' WHERE (name LIKE %s OR login_id LIKE %s OR email LIKE %s OR phone LIKE %s OR id = %s)'
             search_pattern = f'%{search}%'
             try:
                 search_id = int(search)
-                params = [search_pattern, search_pattern, search_pattern, search_id]
+                params = [search_pattern, search_pattern, search_pattern, search_pattern, search_id]
             except ValueError:
-                params = [search_pattern, search_pattern, search_pattern, -1]
+                params = [search_pattern, search_pattern, search_pattern, search_pattern, -1]
 
         query += ' ORDER BY id DESC LIMIT %s OFFSET %s'
         params.extend([limit, offset])
@@ -474,7 +474,7 @@ def get_owner_detail(connection, owner_id: int) -> Dict:
 
     try:
         cursor.execute(
-            'SELECT id, name, email, phone, created_at FROM owner WHERE id = %s',
+            'SELECT id, name, login_id, email, phone, created_at FROM owner WHERE id = %s',
             (owner_id,)
         )
         owner = cursor.fetchone()

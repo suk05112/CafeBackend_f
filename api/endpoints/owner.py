@@ -57,8 +57,10 @@ async def check_duplicate(
         phone_exists = False
 
         if email is not None:
-            normalized_email = email if "@" in email else f"{email}@gifnut.com"
-            cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE email = %s", (normalized_email,))
+            if email.endswith("@gifnut.com"):
+                cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE login_id = %s", (email,))
+            else:
+                cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE email = %s", (email,))
             email_exists = cursor.fetchone()["cnt"] > 0
 
         if phone_number is not None:
@@ -83,20 +85,10 @@ async def registerOwner(owner: Owner):
     cursor = connection.cursor()
     
     try:
-        query = """
-            INSERT INTO owner (
-                name, email, uid, phone
-            ) VALUES (
-              '{}', '{}', '{}', '{}'
-            );
-        """.format(
-            owner.name,
-            owner.email,
-            owner.uid,
-            owner.phone_number,
-            )
-            
-        cursor.execute(query)
+        cursor.execute(
+            "INSERT INTO owner (name, login_id, email, uid, phone) VALUES (%s, %s, %s, %s, %s)",
+            (owner.name, owner.login_id, owner.email, owner.uid, owner.phone_number)
+        )
         connection.commit()
         
         owner_id = cursor.lastrowid
@@ -129,12 +121,14 @@ async def login(uid: str):
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
-        if user:  # 사용자가 존재하는 경우
+        if user:
             print("user:", user)
             return {
                 'owner_id': user['id'],
                 'name': user['name'],
                 'phone_number': user['phone'],
+                'login_id': user['login_id'],
+                'email': user['email'],
             }
         else:
             return {
@@ -142,6 +136,8 @@ async def login(uid: str):
                 'owner_id': None,
                 'name': None,
                 'phone_number': None,
+                'login_id': None,
+                'email': None,
             }
 
     except Exception as e:
@@ -309,7 +305,10 @@ async def findOwnerPW(owner: OwnerFindPw):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM owner WHERE email=%s AND phone=%s;''', (owner.email, owner.phone_number))
+        cursor.execute(
+            "SELECT * FROM owner WHERE login_id = %s AND phone = %s",
+            (owner.login_id, owner.phone_number)
+        )
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
