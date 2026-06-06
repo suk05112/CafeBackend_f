@@ -1116,6 +1116,48 @@ async def registerPushToken(
         cursor.close()
         connection.close()
 
+@router.delete("/push-token/{user_id}")
+async def deletePushToken(
+    user_id: int,
+    fcm_token: str = Header(None, alias="X-FCM-Token")
+):
+    if not fcm_token:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="FCM token is required in header"
+        )
+
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute('''
+            DELETE FROM user_push_tokens
+            WHERE user_id = %s AND fcm_token = %s
+        ''', (user_id, fcm_token))
+        connection.commit()
+
+        if cursor.rowcount == 0:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Push token not found"
+            )
+
+        return {"message": "Push token deleted successfully", "user_id": user_id}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error during deletePushToken: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error during deletePushToken: {str(e)}"
+        )
+    finally:
+        cursor.close()
+        connection.close()
+
+
 @router.patch("/push-token/{user_id}")
 async def updatePushTokenAgreement(
     user_id: int,
