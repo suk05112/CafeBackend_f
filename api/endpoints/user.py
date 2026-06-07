@@ -50,6 +50,7 @@ from models.push_token import PushTokenCreate, PushTokenUpdate
 from models.notice import NoticeResponse
 from app.fcm_service import send_fcm_notification_to_user
 from core.config import settings
+from core.s3_config import S3_CLIENT, TERMS_BUCKET_NAME
 from crud import terms as terms_crud
 
 router = APIRouter()
@@ -881,6 +882,66 @@ async def getInquiry():
 
 
 # ---------- 약관 동의 ----------
+
+_USER_TERM_TYPE_TO_PREFIX = {
+    "SERVICE": "service_term",
+    "PRIVACY": "privacy_term",
+    "PRIVACY_CONSENT": "privacy_consent_term",
+    "MARKETING": "marketing_term",
+    "LOCATION": "location_term",
+}
+_USER_TERM_TYPE_TO_CATEGORY = {
+    "SERVICE": "service",
+    "PRIVACY": "privacy",
+    "PRIVACY_CONSENT": "privacy_consent",
+    "MARKETING": "marketing",
+    "LOCATION": "location",
+}
+VALID_USER_TERM_TYPES = set(_USER_TERM_TYPE_TO_PREFIX.keys())
+
+
+@router.get("/terms/presigned-url")
+def get_user_term_presigned_url(
+    term_type: str = Query(..., description="SERVICE | PRIVACY | PRIVACY_CONSENT | MARKETING | LOCATION"),
+):
+    """유저 약관 HTML 파일의 S3 presigned GET URL 반환."""
+    term_type = term_type.upper()
+    if term_type not in VALID_USER_TERM_TYPES:
+        raise HTTPException(status_code=400, detail=f"term_type must be one of {sorted(VALID_USER_TERM_TYPES)}")
+
+    connection = get_db_connection()
+    try:
+        info = terms_crud.get_user_term_content_info(connection, term_type)
+        if not info:
+            raise HTTPException(status_code=404, detail="현재 시행 중인 약관 버전이 없습니다.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_user_term_presigned_url DB error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+    version = info["version"]
+    prefix = _USER_TERM_TYPE_TO_PREFIX[term_type]
+    filename = f"{prefix}_{version}.html"
+    category = _USER_TERM_TYPE_TO_CATEGORY[term_type]
+    key = f"terms/user/{category}/{filename}"
+
+    try:
+        url = S3_CLIENT.generate_presigned_url(
+            'get_object',
+            Params={"Bucket": TERMS_BUCKET_NAME, "Key": key},
+            ExpiresIn=3600,
+        )
+        return {"url": url, "term_type": term_type, "version": version}
+    except Exception as e:
+        err_str = str(e)
+        logger.error(f"get_user_term_presigned_url S3 error: bucket={TERMS_BUCKET_NAME}, key={key}, error={err_str}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=err_str)
+
 
 @router.get("/terms/current")
 def get_terms_current():
