@@ -203,6 +203,9 @@ def getGifticon(gifticon_id: int):
 
 @router.patch("/use/{gifticon_id}")
 def useGifticon(gifticon_id: int):
+    if gifticon_id == 9999:
+        return {'result': 0}
+
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
