@@ -219,6 +219,49 @@ def get_owner_term_content(
         raise HTTPException(status_code=500, detail=err_str)
 
 
+@router.get("/terms/presigned-url")
+def get_owner_term_presigned_url(
+    term_type: str = Query(..., description="SERVICE | PRIVACY | MARKETING | PRIVACY_CONSENT | LOCATION | FEE"),
+):
+    """사장님 약관 HTML 파일의 S3 presigned GET URL 반환."""
+    term_type = term_type.upper()
+    if term_type not in VALID_OWNER_TERM_TYPES:
+        raise HTTPException(status_code=400, detail=f"term_type must be one of {sorted(VALID_OWNER_TERM_TYPES)}")
+
+    connection = get_db_connection()
+    try:
+        info = terms_crud.get_owner_term_content_info(connection, term_type)
+        if not info:
+            raise HTTPException(status_code=404, detail="현재 시행 중인 약관 버전이 없습니다.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        logger.error(f"get_owner_term_presigned_url DB error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+    version = info["version"]
+    prefix = _OWNER_TERM_TYPE_TO_PREFIX[term_type]
+    filename = f"{prefix}_{version}.html"
+    category = _TERM_TYPE_TO_CATEGORY[term_type]
+    key = f"terms/owner/{category}/{filename}"
+
+    try:
+        url = S3_CLIENT.generate_presigned_url(
+            'get_object',
+            Params={"Bucket": TERMS_BUCKET_NAME, "Key": key},
+            ExpiresIn=3600,
+        )
+        return {"url": url, "term_type": term_type, "version": version}
+    except Exception as e:
+        err_str = str(e)
+        logger.error(f"get_owner_term_presigned_url S3 error: bucket={TERMS_BUCKET_NAME}, key={key}, error={err_str}")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=err_str)
+
+
 @router.get("/terms/current")
 def get_owner_terms_current():
     """현재 시행 중인 약관 목록 (회원가입/재동의 화면 노출용)."""
