@@ -404,6 +404,32 @@ def get_owner_term_content_info(conn, term_type: str) -> Optional[Dict]:
         cursor.close()
 
 
+def get_user_term_content_info(conn, term_type: str) -> Optional[Dict]:
+    """
+    유저 약관 중 term_type에 해당하는 현재 시행 중인 최신 버전의 version 문자열 반환.
+    반환: {"version": "260101"} 또는 None (해당 약관 없음)
+    """
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        today = date.today()
+        cursor.execute("""
+            SELECT tv.version
+            FROM terms t
+            INNER JOIN terms_version tv ON tv.term_id = t.id
+            INNER JOIN (
+                SELECT term_id, MAX(id) AS max_id
+                FROM terms_version
+                WHERE effective_date <= %s
+                GROUP BY term_id
+            ) latest ON latest.term_id = t.id AND latest.max_id = tv.id
+            WHERE tv.effective_date <= %s AND t.target = 'user' AND t.term_type = %s
+        """, (today, today, term_type))
+        row = cursor.fetchone()
+        return {"version": row["version"]} if row else None
+    finally:
+        cursor.close()
+
+
 # ---------- Admin ----------
 
 def create_term(conn, term_type: str, title: str, required: bool = True, target: str = "user") -> int:
