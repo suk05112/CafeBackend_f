@@ -39,7 +39,7 @@ def getGifticonList(user_id: int):
     try:
         # gifticon 테이블을 기준으로 조회하여 모든 기프티콘을 가져옴
         cursor.execute('''
-            SELECT 
+            SELECT
                 g.id as gifticon_id,
                 g.user_id,
                 g.order_id,
@@ -55,9 +55,11 @@ def getGifticonList(user_id: int):
                 g.created_at,
                 m.menu_name,
                 m.price,
-                m.description
+                m.description,
+                s.store_name
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
+            LEFT JOIN store s ON g.store_id = s.id
             WHERE g.receiver_id = %s AND g.status != 'UNKNOWN'
             ORDER BY g.id DESC
         ''', (user_id,))
@@ -83,7 +85,8 @@ def getGifticonList(user_id: int):
                 "receiver": row['receiver'],
                 "status": row['status'],
                 "gift_code": row.get('gift_code'),
-                "menu_url": menu_url
+                "menu_url": menu_url,
+                "store_name": row.get('store_name') or ''
             }
 
             gifticonList.append(gifticon)
