@@ -223,6 +223,7 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
               AND s.contract_completed = TRUE
               AND m.status = 'ACTIVE'
               AND m.is_deleted = 0
+              AND m.image_key IS NOT NULL
         """
 
         having_distance = f"HAVING distance <= %s"
@@ -299,6 +300,7 @@ def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Op
               AND s.contract_completed = TRUE
               AND m.status = 'ACTIVE'
               AND m.is_deleted = 0
+              AND m.image_key IS NOT NULL
         """
 
         if cursor_updated_at and cursor_menu_id is not None:
