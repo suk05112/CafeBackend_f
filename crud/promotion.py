@@ -39,7 +39,7 @@ def create_fee_promotion(store_ids: List[int], promo_fee_rate: float, start_date
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_all_fee_promotions(active_only: bool = False) -> List[Dict]:
@@ -81,7 +81,7 @@ def get_all_fee_promotions(active_only: bool = False) -> List[Dict]:
         return result
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_fee_promotion_detail(promo_id: int) -> Optional[Dict]:
@@ -126,7 +126,7 @@ def get_fee_promotion_detail(promo_id: int) -> Optional[Dict]:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_fee_promotions_by_store(store_id: int, page: int = 1, limit: int = 5) -> Dict:
@@ -187,7 +187,7 @@ def get_fee_promotions_by_store(store_id: int, page: int = 1, limit: int = 5) ->
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
@@ -236,7 +236,7 @@ def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_fee_promotion(promo_id: int, promo_fee_rate: Optional[float] = None,
@@ -280,7 +280,7 @@ def update_fee_promotion(promo_id: int, promo_fee_rate: Optional[float] = None,
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def apply_promotion_to_store(promo_id: int, store_id: int) -> bool:
@@ -300,7 +300,7 @@ def apply_promotion_to_store(promo_id: int, store_id: int) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def remove_promotion_from_store(promo_id: int, store_id: int) -> bool:
@@ -320,7 +320,7 @@ def remove_promotion_from_store(promo_id: int, store_id: int) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def delete_fee_promotion(promo_id: int) -> bool:
@@ -337,4 +337,4 @@ def delete_fee_promotion(promo_id: int) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

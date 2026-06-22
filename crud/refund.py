@@ -1,7 +1,7 @@
 """Refund CRUD (관리자: 환불 리스트, 상태 변경)"""
 import pymysql
 from typing import List, Dict, Optional
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 
 
 def get_refund_list(
@@ -79,7 +79,7 @@ def get_refund_list(
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_refund_status(refund_id: int, status: str) -> Optional[Dict]:
@@ -113,4 +113,4 @@ def update_refund_status(refund_id: int, status: str) -> Optional[Dict]:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

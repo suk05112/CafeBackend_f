@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 import pymysql
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timedelta, date, timezone
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
@@ -103,7 +103,7 @@ def _request_payletter_url(gifticon, user_id: int, order_no: str) -> dict:
         product_name = row["menu_name"] if row else "기프티콘"
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
     if gifticon.pgcode not in VALID_PGCODES:
         raise HTTPException(
@@ -212,7 +212,7 @@ def getOrderList(user_id: int):
 
     finally:        
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.post("/{user_id}/payment-url")
@@ -351,7 +351,7 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
         raise HTTPException(status_code=500, detail=f"Error during requestPaymentUrl: {str(e)}")
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.api_route("/payment/return", methods=["GET", "POST"])
@@ -458,7 +458,7 @@ async def updatePaymentResult(request: Request):
     
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
         
 @router.get("/detail/{order_id}")
 def getOrderDetail(order_id: int):
@@ -592,7 +592,7 @@ def getOrderDetail(order_id: int):
     
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
         
 # 기프티콘 환불 (7일 이내: 구매자 환불, 7일 이후: 수신자 환불 + 계좌정보). reason 저장 (7일 전/후 공통)
 @router.post("/refund/{order_id}")
@@ -778,7 +778,7 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.post("/expire-pending")
@@ -815,4 +815,4 @@ def expirePendingOrders():
         raise HTTPException(status_code=500, detail=f"Error during expirePendingOrders: {str(e)}")
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

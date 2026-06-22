@@ -109,7 +109,7 @@ async def registerOwner(owner: Owner):
             detail=f"failed register owner: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/login/{uid}")
 async def login(uid: str):
@@ -340,7 +340,7 @@ async def findOwnerId(owner: OwnerFind):
             detail=f"An unexpected error occurred: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
         
 @router.post("/find_ownerPw")
 async def findOwnerPW(owner: OwnerFindPw):
@@ -372,7 +372,7 @@ async def findOwnerPW(owner: OwnerFindPw):
         }
         return result
     finally:
-        connection.close()
+        close_db_connection(connection)
         
 @router.post("/inquiry/{owner_id}")
 async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
@@ -404,7 +404,7 @@ async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
             detail=f"failed register inquiry: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 #사장님용. 
 @router.get("/inquiry/{owner_id}")
@@ -442,7 +442,7 @@ async def getInquiry(owner_id: int):
             detail=f"failed get inquiry: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 #관리자용. 모든 문의내역 불러오기
 @router.get("/inquiry")
@@ -481,7 +481,7 @@ async def getInquiry():
             detail=f"failed get all inquiry: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
         
 @router.post("/reply/{inquiry_id}")
 async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
@@ -555,7 +555,7 @@ async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
             detail=f"failed register reply: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 def parse_user_agent(user_agent: Optional[str]) -> dict:
     """
@@ -664,7 +664,7 @@ async def registerOwnerPushToken(
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.delete("/push-token/{owner_id}")
 async def deleteOwnerPushToken(
@@ -705,7 +705,7 @@ async def deleteOwnerPushToken(
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.patch("/push-token/{owner_id}")
@@ -785,7 +785,7 @@ async def updateOwnerPushTokenAgreement(
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.delete("/{owner_id}")
 async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
@@ -835,7 +835,7 @@ async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/statistics/{store_id}")
@@ -850,7 +850,7 @@ def get_store_statistics(store_id: int):
         print(f"Error in get_store_statistics: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/account/{store_id}")
@@ -867,7 +867,7 @@ def get_account_by_store(store_id: int):
         print(f"Error in get_account_by_store: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.put("/account/{store_id}")
@@ -909,7 +909,7 @@ def update_account(store_id: int, account: AccountUpdateRequest):
         print(f"Error in update_account: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/settlement/preview/{store_id}")
@@ -1050,4 +1050,4 @@ def get_owner_store_list(owner_id: int):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

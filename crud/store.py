@@ -3,7 +3,7 @@ Store CRUD operations
 """
 import pymysql
 from typing import Optional
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 
 def update_inspection_status(store_id: int, status_value: str, inspection_msg: Optional[str] = None) -> bool:
     """매장 승인 상태 업데이트
@@ -43,5 +43,5 @@ def update_inspection_status(store_id: int, status_value: str, inspection_msg: O
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 

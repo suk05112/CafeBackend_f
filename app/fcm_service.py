@@ -3,7 +3,7 @@ FCM 푸시 메시지 전송 서비스
 """
 from firebase_admin import messaging
 from app.firebase_init import user_app, owner_app
-from app.database import get_db_connection
+from db.session import get_db_connection, close_db_connection
 import pymysql
 from loguru import logger
 
@@ -50,7 +50,7 @@ def send_fcm_notification_to_user(user_id: int, title: str, body: str):
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 def send_fcm_notification_to_owner(owner_id: int, title: str, body: str):
     """
@@ -95,7 +95,7 @@ def send_fcm_notification_to_owner(owner_id: int, title: str, body: str):
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 def send_fcm_notification_to_all_users(title: str, body: str, use_marketing: bool = False):
     """
@@ -147,7 +147,7 @@ def send_fcm_notification_to_all_users(title: str, body: str, use_marketing: boo
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 def send_fcm_notification_to_all_owners(title: str, body: str, use_marketing: bool = False):
     """
@@ -199,7 +199,7 @@ def send_fcm_notification_to_all_owners(title: str, body: str, use_marketing: bo
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 def send_fcm_notification_to_all(title: str, body: str, use_marketing: bool = False):
     """

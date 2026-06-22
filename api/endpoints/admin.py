@@ -3,7 +3,7 @@ import traceback
 import uuid
 from fastapi import APIRouter, HTTPException, status, Query
 from typing import Optional
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from crud import admin as admin_crud
 from crud import store as store_crud
 from crud import menu as menu_crud
@@ -26,7 +26,7 @@ def get_dashboard_statistics():
         print(f"Error in get_dashboard_statistics: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/stores")
@@ -52,7 +52,7 @@ def get_stores(
         print(f"Error in get_stores: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/stores/{store_id}")
@@ -70,7 +70,7 @@ def get_store_detail(store_id: int):
         print(f"Error in get_store_detail: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/stores/{store_id}/menu")
@@ -96,7 +96,7 @@ def get_store_menus(
         print(f"Error in get_store_menus: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/stores/{store_id}/giftcards")
@@ -122,7 +122,7 @@ def get_store_giftcards(
         print(f"Error in get_store_giftcards: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/users")
@@ -148,7 +148,7 @@ def get_users(
         print(f"Error in get_users: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/users/{user_id}")
@@ -166,7 +166,7 @@ def get_user_detail(user_id: int):
         print(f"Error in get_user_detail: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/users/{user_id}/orders")
@@ -180,7 +180,7 @@ def get_user_orders(user_id: int):
         print(f"Error in get_user_orders: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/users/{user_id}/giftcards")
@@ -194,7 +194,7 @@ def get_user_giftcards(user_id: int):
         print(f"Error in get_user_giftcards: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/orders")
@@ -220,7 +220,7 @@ def get_orders(
         print(f"Error in get_orders: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/orders/{order_id}")
@@ -238,7 +238,7 @@ def get_order_detail(order_id: int):
         print(f"Error in get_order_detail: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/orders/{order_id}/giftcards")
@@ -252,7 +252,7 @@ def get_order_giftcards(order_id: int):
         print(f"Error in get_order_giftcards: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/menus")
@@ -277,7 +277,7 @@ def get_all_menus(
         print(f"Error in get_all_menus: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/notices")
@@ -303,7 +303,7 @@ def get_notices(
         print(f"Error in get_notices: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.post("/notices")
@@ -335,7 +335,7 @@ def create_notice(notice: dict):
         print(f"Error in create_notice: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/notices/{target}/{notice_id}")
@@ -356,7 +356,7 @@ def get_notice_detail(target: str, notice_id: int):
         print(f"Error in get_notice_detail: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.put("/notices/{target}/{notice_id}")
@@ -380,7 +380,7 @@ def update_notice(target: str, notice_id: int, notice: dict):
         print(f"Error in update_notice: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.delete("/notices/{target}/{notice_id}")
@@ -401,7 +401,7 @@ def delete_notice(target: str, notice_id: int):
         print(f"Error in delete_notice: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 # ---------- 약관 관리 ----------
@@ -429,7 +429,7 @@ def create_term(body: dict):
         print(f"Error in create_term: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.post("/terms/{term_id}/version")
@@ -467,7 +467,7 @@ def create_term_version(term_id: int, body: dict):
         print(f"Error in create_term_version: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/terms/all")
@@ -483,7 +483,7 @@ def get_all_terms(target: Optional[str] = Query(None, description="'user' 또는
         print(f"Error in get_all_terms: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.put("/terms_version/{version_id}")
@@ -517,7 +517,7 @@ def update_term_version(version_id: int, body: dict):
         print(f"Error in update_term_version: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/terms/content")
@@ -680,19 +680,19 @@ def upload_term_file(body: dict):
             )
         except ValueError as e:
             if "이미 존재하는 버전입니다" not in str(e):
-                connection.close()
+                close_db_connection(connection)
                 raise HTTPException(status_code=400, detail=str(e))
             # 버전이 이미 있으면 DB는 건너뛰고 S3만 덮어쓰기
     except ValueError as e:
-        connection.close()
+        close_db_connection(connection)
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        connection.close()
+        close_db_connection(connection)
         print(f"Error in terms/upload DB: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         try:
-            connection.close()
+            close_db_connection(connection)
         except Exception:
             pass
 
@@ -926,7 +926,7 @@ def get_admin_gifticon_statistics():
         print(f"Error in get_admin_gifticon_statistics: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/statistics/settlement")
@@ -956,7 +956,7 @@ def get_admin_settlement_statistics(
         print(f"Error in get_admin_settlement_statistics: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/settlement/cycles")
@@ -990,7 +990,7 @@ def get_settlement_cycles(
         print(f"Error in get_settlement_cycles: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/settlement/cycles/{cycle_id}")
@@ -1009,7 +1009,7 @@ def get_settlement_cycle(cycle_id: int):
         print(f"Error in get_settlement_cycle: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 def _close_settlement_cycle_impl(cycle_id: int):
@@ -1092,7 +1092,7 @@ def generate_settlement_cycles(
         print(f"Error in generate_settlement_cycles: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/settlement/list")
@@ -1190,7 +1190,7 @@ def create_settlement_data(cycle_id: int):
         print(f"Error in create_settlement_data: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/refund/list")
@@ -1252,7 +1252,7 @@ def get_owners(
         print(f"Error in get_owners: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.get("/owners/{owner_id}")
@@ -1270,4 +1270,4 @@ def get_owner_detail(owner_id: int):
         print(f"Error in get_owner_detail: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
-        connection.close()
+        close_db_connection(connection)

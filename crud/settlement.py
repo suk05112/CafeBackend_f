@@ -48,7 +48,7 @@ def create_account(store_id: int, account: Account) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_account_by_store(store_id: int) -> Optional[Dict]:
@@ -78,7 +78,7 @@ def get_account_by_store(store_id: int) -> Optional[Dict]:
         return None
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 
@@ -115,7 +115,7 @@ def get_settlements_by_store(store_id: int) -> List[Dict]:
         return settlements
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlement_detail(settlement_id: int) -> List[Dict]:
@@ -154,7 +154,7 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
         return details
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_account(store_id: int, account: Account) -> bool:
@@ -202,7 +202,7 @@ def update_account(store_id: int, account: Account) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_store_statistics(store_id: int) -> Dict:
@@ -230,7 +230,7 @@ def get_store_statistics(store_id: int) -> Dict:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_data(store_id: int) -> List[Dict]:
@@ -278,7 +278,7 @@ def get_owner_settlement_data(store_id: int) -> List[Dict]:
         return result
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_list_unified(
@@ -408,7 +408,7 @@ def get_owner_settlement_list_unified(
         return result
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
@@ -495,7 +495,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
@@ -630,7 +630,7 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_settlement_status(settlement_id: int, status: str, failure_reason: Optional[str] = None) -> bool:
@@ -652,7 +652,7 @@ def update_settlement_status(settlement_id: int, status: str, failure_reason: Op
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) -> bool:
@@ -677,7 +677,7 @@ def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) 
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
@@ -751,7 +751,7 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, detail_limit: int = 10) -> Dict:
@@ -865,4 +865,4 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

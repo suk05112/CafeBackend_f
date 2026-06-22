@@ -64,7 +64,7 @@ def get_settlement_cycles(
         return result
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlement_cycle_by_id(cycle_id: int) -> Optional[Dict]:
@@ -98,7 +98,7 @@ def get_settlement_cycle_by_id(cycle_id: int) -> Optional[Dict]:
         return None
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def is_business_day(target_date: date) -> bool:
@@ -181,7 +181,7 @@ def generate_settlement_cycles(start_date: date, months: int = 12) -> int:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def close_settlement_cycle(cycle_id: int) -> bool:
@@ -203,7 +203,7 @@ def close_settlement_cycle(cycle_id: int) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_settlement_cycle_status(cycle_id: int, new_status: str) -> Optional[str]:
@@ -226,4 +226,4 @@ def update_settlement_cycle_status(cycle_id: int, new_status: str) -> Optional[s
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

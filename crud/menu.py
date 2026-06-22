@@ -5,7 +5,7 @@ import uuid
 import pymysql
 from typing import List, Dict, Optional
 
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
 # schemas는 models를 직접 참조
@@ -49,7 +49,7 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
         return menus
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_menu_by_id(menu_id: int) -> Optional[Dict]:
@@ -69,7 +69,7 @@ def get_menu_by_id(menu_id: int) -> Optional[Dict]:
         return dict(row)
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def create_menu(store_id: int, menu_data: Menu) -> int:
@@ -98,7 +98,7 @@ def create_menu(store_id: int, menu_data: Menu) -> int:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def generate_menu_s3_urls(store_id: int, menu_id: int) -> Dict:
@@ -135,7 +135,7 @@ def save_menu_image_key(menu_id: int, image_key: str) -> None:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_menu(menu_id: int, store_id: int, menu_data: Menu) -> bool:
@@ -182,7 +182,7 @@ def update_menu(menu_id: int, store_id: int, menu_data: Menu) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def delete_menu(menu_id: int) -> bool:
@@ -201,5 +201,5 @@ def delete_menu(menu_id: int) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 

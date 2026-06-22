@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 import pymysql
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
@@ -105,7 +105,7 @@ def getGifticonList(user_id: int):
 
     finally:        
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/{gifticon_id}")
 def getGifticon(gifticon_id: int):
@@ -202,7 +202,7 @@ def getGifticon(gifticon_id: int):
 
     finally:        
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.patch("/use/{gifticon_id}")
 def useGifticon(gifticon_id: int):
@@ -280,7 +280,7 @@ def useGifticon(gifticon_id: int):
 
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/used/{store_id}")
 def getTodayUsedGifticon(store_id: int):
@@ -340,7 +340,7 @@ def getTodayUsedGifticon(store_id: int):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.patch("/{gifticon_id}/user/{user_id}")
 def updateGifticonUser(gifticon_id: int, user_id: int):
@@ -392,7 +392,7 @@ def updateGifticonUser(gifticon_id: int, user_id: int):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 class LinkGifticonRequest(BaseModel):
     user_id: int
@@ -478,4 +478,4 @@ def linkGifticonToUser(request: LinkGifticonRequest):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

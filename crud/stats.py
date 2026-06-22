@@ -33,7 +33,7 @@ def get_admin_statistics() -> Dict:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_admin_settlement_data(start_date: Optional[date] = None, end_date: Optional[date] = None) -> Dict:
@@ -68,7 +68,7 @@ def get_admin_settlement_data(start_date: Optional[date] = None, end_date: Optio
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def create_settlement_data(cycle_id: int) -> Dict:
@@ -207,4 +207,4 @@ def create_settlement_data(cycle_id: int) -> Dict:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
