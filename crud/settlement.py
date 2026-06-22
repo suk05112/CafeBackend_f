@@ -33,17 +33,15 @@ def create_account(store_id: int, account: Account) -> bool:
     cursor = connection.cursor()
     
     try:
-        query = """
-            INSERT INTO account (store_id, name, code, bank, account)
-            VALUES (%s, %s, %s, %s, %s)
-        """
-        cursor.execute(query, (
-            store_id,
-            account.name,
-            account.code,
-            account.bank,
-            account.account
-        ))
+        cursor.execute(
+            """INSERT INTO account (store_id, name, code, bank, account)
+               VALUES (%s, %s, %s, %s, %s)
+               ON DUPLICATE KEY UPDATE name=%s, code=%s, bank=%s, account=%s""",
+            (
+                store_id, account.name, account.code, account.bank, account.account,
+                account.name, account.code, account.bank, account.account,
+            )
+        )
         connection.commit()
         return True
     except Exception as e:
