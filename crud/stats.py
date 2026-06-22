@@ -147,6 +147,8 @@ def create_settlement_data(cycle_id: int) -> Dict:
                 if not bank_name.strip() and not account_number.strip():
                     raise ValueError('계좌 정보가 없습니다.')
 
+                connection.begin()
+
                 cursor.execute("""
                     INSERT INTO settlement (
                         store_id, cycle_id, period_start, period_end,
@@ -166,12 +168,15 @@ def create_settlement_data(cycle_id: int) -> Dict:
                     [settlement_id] + detail_ids
                 )
 
+                connection.commit()
                 created_count += 1
             except Exception as e:
+                connection.rollback()
                 fail_reason = str(e)[:500]
                 failed_count += 1
                 if len(failed_reasons) < 5:
                     failed_reasons.append(fail_reason)
+                connection.begin()
                 cursor.execute("""
                     INSERT INTO settlement (
                         store_id, cycle_id, period_start, period_end,
@@ -183,8 +188,7 @@ def create_settlement_data(cycle_id: int) -> Dict:
                     total_sales, total_fee, total_payout,
                     cycle['payout_date'], bank_name, account_number, fail_reason
                 ))
-        
-        connection.commit()
+                connection.commit()
         
         if failed_count > 0:
             msg = f"일부 매장 정산 생성 실패 (성공 {created_count}건, 실패 {failed_count}건)."
