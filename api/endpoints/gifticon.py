@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, HTTPException, status, Query, Depends
 from fastapi import FastAPI
+from app.auth.auth_dependency import verify_firebase_token, verify_firebase_token_any
 import traceback
 import os
 
@@ -204,7 +205,7 @@ def getGifticon(gifticon_id: int):
         close_db_connection(connection)
 
 @router.patch("/use/{gifticon_id}")
-def useGifticon(gifticon_id: int):
+def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
@@ -339,19 +340,26 @@ def getTodayUsedGifticon(store_id: int):
         close_db_connection(connection)
 
 @router.patch("/{gifticon_id}/user/{user_id}")
-def updateGifticonUser(gifticon_id: int, user_id: int):
+def updateGifticonUser(gifticon_id: int, user_id: int, user=Depends(verify_firebase_token)):
     """
     기프티콘의 user_id를 업데이트하는 API
     gifticon_id에 해당하는 기프티콘의 user_id를 새로운 user_id로 변경
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
+        if user is not None:
+            uid = user.get("uid")
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            db_user = cursor.fetchone()
+            if not db_user or db_user["id"] != user_id:
+                raise HTTPException(status_code=403, detail="Forbidden")
+
         # 1. 기프티콘 존재 여부 확인
         cursor.execute('SELECT id FROM gifticon WHERE id = %s', (gifticon_id,))
         gifticon = cursor.fetchone()
-        
+
         if not gifticon:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,

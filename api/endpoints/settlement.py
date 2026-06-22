@@ -3,23 +3,45 @@ Settlement API 엔드포인트
 """
 import logging
 import traceback
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, status, Depends
 
 from loguru import logger
 
+import pymysql
+from db.session import get_db_connection, close_db_connection
 from models.settlement import Account
 from crud import settlement as settlement_crud
+from app.auth.auth_dependency import verify_firebase_token
 
 router = APIRouter()
 cloudwatch_logger = logging.getLogger("cafe_backend")
 
 
 @router.post("/register/{store_id}")
-def register_account(store_id: int, account: Account):
+def register_account(store_id: int, account: Account, user=Depends(verify_firebase_token)):
     """계좌 정보 등록"""
+    if user is not None:
+        uid = user.get("uid")
+        connection = get_db_connection()
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        try:
+            cursor.execute("SELECT id FROM owner WHERE uid = %s LIMIT 1", (uid,))
+            db_owner = cursor.fetchone()
+            if not db_owner:
+                raise HTTPException(status_code=403, detail="Forbidden")
+            cursor.execute("SELECT owner_id FROM store WHERE id = %s LIMIT 1", (store_id,))
+            store = cursor.fetchone()
+            if not store or store["owner_id"] != db_owner["id"]:
+                raise HTTPException(status_code=403, detail="Forbidden")
+        finally:
+            cursor.close()
+            close_db_connection(connection)
+
     try:
         settlement_crud.create_account(store_id, account)
         return {}
+    except HTTPException:
+        raise
     except Exception as e:
         err_msg = f"settlement register_account error: {traceback.format_exc()}"
         logger.error(err_msg)

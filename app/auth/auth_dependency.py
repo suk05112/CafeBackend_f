@@ -98,3 +98,34 @@ async def verify_firebase_token(request: Request,
         error_traceback = traceback.format_exc()
         logger.error(f"verify_firebase_token - Unexpected error: {str(e)}\n{error_traceback} | URL: {request.url.path} | Method: {request.method}")
         raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
+
+
+async def verify_firebase_token_any(
+    request: Request,
+    authorization: str = Header(None),
+    app_check_token: str = Header(None, alias="X-Firebase-AppCheck"),
+):
+    """user 앱 또는 owner 앱 토큰 중 하나라도 유효하면 허용.
+    X-Firebase-Project 헤더 없이 호출하는 owner 앱 클라이언트를 위한 의존성."""
+    ua = request.headers.get("User-Agent", "")
+    if "Mozilla" in ua or not ua:
+        return None
+
+    last_error = None
+    for project_type in ("user", "owner"):
+        try:
+            app = get_firebase_app(project_type)
+            if authorization and authorization.startswith("Bearer "):
+                id_token = authorization.split(" ")[1]
+                decoded = auth.verify_id_token(id_token, app=app)
+                return decoded
+            elif app_check_token:
+                decoded = app_check.verify_token(app_check_token, app=app)
+                return decoded
+        except Exception as e:
+            last_error = e
+            continue
+
+    error_msg = f"Token verification failed for both user and owner projects: {last_error}"
+    logger.error(f"verify_firebase_token_any error: {error_msg} | URL: {request.url.path}")
+    raise HTTPException(status_code=401, detail="Invalid or missing authentication token")

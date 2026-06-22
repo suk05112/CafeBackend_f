@@ -1,4 +1,5 @@
-from fastapi import APIRouter, HTTPException, status, Request, Form
+from fastapi import APIRouter, HTTPException, status, Request, Form, Depends
+from app.auth.auth_dependency import verify_firebase_token
 from fastapi.responses import RedirectResponse
 import traceback
 
@@ -150,11 +151,17 @@ s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
 
 @router.get("/list/{user_id}")
-def getOrderList(user_id: int):
+def getOrderList(user_id: int, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
-      
+
     try:
+        if user is not None:
+            uid = user.get("uid")
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            db_user = cursor.fetchone()
+            if not db_user or db_user["id"] != user_id:
+                raise HTTPException(status_code=403, detail="Forbidden")
         # orders 테이블과 store, gifticon, menu를 조인하여 주문 목록 조회
         # status가 COMPLETED 또는 REFUNDED인 것만 조회
         query = """
@@ -216,7 +223,7 @@ def getOrderList(user_id: int):
 
 
 @router.post("/{user_id}/payment-url")
-def requestPaymentUrl(user_id: int, gifticon: Gifticon):
+def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_firebase_token)):
     """
     주문 등록 후 페이레터 결제 요청 URL을 발급하는 API.
     1. 주문/기프티콘 DB 등록 (PENDING)
@@ -230,6 +237,13 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon):
     order_id = None
 
     try:
+        if user is not None:
+            uid = user.get("uid")
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            db_user = cursor.fetchone()
+            if not db_user or db_user["id"] != user_id:
+                raise HTTPException(status_code=403, detail="Forbidden")
+
         # 1. idempotency_key 기반 중복 체크
         if gifticon.idempotency_key:
             cursor.execute("""
@@ -598,7 +612,7 @@ def getOrderDetail(order_id: int):
         
 # 기프티콘 환불 (7일 이내: 구매자 환불, 7일 이후: 수신자 환불 + 계좌정보). reason 저장 (7일 전/후 공통)
 @router.post("/refund/{order_id}")
-def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest] = None):
+def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest] = None, user=Depends(verify_firebase_token)):
     """
     주문일(created_at) 기준 7일 이내: 구매자에게 토스 결제 취소 환불.
     주문일 기준 7일 이후: 수신자 환불(계좌정보 필수), 기프티콘만 무효화.
@@ -619,6 +633,13 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Order with id {order_id} not found",
             )
+
+        if user is not None:
+            uid = user.get("uid")
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            db_user = cursor.fetchone()
+            if not db_user or db_user["id"] != order.get("user_id"):
+                raise HTTPException(status_code=403, detail="Forbidden")
 
         if order.get("status") == "REFUNDED":
             raise HTTPException(
