@@ -47,26 +47,26 @@ def get_kst_now():
 def generate_order_no(connection) -> str:
     """
     주문번호 생성: yyddd + seq + 5000
-    yyddd: 연중일수 (예: 2024년 1월 1일 = 24001, 12월 31일 = 24366)
-    seq: 해당 날짜의 순번 (1부터 시작)
+    GET_LOCK으로 동시 요청 시 중복 주문번호 방지.
     """
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        today = get_kst_now()
-        yyddd = today.strftime("%y") + str(today.timetuple().tm_yday).zfill(3)
-        
-        # 오늘 날짜의 주문 개수 조회하여 seq 계산
-        query = """
-            SELECT COUNT(*) as cnt
-            FROM orders
-            WHERE DATE(created_at) = CURDATE()
-        """
-        cursor.execute(query)
-        result = cursor.fetchone()
-        seq = result['cnt'] + 1
-        
-        order_no = f"{yyddd}{seq + 5000:05d}"
-        return order_no
+        cursor.execute("SELECT GET_LOCK('order_no_gen', 5) AS locked")
+        if not cursor.fetchone()['locked']:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="주문번호 생성 잠금 획득 실패. 잠시 후 다시 시도해주세요."
+            )
+        try:
+            today = get_kst_now()
+            yyddd = today.strftime("%y") + str(today.timetuple().tm_yday).zfill(3)
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM orders WHERE DATE(created_at) = CURDATE()"
+            )
+            seq = cursor.fetchone()['cnt'] + 1
+            return f"{yyddd}{seq + 5000:05d}"
+        finally:
+            cursor.execute("SELECT RELEASE_LOCK('order_no_gen')")
     finally:
         cursor.close()
 
