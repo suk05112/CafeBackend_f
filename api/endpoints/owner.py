@@ -380,19 +380,10 @@ async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
     cursor = connection.cursor()
     
     try:
-        query = """
-            INSERT INTO owner_inquiry (
-                owner_id, title, content
-            ) VALUES (
-              {}, '{}', '{}'
-            );
-        """.format(
-            owner_id,
-            inquiry.title,
-            inquiry.content,
-            )
-            
-        cursor.execute(query)
+        cursor.execute(
+            "INSERT INTO owner_inquiry (owner_id, title, content) VALUES (%s, %s, %s)",
+            (owner_id, inquiry.title, inquiry.content)
+        )
         connection.commit()
                 
         return {"message": "inquiry registered successfully"}
