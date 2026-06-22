@@ -389,28 +389,30 @@ async def updatePaymentResult(request: Request):
     payhash = data.get("payhash", "")
     pay_info = data.get("pay_info", "")
 
-    # 1. payhash 검증: SHA256(user_id + amount + tid + API_Key) 대문자
-    expected_hash = hashlib.sha256(
-        (user_id + str(amount) + tid + settings.payletter_payment_api_key).encode("utf-8")
-    ).hexdigest().upper()
-
-    if payhash != expected_hash:
-        logger.warning(f"Payletter payhash mismatch for order_no {order_no}")
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Invalid payhash"
-        )
-
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # 2. order_no로 주문 조회
-        cursor.execute('''SELECT id, status FROM orders WHERE order_no=%s''', (order_no,))
+        # 1. order_no로 주문 조회 (pgcode 포함)
+        cursor.execute('''SELECT id, status, pgcode FROM orders WHERE order_no=%s''', (order_no,))
         order = cursor.fetchone()
 
         if not order:
             return {"code": 0, "message": "success"}
+
+        # 2. payhash 검증: pgcode에 따라 올바른 API 키 선택
+        is_naverpay = order.get("pgcode") == "naverpay"
+        api_key = settings.payletter_naver_payment_api_key if is_naverpay else settings.payletter_payment_api_key
+        expected_hash = hashlib.sha256(
+            (user_id + str(amount) + tid + api_key).encode("utf-8")
+        ).hexdigest().upper()
+
+        if payhash != expected_hash:
+            logger.warning(f"Payletter payhash mismatch for order_no {order_no}")
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid payhash"
+            )
 
         if order["status"] == "COMPLETED":
             return {"code": 0, "message": "success"}
@@ -631,7 +633,7 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
             order_date = order_created
         today = get_kst_now().date()
         cutoff_date = order_date + timedelta(days=7)
-        within_7_days = today <= cutoff_date
+        within_7_days = today < cutoff_date  # GNB-94: 7일 이내(당일 포함), 7일째 당일은 불포함
 
         amount = int(order.get("amount") or 0)
 
@@ -642,6 +644,21 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
         )
         gifticon_rows = cursor.fetchall()
         gifticon_ids = [r["gifticon_id"] for r in gifticon_rows]
+
+        # GNB-93: 이미 사용된(USED) 기프티콘이 있으면 환불 불가
+        if gifticon_ids:
+            cursor.execute(
+                "SELECT COUNT(*) as cnt FROM gifticon WHERE id IN ({}) AND status='USED'".format(
+                    ','.join(['%s'] * len(gifticon_ids))
+                ),
+                gifticon_ids,
+            )
+            used_count = cursor.fetchone()["cnt"]
+            if used_count > 0:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 사용된 기프티콘이 포함되어 있어 환불할 수 없습니다.",
+                )
 
         if within_7_days:
             # 7일 이내: 구매자 환불 (토스 결제 취소)
