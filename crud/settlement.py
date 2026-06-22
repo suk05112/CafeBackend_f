@@ -5,6 +5,9 @@ import math
 import pymysql
 from typing import List, Dict, Optional, Tuple
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
+
+KST = ZoneInfo('Asia/Seoul')
 
 from db.session import get_db_connection, close_db_connection
 
@@ -48,7 +51,7 @@ def create_account(store_id: int, account: Account) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_account_by_store(store_id: int) -> Optional[Dict]:
@@ -78,7 +81,7 @@ def get_account_by_store(store_id: int) -> Optional[Dict]:
         return None
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 
@@ -115,7 +118,7 @@ def get_settlements_by_store(store_id: int) -> List[Dict]:
         return settlements
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlement_detail(settlement_id: int) -> List[Dict]:
@@ -154,7 +157,7 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
         return details
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_account(store_id: int, account: Account) -> bool:
@@ -202,7 +205,7 @@ def update_account(store_id: int, account: Account) -> bool:
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_store_statistics(store_id: int) -> Dict:
@@ -230,7 +233,7 @@ def get_store_statistics(store_id: int) -> Dict:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_data(store_id: int) -> List[Dict]:
@@ -278,7 +281,7 @@ def get_owner_settlement_data(store_id: int) -> List[Dict]:
         return result
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_list_unified(
@@ -293,7 +296,7 @@ def get_owner_settlement_list_unified(
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        today = date.today()
+        today = datetime.now(tz=KST).date()
         cutoff = today - timedelta(days=max(1, past_months * 30))
 
         cursor.execute("""
@@ -370,21 +373,20 @@ def get_owner_settlement_list_unified(
             payout_date_str = payout_date.isoformat() if payout_date and hasattr(payout_date, 'isoformat') else (str(payout_date) if payout_date else None)
 
             cursor.execute("""
-                SELECT COALESCE(o.amount, 0) AS sales_amount, g.applied_fee_rate
-                FROM gifticon g
-                LEFT JOIN orders o ON g.order_id = o.id
-                WHERE g.store_id = %s AND g.status = 'USED'
-                AND g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                SELECT sd.sales_amount, sd.fee_amount
+                FROM settlement_details sd
+                JOIN gifticon g ON sd.gifticon_id = g.id
+                WHERE sd.settlement_id IS NULL
+                  AND g.store_id = %s
+                  AND DATE(g.used_at) >= %s
+                  AND DATE(g.used_at) <= %s
             """, (store_id, period_start_str, period_end_str))
             rows = cursor.fetchall()
             total_sales = 0
             total_fee = 0
             for r in rows:
-                sales = int(r['sales_amount'] or 0)
-                rate = float(r['applied_fee_rate'] or 3.0)
-                _, _, fee = calc_fee_supply_and_vat(sales, rate)
-                total_sales += sales
-                total_fee += fee
+                total_sales += int(r['sales_amount'] or 0)
+                total_fee += int(r['fee_amount'] or 0)
             net = total_sales - total_fee
             if total_sales > 0:
                 preview = {
@@ -408,7 +410,7 @@ def get_owner_settlement_list_unified(
         return result
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
@@ -466,8 +468,8 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'settlement_amount': int(d['settlement_amount'] or 0),
                 'status': settlement.get('status'),
             })
+        total_sales = int(settlement['total_sales_amount'] or 0)
         if promo_fee_rate is not None and base_fee_rate is not None:
-            total_sales = int(settlement['total_sales_amount'] or 0)
             base_fee = int(total_sales * base_fee_rate / 100)
             actual_fee = int(settlement['total_fee_amount'] or 0)
             diff = base_fee - actual_fee
@@ -495,7 +497,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
@@ -505,7 +507,7 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        today = date.today()
+        today = datetime.now(tz=KST).date()
         cursor.execute("""
             SELECT cycle_id, period_start_date, period_end_date, payout_date
             FROM settlement_cycles
@@ -551,16 +553,19 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
         applied_fee_rate = float(promo['promo_fee_rate']) if promo else base_fee_rate
         promo_fee_rate = float(promo['promo_fee_rate']) if promo else None
 
-        # 건별 내역 조회
+        # 건별 내역 조회: settlement_details에 선생성됐지만 미정산(settlement_id IS NULL)인 건
         cursor.execute("""
-            SELECT g.id AS gifticon_id, g.used_at, g.applied_fee_rate,
-                   COALESCE(o.amount, 0) AS sales_amount,
-                   m.menu_name
-            FROM gifticon g
-            LEFT JOIN orders o ON g.order_id = o.id
+            SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount, sd.fee_amount,
+                   sd.settlement_amount, sd.base_fee_rate, sd.applied_fee_rate,
+                   sd.fee_supply, sd.fee_vat,
+                   g.used_at, m.menu_name
+            FROM settlement_details sd
+            JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.store_id = %s AND g.status = 'USED'
-              AND g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            WHERE sd.settlement_id IS NULL
+              AND g.store_id = %s
+              AND DATE(g.used_at) >= %s
+              AND DATE(g.used_at) <= %s
             ORDER BY g.used_at ASC
         """, (store_id, period_start_str, period_end_str))
         rows = cursor.fetchall()
@@ -570,14 +575,17 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
 
         total_sales = 0
         total_fee = 0
+        supply = 0
+        vat = 0
         details = []
         for r in rows:
             sales = int(r['sales_amount'] or 0)
-            rate = float(r['applied_fee_rate'] or base_fee_rate)
-            _, _, fee = calc_fee_supply_and_vat(sales, rate)
-            settlement_amt = sales - fee
+            fee = int(r['fee_amount'] or 0)
+            settlement_amt = int(r['settlement_amount'] or 0)
             total_sales += sales
             total_fee += fee
+            supply += int(r['fee_supply'] or 0)
+            vat += int(r['fee_vat'] or 0)
 
             used_at = r.get('used_at')
             if used_at and hasattr(used_at, 'strftime'):
@@ -586,7 +594,7 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
                 used_at_str = str(used_at) if used_at else None
 
             details.append({
-                'id': None,
+                'id': r['detail_id'],
                 'gifticon_id': r['gifticon_id'],
                 'menu_name': r.get('menu_name'),
                 'used_at': used_at_str,
@@ -600,10 +608,8 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
 
         if promo:
             _, _, base_fee_total = calc_fee_supply_and_vat(total_sales, base_fee_rate)
-            supply, vat, promo_fee_total = calc_fee_supply_and_vat(total_sales, applied_fee_rate)
-            promo_discount_amount = base_fee_total - promo_fee_total
+            promo_discount_amount = base_fee_total - total_fee
         else:
-            supply, vat, _ = calc_fee_supply_and_vat(total_sales, base_fee_rate)
             promo_discount_amount = None
 
         return {
@@ -630,7 +636,7 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_settlement_status(settlement_id: int, status: str, failure_reason: Optional[str] = None) -> bool:
@@ -652,7 +658,7 @@ def update_settlement_status(settlement_id: int, status: str, failure_reason: Op
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) -> bool:
@@ -677,7 +683,7 @@ def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) 
         raise e
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
@@ -751,7 +757,7 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, detail_limit: int = 10) -> Dict:
@@ -865,4 +871,4 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
         }
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

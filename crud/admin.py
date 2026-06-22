@@ -2,7 +2,7 @@
 import pymysql
 from datetime import datetime
 from typing import Optional, Dict, List
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from botocore.exceptions import ClientError
 from crud import store as store_crud

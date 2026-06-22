@@ -5,7 +5,6 @@ sqlalchemy
 pymysql
 pydantic
 pydantic-settings
-pymysql
 boto3
 botocore
 loguru
@@ -16,3 +15,4 @@ PyJWT
 cryptography
 slowapi
 apscheduler
+cachetools

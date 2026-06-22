@@ -8,7 +8,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 import pymysql
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 
@@ -56,6 +56,7 @@ def getGifticonList(user_id: int):
                 m.menu_name,
                 m.price,
                 m.description,
+                m.image_key,
                 s.store_name
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -68,13 +69,12 @@ def getGifticonList(user_id: int):
         print("sql 실행 결과:", len(rows), "개")
 
         for row in rows:
-            store_id = row['store_id']
-            menu_id = row['menu_id']
+            image_key = row.get('image_key') or ''
             menu_url = s3.generate_presigned_url('get_object',
                                     Params={'Bucket': bucket_name,
-                                            'Key': f'menu/menu_{store_id}_{menu_id}.png',
+                                            'Key': image_key,
                                             },
-                                    ExpiresIn=3600)
+                                    ExpiresIn=3600) if image_key else ''
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
                 "name": row.get('menu_name') or '',
@@ -105,7 +105,7 @@ def getGifticonList(user_id: int):
 
     finally:        
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/{gifticon_id}")
 def getGifticon(gifticon_id: int):
@@ -147,25 +147,24 @@ def getGifticon(gifticon_id: int):
                 detail="Store not found"
             )
         
-        cursor.execute('''SELECT menu_name
+        cursor.execute('''SELECT menu_name, image_key
         FROM menu
         WHERE id=%s ;''', (gifticon['menu_id'],))
-        
+
         menu_result = cursor.fetchone()
-        
+
         if not menu_result:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Menu not found"
             )
-        
-        store_id = gifticon['store_id']
-        menu_id = gifticon['menu_id']
+
+        image_key = menu_result.get('image_key') or ''
         menu_url = s3.generate_presigned_url('get_object',
                                 Params={'Bucket': bucket_name,
-                                        'Key': f'menu/menu_{store_id}_{menu_id}.png',
+                                        'Key': image_key,
                                         },
-                                ExpiresIn=3600)
+                                ExpiresIn=3600) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
             "gift_code": gifticon['gift_code'],
@@ -202,7 +201,7 @@ def getGifticon(gifticon_id: int):
 
     finally:        
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.patch("/use/{gifticon_id}")
 def useGifticon(gifticon_id: int):
@@ -280,7 +279,7 @@ def useGifticon(gifticon_id: int):
 
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/used/{store_id}")
 def getTodayUsedGifticon(store_id: int):
@@ -340,7 +339,7 @@ def getTodayUsedGifticon(store_id: int):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.patch("/{gifticon_id}/user/{user_id}")
 def updateGifticonUser(gifticon_id: int, user_id: int):
@@ -392,7 +391,7 @@ def updateGifticonUser(gifticon_id: int, user_id: int):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 class LinkGifticonRequest(BaseModel):
     user_id: int
@@ -478,4 +477,4 @@ def linkGifticonToUser(request: LinkGifticonRequest):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

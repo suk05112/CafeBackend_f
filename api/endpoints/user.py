@@ -29,8 +29,7 @@ import pymysql.err
 import app.database as databas
 import boto3
 from botocore.client import Config
-from app.database import get_db_connection
-from db.session import close_db_connection
+from db.session import get_db_connection, close_db_connection
 
 import logging
 import httpx
@@ -762,7 +761,7 @@ async def idRegisteredAppleUser(phoneNumber: str):
             detail=f"failed check registration: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 @router.post("/inquiry/{user_id}")
 async def subjectInquiry(user_id: int, inquiry: Inquiry):
@@ -796,7 +795,7 @@ async def subjectInquiry(user_id: int, inquiry: Inquiry):
         )
 
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 #유저용. 
 @router.get("/inquiry/{user_id}")
@@ -836,7 +835,7 @@ async def getInquiry(user_id: int):
         )
 
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 #모든 문의내역 불러오기
 @router.get("/inquiry")
@@ -878,7 +877,7 @@ async def getInquiry():
         )
 
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 
 # ---------- 약관 동의 ----------
@@ -1110,7 +1109,7 @@ async def subjectReply(inquiry_id: int, reply: InquiryResponse):
             detail=f"failed register reply: {str(e)}"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 def parse_user_agent(user_agent: Optional[str]) -> dict:
     """
@@ -1220,7 +1219,7 @@ async def registerPushToken(
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.delete("/push-token/{user_id}")
 async def deletePushToken(
@@ -1261,7 +1260,7 @@ async def deletePushToken(
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.patch("/push-token/{user_id}")
@@ -1341,7 +1340,7 @@ async def updatePushTokenAgreement(
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.delete("/{user_id}")
 async def deleteUser(
@@ -1534,7 +1533,7 @@ def get_user_notice():
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 @router.post("/find-account")
@@ -1647,4 +1646,4 @@ def find_account(request: FindAccountRequest):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)

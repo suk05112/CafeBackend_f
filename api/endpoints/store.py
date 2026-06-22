@@ -2,17 +2,19 @@ import traceback
 import os
 import uuid
 from fastapi import APIRouter, HTTPException, status, Query
-from typing import Optional, Union, List
+from typing import Optional, Union, List, Dict
 from pydantic import BaseModel
 
 import pymysql
 import app.database as database
 from botocore.exceptions import ClientError
 import logging
+from cachetools import TTLCache
+import threading
 
 from models.store import StoreCreate
 from models.store import InspectionStatusUpdate
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 from core.config import settings
 from core.region_code import get_region_from_district, get_region_name, get_district_name
 from core.s3_config import S3_CLIENT, BUCKET_NAME
@@ -23,6 +25,22 @@ router = APIRouter()
 
 s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
+
+# S3 Presigned URL 캐시 (최대 2000개, TTL 3000초 — S3 만료 3600초보다 짧게)
+_presigned_cache: TTLCache = TTLCache(maxsize=2000, ttl=3000)
+_cache_lock = threading.Lock()
+
+
+def _get_presigned_url(key: str) -> str:
+    with _cache_lock:
+        if key in _presigned_cache:
+            return _presigned_cache[key]
+    url = s3.generate_presigned_url('get_object',
+        Params={'Bucket': bucket_name, 'Key': key},
+        ExpiresIn=3600)
+    with _cache_lock:
+        _presigned_cache[key] = url
+    return url
 
 
 def _generate_logo_key(store_id: int) -> str:
@@ -37,9 +55,7 @@ def _generate_business_key(store_id: int) -> str:
 def _get_store_logo_url(store_logo_key: str) -> Optional[str]:
     if not store_logo_key:
         return None
-    return s3.generate_presigned_url('get_object',
-        Params={'Bucket': bucket_name, 'Key': store_logo_key},
-        ExpiresIn=3600)
+    return _get_presigned_url(store_logo_key)
 
 def _get_store_photo_urls(cursor, store_id: int) -> List[str]:
     """store_images 테이블에서 매장 사진 presigned GET URL 목록 반환"""
@@ -48,13 +64,23 @@ def _get_store_photo_urls(cursor, store_id: int) -> List[str]:
         (store_id,)
     )
     rows = cursor.fetchall()
-    urls = []
-    for row in rows:
-        key = row['image_key'] if isinstance(row, dict) else row[0]
-        urls.append(s3.generate_presigned_url('get_object',
-            Params={'Bucket': bucket_name, 'Key': key},
-            ExpiresIn=3600))
-    return urls
+    return [_get_presigned_url(row['image_key'] if isinstance(row, dict) else row[0]) for row in rows]
+
+def _get_store_photo_urls_bulk(cursor, store_ids: List[int]) -> Dict[int, List[str]]:
+    """여러 store_id의 store_images를 한 번의 쿼리로 배치 조회"""
+    if not store_ids:
+        return {}
+    placeholders = ','.join(['%s'] * len(store_ids))
+    cursor.execute(
+        f"SELECT store_id, image_key FROM store_images WHERE store_id IN ({placeholders}) ORDER BY store_id, `order` ASC",
+        store_ids
+    )
+    result: Dict[int, List[str]] = {sid: [] for sid in store_ids}
+    for row in cursor.fetchall():
+        sid = row['store_id'] if isinstance(row, dict) else row[0]
+        key = row['image_key'] if isinstance(row, dict) else row[1]
+        result[sid].append(_get_presigned_url(key))
+    return result
 
 
 def _delete_store_images(cursor, connection, store_id: int) -> None:
@@ -209,7 +235,7 @@ def searchStore(
         )
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/list")
 def getStoreList():
@@ -241,20 +267,18 @@ def getStoreList():
 
         # DB에서 데이터를 가져오기
         rows = cursor.fetchall()
+        store_ids = [row['id'] for row in rows]
+        photo_urls_map = _get_store_photo_urls_bulk(cursor, store_ids)
         storeList = []
 
         for row in rows:
             store_id = row['id']
-            store_logo_url = _get_store_logo_url(row['store_logo_key'])
-            store_photo_urls = _get_store_photo_urls(cursor, store_id)
-
-            # store 데이터를 구성
             store = {
                 "owner_id": row['owner_id'],
-                "store_id": row['id'],
+                "store_id": store_id,
                 "store_name": row['store_name'],
-                "store_logo": store_logo_url,
-                "store_photo_urls": store_photo_urls,
+                "store_logo": _get_store_logo_url(row['store_logo_key']),
+                "store_photo_urls": photo_urls_map.get(store_id, []),
                 "status": row['status'],
                 "inspection_status": row['inspection_status'],
                 "open_yn": row['open_yn'],
@@ -268,11 +292,11 @@ def getStoreList():
             storeList.append(store)
 
         return {"store": storeList}
-    
+
     except Exception as e:
         print(f"오류 발생: {str(e)}")
         print("스택 트레이스:")
-        traceback.print_exc() 
+        traceback.print_exc()
         logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -280,7 +304,7 @@ def getStoreList():
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/owner/list/{owner_id}")
 def getOwnerStoreList(owner_id: int):
@@ -325,7 +349,7 @@ def getOwnerStoreList(owner_id: int):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/regions-districts")
 def getRegionsAndDistricts(offset: Optional[int] = Query(0, description="페이지네이션 오프셋"), limit: int = Query(50, description="한 번에 가져올 최대 개수")):
@@ -406,7 +430,7 @@ def getRegionsAndDistricts(offset: Optional[int] = Query(0, description="페이�
         )
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/list/by-district/{district_code}")
 def getStoreListByDistrict(
@@ -468,7 +492,9 @@ def getStoreListByDistrict(
                 s.store_address,
                 s.store_description,
                 s.updated_at,
-                s.store_logo_key
+                s.store_logo_key,
+                s.store_lat,
+                s.store_lng
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
@@ -492,7 +518,9 @@ def getStoreListByDistrict(
                 s.store_address,
                 s.store_description,
                 s.updated_at,
-                s.store_logo_key
+                s.store_logo_key,
+                s.store_lat,
+                s.store_lng
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
@@ -520,6 +548,8 @@ def getStoreListByDistrict(
                 "open_yn": row['open_yn'],
                 "store_address": row['store_address'],
                 "store_description": row['store_description'],
+                "store_lat": row['store_lat'],
+                "store_lng": row['store_lng'],
             }
             storeList.append(store)
 
@@ -566,7 +596,7 @@ def getStoreListByDistrict(
         )
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/list/by-location")
 def getStoreListByLocation(lat: float, lng: float):
@@ -641,7 +671,7 @@ def getStoreListByLocation(lat: float, lng: float):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/list/{owner_id}")
 def getStore(owner_id: int):
@@ -671,19 +701,18 @@ def getStore(owner_id: int):
         ORDER BY s.updated_at DESC''', (owner_id,))
 
         rows = cursor.fetchall()
+        store_ids = [row['id'] for row in rows]
+        photo_urls_map = _get_store_photo_urls_bulk(cursor, store_ids)
         storeList = []
 
         for row in rows:
             store_id = row['id']
-            store_logo_url = _get_store_logo_url(row['store_logo_key'])
-            store_photo_urls = _get_store_photo_urls(cursor, store_id)
-
             store = {
                 "owner_id": row['owner_id'],
-                "store_id": row['id'],
+                "store_id": store_id,
                 "store_name": row['store_name'],
-                "store_logo": store_logo_url,
-                "store_photo_urls": store_photo_urls,
+                "store_logo": _get_store_logo_url(row['store_logo_key']),
+                "store_photo_urls": photo_urls_map.get(store_id, []),
                 "status": row['status'],
                 "inspection_status": row['inspection_status'],
                 "open_yn": row['open_yn'],
@@ -694,20 +723,20 @@ def getStore(owner_id: int):
                 "inspection_msg": row['inspection_msg'],
             }
             storeList.append(store)
-        
+
         return {"store": storeList}
     except Exception as e:
         print(f"오류 발생: {str(e)}")
         print("스택 트레이스:")
-        traceback.print_exc() 
+        traceback.print_exc()
         logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="failed get store list"
         )
-    finally:        
+    finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
     
 @router.post("/register")
 async def registerStore(store: StoreCreate):
@@ -788,7 +817,7 @@ async def registerStore(store: StoreCreate):
         )
     
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 @router.post("/update/{store_id}")
 def updateStore(store_id: int, store: StoreCreate):
@@ -859,7 +888,7 @@ def updateStore(store_id: int, store: StoreCreate):
             detail="failed update store"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 @router.post("/delete/{store_id}")
 def deleteStore(store_id: int):
@@ -891,7 +920,7 @@ def deleteStore(store_id: int):
             detail="failed delete store"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/search/{item}/{lat}/{lng}")
 def searchStore(item: str, lat: float, lng: float):
@@ -1027,7 +1056,7 @@ def searchStore(item: str, lat: float, lng: float):
             detail="failed search store"
         )
     finally:
-        connection.close()
+        close_db_connection(connection)
         
 @router.get("/search/{lat}/{lng}")
 def getCurrentLocationStore(item: str, lat: float, lng: float):
@@ -1082,7 +1111,7 @@ def getCurrentLocationStore(item: str, lat: float, lng: float):
         )
     finally:
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.get("/info/{store_id}")
 def getStoreInfo(store_id: int):
@@ -1112,17 +1141,15 @@ def getStoreInfo(store_id: int):
 
 
         if store:
-            store_logo_url = _get_store_logo_url(store['store_logo_key'])
-            store_photo_urls = _get_store_photo_urls(cursor, store_id)
-
+            photo_urls_map = _get_store_photo_urls_bulk(cursor, [store_id])
             store = {
                 "owner_id": store['owner_id'],
                 "store_id": store['id'],
                 "store_name": store['store_name'],
-                "store_logo": store_logo_url,
+                "store_logo": _get_store_logo_url(store['store_logo_key']),
                 "store_telephone": store['store_telephone'],
                 "store_address": store['store_address'],
-                "store_photo_urls": store_photo_urls,
+                "store_photo_urls": photo_urls_map.get(store_id, []),
                 "store_description": store['store_description'],
                 "store_lat": store['store_lat'],
                 "store_lng": store['store_lng'],
@@ -1149,7 +1176,7 @@ def getStoreInfo(store_id: int):
         )
     finally:        
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 @router.patch("/{storeId}/inspection")
 def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate):
@@ -1239,7 +1266,7 @@ def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate
         if cursor:
             cursor.close()
         if connection:
-            connection.close()
+            close_db_connection(connection)
 
 
 @router.patch("/{storeId}/contract")
@@ -1268,4 +1295,4 @@ def update_contract_status(storeId: int, body: dict):
         if cursor:
             cursor.close()
         if connection:
-            connection.close()
+            close_db_connection(connection)
