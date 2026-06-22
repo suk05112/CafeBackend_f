@@ -205,13 +205,11 @@ def getGifticon(gifticon_id: int):
 
 @router.patch("/use/{gifticon_id}")
 def useGifticon(gifticon_id: int):
-    if gifticon_id == 9999:
-        return {'result': 0}
-
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
+        # 유효기간·상태 사전 확인 (FOR UPDATE 없이 빠른 조회)
         cursor.execute(
             """SELECT g.status, g.validity, g.store_id, g.order_id,
                       g.base_fee_rate, g.applied_fee_rate, g.applied_promo_id,
@@ -221,51 +219,50 @@ def useGifticon(gifticon_id: int):
                WHERE g.id = %s""",
             (gifticon_id,)
         )
-
         gifticon = cursor.fetchone()
 
-        result = 0 #사용 성공
+        if not gifticon:
+            return {'result': 3}  # 기프티콘 찾을 수 없음
 
-        if gifticon:
-            if gifticon['status'] == 'USED' or gifticon['status'] == 'CANCELED':
-                result = 1 # 이미 사용된 기프티콘 또는 취소된 기프티콘
-            elif gifticon['validity'] and gifticon['validity'].replace(tzinfo=KST) < get_kst_now():
-                result = 2 # 기프티콘 유효기간 만료
-        else:
-            result = 3 #기프티콘 찾을 수 없음
+        if gifticon['status'] in ('USED', 'CANCELED'):
+            return {'result': 1}  # 이미 사용/취소된 기프티콘
 
-        if result == 0:
-            import math
-            sales_amount = int(gifticon['total_price'])
-            applied_fee_rate = float(gifticon['applied_fee_rate']) if gifticon['applied_fee_rate'] else 0.0
-            fee_supply = math.floor(sales_amount * applied_fee_rate / 100)
-            fee_vat = round(fee_supply * 0.1)
-            fee_amount = fee_supply + fee_vat
-            settlement_amount = sales_amount - fee_amount
+        if gifticon['validity'] and gifticon['validity'] < get_kst_now().date():
+            return {'result': 2}  # 유효기간 만료
 
-            connection.begin()
+        import math
+        sales_amount = int(gifticon['total_price'])
+        applied_fee_rate = float(gifticon['applied_fee_rate']) if gifticon['applied_fee_rate'] else 0.0
+        fee_supply = math.floor(sales_amount * applied_fee_rate / 100)
+        fee_vat = round(fee_supply * 0.1)
+        fee_amount = fee_supply + fee_vat
+        settlement_amount = sales_amount - fee_amount
 
-            cursor.execute(
-                "UPDATE gifticon SET status='USED', used_at=NOW() WHERE id=%s",
-                (gifticon_id,)
-            )
+        connection.begin()
 
-            cursor.execute("""
-                INSERT INTO settlement_details
-                    (settlement_id, gifticon_id, sales_amount, fee_amount, settlement_amount,
-                     base_fee_rate, applied_promo_id, applied_fee_rate, fee_supply, fee_vat)
-                VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-            """, (
-                gifticon_id, sales_amount, fee_amount, settlement_amount,
-                gifticon['base_fee_rate'], gifticon['applied_promo_id'],
-                gifticon['applied_fee_rate'], fee_supply, fee_vat
-            ))
+        # 원자적 상태 전환: UNUSED인 경우에만 UPDATE
+        cursor.execute(
+            "UPDATE gifticon SET status='USED', used_at=NOW() WHERE id=%s AND status='UNUSED'",
+            (gifticon_id,)
+        )
+        if cursor.rowcount == 0:
+            connection.rollback()
+            return {'result': 1}  # 동시 요청으로 이미 사용 처리됨
 
-            connection.commit()
+        cursor.execute("""
+            INSERT INTO settlement_details
+                (settlement_id, gifticon_id, sales_amount, fee_amount, settlement_amount,
+                 base_fee_rate, applied_promo_id, applied_fee_rate, fee_supply, fee_vat)
+            VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (
+            gifticon_id, sales_amount, fee_amount, settlement_amount,
+            gifticon['base_fee_rate'], gifticon['applied_promo_id'],
+            gifticon['applied_fee_rate'], fee_supply, fee_vat
+        ))
 
-        return {
-            'result': result,
-        }
+        connection.commit()
+
+        return {'result': 0}
         
     except Exception as e:
         connection.rollback()
