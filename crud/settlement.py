@@ -30,17 +30,15 @@ def create_account(store_id: int, account: Account) -> bool:
     cursor = connection.cursor()
     
     try:
-        query = """
-            INSERT INTO account (store_id, name, code, bank, account)
-            VALUES (%s, %s, %s, %s, %s)
-        """
-        cursor.execute(query, (
-            store_id,
-            account.name,
-            account.code,
-            account.bank,
-            account.account
-        ))
+        cursor.execute(
+            """INSERT INTO account (store_id, name, code, bank, account)
+               VALUES (%s, %s, %s, %s, %s)
+               ON DUPLICATE KEY UPDATE name=%s, code=%s, bank=%s, account=%s""",
+            (
+                store_id, account.name, account.code, account.bank, account.account,
+                account.name, account.code, account.bank, account.account,
+            )
+        )
         connection.commit()
         return True
     except Exception as e:
@@ -570,14 +568,18 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
 
         total_sales = 0
         total_fee = 0
+        total_supply = 0
+        total_vat = 0
         details = []
         for r in rows:
             sales = int(r['sales_amount'] or 0)
             rate = float(r['applied_fee_rate'] or base_fee_rate)
-            _, _, fee = calc_fee_supply_and_vat(sales, rate)
+            item_supply, item_vat, fee = calc_fee_supply_and_vat(sales, rate)
             settlement_amt = sales - fee
             total_sales += sales
             total_fee += fee
+            total_supply += item_supply
+            total_vat += item_vat
 
             used_at = r.get('used_at')
             if used_at and hasattr(used_at, 'strftime'):
@@ -597,13 +599,13 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
             })
 
         net = total_sales - total_fee
+        supply = total_supply
+        vat = total_vat
 
         if promo:
             _, _, base_fee_total = calc_fee_supply_and_vat(total_sales, base_fee_rate)
-            supply, vat, promo_fee_total = calc_fee_supply_and_vat(total_sales, applied_fee_rate)
-            promo_discount_amount = base_fee_total - promo_fee_total
+            promo_discount_amount = base_fee_total - total_fee
         else:
-            supply, vat, _ = calc_fee_supply_and_vat(total_sales, base_fee_rate)
             promo_discount_amount = None
 
         return {
