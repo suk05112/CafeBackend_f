@@ -492,7 +492,9 @@ def getStoreListByDistrict(
                 s.store_address,
                 s.store_description,
                 s.updated_at,
-                s.store_logo_key
+                s.store_logo_key,
+                s.store_lat,
+                s.store_lng
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
@@ -516,7 +518,9 @@ def getStoreListByDistrict(
                 s.store_address,
                 s.store_description,
                 s.updated_at,
-                s.store_logo_key
+                s.store_logo_key,
+                s.store_lat,
+                s.store_lng
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
@@ -544,6 +548,8 @@ def getStoreListByDistrict(
                 "open_yn": row['open_yn'],
                 "store_address": row['store_address'],
                 "store_description": row['store_description'],
+                "store_lat": row['store_lat'],
+                "store_lng": row['store_lng'],
             }
             storeList.append(store)
 

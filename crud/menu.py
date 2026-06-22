@@ -185,6 +185,190 @@ def update_menu(menu_id: int, store_id: int, menu_data: Menu) -> bool:
         close_db_connection(connection)
 
 
+def get_recommended_menus_by_location(lat: float, lng: float, radius: float, limit: int, cursor: Optional[str]) -> Dict:
+    """GPS 반경 기반 메뉴 추천 (거리순 정렬, cursor 페이지네이션)"""
+    connection = get_db_connection()
+    db_cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor_distance = None
+        cursor_menu_id = None
+        if cursor:
+            try:
+                parts = cursor.split(',')
+                if len(parts) == 2:
+                    cursor_distance = float(parts[0])
+                    cursor_menu_id = int(parts[1])
+            except (ValueError, IndexError):
+                pass
+
+        base_select = """
+            SELECT
+                s.id AS store_id,
+                s.store_name,
+                s.store_logo_key,
+                m.id AS menu_id,
+                m.menu_name,
+                m.price,
+                m.description,
+                m.image_key,
+                (6371 * ACOS(COS(RADIANS(%s)) * COS(RADIANS(s.store_lat)) *
+                    COS(RADIANS(s.store_lng) - RADIANS(%s)) +
+                    SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) AS distance
+            FROM store s
+            INNER JOIN menu m ON s.id = m.store_id
+            WHERE s.store_lat IS NOT NULL
+              AND s.store_lng IS NOT NULL
+              AND s.inspection_status = 'APPROVED'
+              AND s.contract_completed = TRUE
+              AND m.status = 'ACTIVE'
+              AND m.is_deleted = 0
+              AND m.image_key IS NOT NULL
+        """
+
+        having_distance = f"HAVING distance <= %s"
+
+        if cursor_distance is not None and cursor_menu_id is not None:
+            query = base_select + f"""
+            {having_distance}
+              AND (distance > %s OR (distance = %s AND m.id > %s))
+            ORDER BY distance ASC, m.id ASC
+            LIMIT %s
+            """
+            params = (lat, lng, lat, radius, cursor_distance, cursor_distance, cursor_menu_id, limit)
+        else:
+            query = base_select + f"""
+            {having_distance}
+            ORDER BY distance ASC, m.id ASC
+            LIMIT %s
+            """
+            params = (lat, lng, lat, radius, limit)
+
+        db_cursor.execute(query, params)
+        rows = db_cursor.fetchall()
+
+        items = _build_menu_recommend_items(rows, include_distance=True)
+
+        next_cursor = None
+        if len(items) == limit and rows:
+            last = rows[-1]
+            next_cursor = f"{last['distance']},{last['menu_id']}"
+
+        return {"menuList": items, "next_cursor": next_cursor, "has_next": len(items) == limit}
+    finally:
+        db_cursor.close()
+        connection.close()
+
+
+def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Optional[str]) -> Dict:
+    """지역구 기반 메뉴 추천 (updated_at 기준 정렬, cursor 페이지네이션)"""
+    from core.region_code import get_region_from_district
+    connection = get_db_connection()
+    db_cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        region_code = get_region_from_district(district_code)
+        if not region_code:
+            return {"menuList": [], "next_cursor": None, "has_next": False}
+
+        cursor_updated_at = None
+        cursor_menu_id = None
+        if cursor:
+            try:
+                parts = cursor.split(',')
+                if len(parts) == 2:
+                    cursor_updated_at = parts[0]
+                    cursor_menu_id = int(parts[1])
+            except (ValueError, IndexError):
+                pass
+
+        base_select = """
+            SELECT
+                s.id AS store_id,
+                s.store_name,
+                s.store_logo_key,
+                s.updated_at,
+                m.id AS menu_id,
+                m.menu_name,
+                m.price,
+                m.description,
+                m.image_key
+            FROM store s
+            INNER JOIN menu m ON s.id = m.store_id
+            WHERE s.region_code = %s
+              AND s.inspection_status = 'APPROVED'
+              AND s.contract_completed = TRUE
+              AND m.status = 'ACTIVE'
+              AND m.is_deleted = 0
+              AND m.image_key IS NOT NULL
+        """
+
+        if cursor_updated_at and cursor_menu_id is not None:
+            query = base_select + """
+              AND (s.updated_at < %s OR (s.updated_at = %s AND m.id < %s))
+            ORDER BY s.updated_at DESC, m.id DESC
+            LIMIT %s
+            """
+            params = (region_code, cursor_updated_at, cursor_updated_at, cursor_menu_id, limit)
+        else:
+            query = base_select + """
+            ORDER BY s.updated_at DESC, m.id DESC
+            LIMIT %s
+            """
+            params = (region_code, limit)
+
+        db_cursor.execute(query, params)
+        rows = db_cursor.fetchall()
+
+        items = _build_menu_recommend_items(rows, include_distance=False)
+
+        next_cursor = None
+        if len(items) == limit and rows:
+            last = rows[-1]
+            updated_at = last['updated_at']
+            if hasattr(updated_at, 'strftime'):
+                updated_at = updated_at.strftime('%Y-%m-%d %H:%M:%S')
+            next_cursor = f"{updated_at},{last['menu_id']}"
+
+        return {"menuList": items, "next_cursor": next_cursor, "has_next": len(items) == limit}
+    finally:
+        db_cursor.close()
+        connection.close()
+
+
+def _build_menu_recommend_items(rows: List[Dict], include_distance: bool) -> List[Dict]:
+    items = []
+    for row in rows:
+        menu_photo_url = None
+        if row['image_key']:
+            menu_photo_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket_name, 'Key': row['image_key']},
+                ExpiresIn=3600
+            )
+        store_logo_url = None
+        if row['store_logo_key']:
+            store_logo_url = s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': bucket_name, 'Key': row['store_logo_key']},
+                ExpiresIn=3600
+            )
+        item = {
+            "store_id": row['store_id'],
+            "store_name": row['store_name'],
+            "store_logo": store_logo_url,
+            "menu_id": row['menu_id'],
+            "menu_name": row['menu_name'],
+            "price": row['price'],
+            "description": row['description'],
+            "menu_photo": menu_photo_url,
+        }
+        if include_distance:
+            item["distance"] = round(row['distance'], 2)
+        items.append(item)
+    return items
+
+
 def delete_menu(menu_id: int) -> bool:
     """메뉴 삭제 (soft delete)"""
     connection = get_db_connection()

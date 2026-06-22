@@ -2,15 +2,52 @@
 Menu API 엔드포인트
 """
 import traceback
-from fastapi import APIRouter, HTTPException, status
+from typing import Optional
+from fastapi import APIRouter, HTTPException, Query, status
 
 from loguru import logger
 
-# schemas는 models를 직접 참조
 from models.menu import Menu
 from crud import menu as menu_crud
 
 router = APIRouter()
+
+
+@router.get("/recommend")
+def get_recommended_menus(
+    lat: Optional[float] = Query(None),
+    lng: Optional[float] = Query(None),
+    radius: float = Query(5.0),
+    district_code: Optional[str] = Query(None),
+    limit: int = Query(20),
+    cursor: Optional[str] = Query(None),
+):
+    """주변 매장 메뉴 추천. lat+lng → GPS 5km 반경, district_code → 지역구 기준."""
+    if limit < 1:
+        limit = 20
+    if limit > 100:
+        limit = 100
+
+    gps_mode = lat is not None and lng is not None
+    district_mode = district_code is not None
+
+    if not gps_mode and not district_mode:
+        raise HTTPException(status_code=400, detail="lat/lng 또는 district_code 중 하나는 필수입니다.")
+
+    try:
+        if gps_mode:
+            result = menu_crud.get_recommended_menus_by_location(lat, lng, radius, limit, cursor)
+        else:
+            result = menu_crud.get_recommended_menus_by_district(district_code, limit, cursor)
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in get_recommended_menus: {traceback.format_exc()}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"서버 오류 발생: {str(e)}"
+        )
 
 
 @router.get("/list/{store_id}")

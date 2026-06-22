@@ -116,66 +116,64 @@ def get_next_business_day(target_date: date) -> date:
     return next_day
 
 
-def generate_settlement_cycles(start_date: date, months: int = 12) -> int:
-    """정산 주기 데이터 생성 (1년치)
-    
+def get_next_tuesday(target_date: date) -> date:
+    """target_date 이후(포함) 가장 가까운 화요일 반환"""
+    # 0=월, 1=화, 2=수, 3=목, 4=금, 5=토, 6=일
+    days_until_tuesday = (1 - target_date.weekday()) % 7
+    return target_date + timedelta(days=days_until_tuesday)
+
+
+def generate_settlement_cycles(start_date: date, end_date: date) -> int:
+    """정산 주기 데이터 생성 (일~토 7일 주기)
+
     Args:
-        start_date: 시작 날짜
-        months: 생성할 개월 수 (기본 12개월)
-    
+        start_date: 생성 시작 날짜 (해당 주의 일요일로 맞춤)
+        end_date: 생성 종료 날짜
+
     Returns:
         생성된 주기 개수
     """
     connection = get_db_connection()
     cursor = connection.cursor()
-    
+
     try:
-        # 정산 주기 설정 (5일)
-        cycle_days = 5
-        payout_delay_days = 10  # 정산 주기 종료일 + 10일
-        
-        current_date = start_date
-        end_date = start_date + timedelta(days=months * 30)  # 대략적인 종료일
+        # start_date를 해당 주 일요일로 맞춤 (Python weekday: 0=월 ... 6=일)
+        days_since_sunday = (start_date.weekday() + 1) % 7
+        current_sunday = start_date - timedelta(days=days_since_sunday)
+
+
         created_count = 0
-        
-        while current_date < end_date:
-            # 정산 기간: 시작일 ~ 종료일 (5일)
-            period_start = current_date
-            period_end = current_date + timedelta(days=cycle_days - 1)
-            
-            # 정산일: 종료일 + 10일 (영업일 기준)
-            payout_date = period_end + timedelta(days=payout_delay_days)
-            
-            # 영업일이 아니면 다음 영업일로 조정
-            if not is_business_day(payout_date):
-                payout_date = get_next_business_day(payout_date)
-            
+
+        while current_sunday <= end_date:
+            period_start = current_sunday          # 일요일
+            period_end = current_sunday + timedelta(days=6)  # 토요일
+
+            # payout_date: 종료일(토) 기준 3주 후 화요일
+            three_weeks_later = period_end + timedelta(weeks=3)
+            payout_date = get_next_tuesday(three_weeks_later)
+
             # 중복 확인
             cursor.execute("""
                 SELECT cycle_id FROM settlement_cycles
                 WHERE period_start_date = %s AND period_end_date = %s
             """, (period_start, period_end))
-            
+
             if cursor.fetchone():
-                # 이미 존재하면 건너뛰기
-                current_date = period_end + timedelta(days=1)
+                current_sunday += timedelta(weeks=1)
                 continue
-            
-            # 정산 주기 데이터 삽입
+
             cursor.execute("""
                 INSERT INTO settlement_cycles (
                     period_start_date, period_end_date, payout_date, status
                 ) VALUES (%s, %s, %s, 'OPEN')
             """, (period_start, period_end, payout_date))
-            
+
             created_count += 1
-            
-            # 다음 주기 시작일
-            current_date = period_end + timedelta(days=1)
-        
+            current_sunday += timedelta(weeks=1)
+
         connection.commit()
         return created_count
-        
+
     except Exception as e:
         connection.rollback()
         raise e
