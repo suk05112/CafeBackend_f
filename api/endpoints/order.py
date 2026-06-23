@@ -21,6 +21,7 @@ import json
 import hashlib
 
 from core.config import settings
+from core.exceptions import InternalError
 
 router = APIRouter()
 
@@ -209,13 +210,8 @@ def getOrderList(user_id: int, user=Depends(verify_firebase_token)):
         return {"order_list": order_list}
         
     except Exception as e:
-        print(f"Error during getOrderList: {e}")
         traceback.print_exc()
-        logger.error(f"Error during getOrderList: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during getOrderList: {str(e)}"
-        )
+        raise InternalError(e, "getOrderList")
 
     finally:        
         cursor.close()
@@ -361,8 +357,7 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
     except Exception as e:
         connection.rollback()
         traceback.print_exc()
-        logger.error(f"Error during requestPaymentUrl: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error during requestPaymentUrl: {str(e)}")
+        raise InternalError(e, "requestPaymentUrl")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -464,13 +459,8 @@ async def updatePaymentResult(request: Request):
         raise
     except Exception as e:
         connection.rollback()
-        print(f"Error during updatePaymentResult: {e}")
         traceback.print_exc()
-        logger.error(f"Error during updatePaymentResult: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during updatePaymentResult: {str(e)}"
-        )
+        raise InternalError(e, "updatePaymentResult")
     
     finally:
         cursor.close()
@@ -598,13 +588,8 @@ def getOrderDetail(order_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during getOrderDetail: {e}")
         traceback.print_exc()
-        logger.error(f"Error during getOrderDetail: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during getOrderDetail: {str(e)}"
-        )
+        raise InternalError(e, "getOrderDetail")
     
     finally:
         cursor.close()
@@ -856,13 +841,9 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
     except HTTPException:
         raise
     except Exception as e:
-        traceback.print_exc()
-        logger.error(f"refund gifticon: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed refund gifticon: {str(e)}",
-        )
+        traceback.print_exc()
+        raise InternalError(e, "refundGifticon")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -898,8 +879,7 @@ def expirePendingOrders():
 
     except Exception as e:
         connection.rollback()
-        logger.error(f"Error during expirePendingOrders: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Error during expirePendingOrders: {str(e)}")
+        raise InternalError(e, "expirePendingOrders")
     finally:
         cursor.close()
         close_db_connection(connection)

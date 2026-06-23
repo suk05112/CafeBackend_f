@@ -12,6 +12,7 @@ from db.session import get_db_connection, close_db_connection
 from models.settlement import Account
 from crud import settlement as settlement_crud
 from app.auth.auth_dependency import verify_firebase_token
+from core.exceptions import InternalError
 
 router = APIRouter()
 cloudwatch_logger = logging.getLogger("cafe_backend")
@@ -46,10 +47,7 @@ def register_account(store_id: int, account: Account, user=Depends(verify_fireba
         err_msg = f"settlement register_account error: {traceback.format_exc()}"
         logger.error(err_msg)
         cloudwatch_logger.error(err_msg)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register Account: {str(e)}"
-        )
+        raise InternalError(e, "register_account")
 
 
 @router.get("/list/{store_id}")
@@ -62,10 +60,7 @@ def get_settlement_list(store_id: int):
         err_msg = f"settlement get_settlement_list error: {traceback.format_exc()}"
         logger.error(err_msg)
         cloudwatch_logger.error(err_msg)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed getSettlementAmountsByDate: {str(e)}"
-        )
+        raise InternalError(e, "get_settlement_list")
 
 
 @router.get("/detail/{settlement_id}")
@@ -78,10 +73,7 @@ def get_detail_settlements(settlement_id: int):
         err_msg = f"settlement get_detail_settlements error: {traceback.format_exc()}"
         logger.error(err_msg)
         cloudwatch_logger.error(err_msg)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed getDetailSettlements: {str(e)}"
-        )
+        raise InternalError(e, "get_detail_settlements")
 
 
 @router.get("/info/{store_id}")
@@ -96,10 +88,7 @@ def get_account(store_id: int):
         err_msg = f"settlement get_account error: {traceback.format_exc()}"
         logger.error(err_msg)
         cloudwatch_logger.error(err_msg)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed get Account: {str(e)}"
-        )
+        raise InternalError(e, "get_account")
 
 
 @router.put("/account/{store_id}")
@@ -112,7 +101,4 @@ def update_account(store_id: int, account: Account):
         err_msg = f"settlement update_account error: {traceback.format_exc()}"
         logger.error(err_msg)
         cloudwatch_logger.error(err_msg)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed update Account: {str(e)}"
-        )
+        raise InternalError(e, "update_account")

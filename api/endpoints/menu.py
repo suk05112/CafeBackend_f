@@ -9,6 +9,7 @@ from loguru import logger
 
 from models.menu import Menu
 from crud import menu as menu_crud
+from core.exceptions import InternalError
 
 router = APIRouter()
 
@@ -44,10 +45,7 @@ def get_recommended_menus(
         raise
     except Exception as e:
         logger.error(f"Error in get_recommended_menus: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        raise InternalError(e, "menu")
 
 
 @router.get("/list/{store_id}")
@@ -58,10 +56,7 @@ def get_menu_list(store_id: int):
         return {"menuList": menus}
     except Exception as e:
         logger.error(f"Error in get_menu_list: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        raise InternalError(e, "menu")
 
 
 @router.post("/add/{store_id}")
@@ -84,10 +79,7 @@ def add_menu(store_id: int, menu: Menu):
         raise
     except Exception as e:
         logger.error(f"Error in add_menu: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed add menu: {str(e)}"
-        )
+        raise InternalError(e, "add_menu")
 
 
 @router.delete("/delete/{menu_id}")
@@ -102,10 +94,7 @@ def delete_menu(menu_id: int):
         raise
     except Exception as e:
         logger.error(f"Error in delete_menu: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed delete menu: {str(e)}"
-        )
+        raise InternalError(e, "delete_menu")
 
 
 @router.post("/update/{menu_id}")
@@ -131,8 +120,5 @@ def update_menu(menu_id: int, menu: Menu):
         raise
     except Exception as e:
         logger.error(f"Error in update_menu: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed update menu: {str(e)}"
-        )
+        raise InternalError(e, "update_menu")
 
