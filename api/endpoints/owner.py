@@ -740,8 +740,16 @@ async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
         # 2. 관련 데이터 삭제 (push tokens)
         cursor.execute('DELETE FROM owner_push_tokens WHERE owner_id = %s', (owner_id,))
         
-        # 3. Soft Delete: deleted_at에 현재 시간 설정
-        cursor.execute('UPDATE owner SET deleted_at = NOW() WHERE id = %s', (owner_id,))
+        # 3. Soft Delete: 민감정보 제거 및 deleted_at 설정
+        cursor.execute('''
+            UPDATE owner
+            SET name = '',
+                email = '',
+                uid = '',
+                phone_number = '',
+                deleted_at = NOW()
+            WHERE id = %s
+        ''', (owner_id,))
         
         connection.commit()
         
