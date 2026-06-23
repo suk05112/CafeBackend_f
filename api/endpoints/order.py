@@ -682,13 +682,50 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 )
 
         if within_7_days:
-            # 7일 이내: 구매자 환불 (토스 결제 취소)
+            # 7일 이내: 구매자 환불 (페이레터 결제 취소)
             payment_key = order.get("payment_key")
             if not payment_key:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Payment key not found for order {order_id}",
                 )
+
+            # GNB-20: 중복 환불 차단
+            # PROCESSING은 5분 이내인 경우만 유효로 간주 (크래시로 인한 영구 잠김 방지)
+            cursor.execute(
+                """
+                SELECT id, status FROM refund
+                WHERE order_id=%s
+                  AND (status = 'COMPLETED'
+                       OR (status = 'PROCESSING' AND created_at > NOW() - INTERVAL 5 MINUTE))
+                LIMIT 1
+                """,
+                (order_id,),
+            )
+            existing_refund = cursor.fetchone()
+            if existing_refund:
+                existing_status = existing_refund.get("status")
+                if existing_status == "PROCESSING":
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="환불이 진행 중입니다. 잠시 후 다시 확인해주세요.",
+                    )
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 환불 완료된 주문입니다.",
+                )
+
+            # GNB-20: 페이레터 API 호출 전 PROCESSING 레코드 선삽입 (멱등성 키)
+            reason = (body.reason or "")[:500] if body else None
+            cursor.execute(
+                """
+                INSERT INTO refund (order_id, refund_type, amount, status, refunded_at, reason)
+                VALUES (%s, 'PURCHASER', %s, 'PROCESSING', NOW(), %s)
+                """,
+                (order_id, amount, reason),
+            )
+            refund_id = cursor.lastrowid
+            connection.commit()
 
             # orders.pgcode로 네이버페이 여부 판단
             is_naverpay_refund = order.get("pgcode") == "naverpay"
@@ -715,6 +752,12 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
 
             if res.status != 200:
                 logger.error(f"Payletter cancel failed: {response_data}")
+                # GNB-20: API 실패 시 FAILED로 기록하여 수동 처리 가능하도록 남김
+                cursor.execute(
+                    "UPDATE refund SET status='FAILED' WHERE id=%s",
+                    (refund_id,),
+                )
+                connection.commit()
                 raise HTTPException(
                     status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
                     detail=f"Payment cancel failed: {response_data}",
@@ -729,14 +772,9 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                     """UPDATE gifticon SET status='CANCELED' WHERE id=%s""",
                     (gid,),
                 )
-
-            reason = (body.reason or "")[:500] if body else None
             cursor.execute(
-                """
-                INSERT INTO refund (order_id, refund_type, amount, status, refunded_at, reason)
-                VALUES (%s, 'PURCHASER', %s, 'COMPLETED', NOW(), %s)
-                """,
-                (order_id, amount, reason),
+                "UPDATE refund SET status='COMPLETED', refunded_at=NOW() WHERE id=%s",
+                (refund_id,),
             )
             connection.commit()
 
@@ -753,6 +791,17 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="7일 이후 환불은 수신자 계좌정보(account_holder, bank_code, bank_name, account_number)가 필요합니다.",
+                )
+
+            # GNB-20: 중복 환불 차단 (수신자 환불은 PROCESSING 상태 없음, COMPLETED만 체크)
+            cursor.execute(
+                "SELECT id FROM refund WHERE order_id=%s AND status='COMPLETED' LIMIT 1",
+                (order_id,),
+            )
+            if cursor.fetchone():
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="이미 환불 완료된 주문입니다.",
                 )
 
             # 수신자 user_id (해당 주문 기프티콘 중 하나의 user_id)
