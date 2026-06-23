@@ -28,6 +28,7 @@ from models.push_token import PushTokenCreate, PushTokenUpdate
 from app.fcm_service import send_fcm_notification_to_owner
 from app.auth.auth_dependency import verify_firebase_token
 from crud import terms as terms_crud
+from core.exceptions import InternalError
 
 from models.user import User
 from schemas.settlement import AccountUpdateRequest
@@ -70,11 +71,7 @@ async def check_duplicate(
         return {"email_exists": email_exists, "phone_exists": phone_exists}
 
     except Exception as e:
-        logger.error(f"check_duplicate 오류: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"중복 체크 실패: {str(e)}"
-        )
+        raise InternalError(e, "check_duplicate")
     finally:
         close_db_connection(connection)
 
@@ -102,12 +99,7 @@ async def registerOwner(owner: Owner):
             detail="이미 사용 중인 이메일 또는 전화번호입니다."
         )
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register owner: {str(e)}"
-        )
+        raise InternalError(e, "registerOwner")
     finally:
         close_db_connection(connection)
 
@@ -141,13 +133,7 @@ async def login(uid: str):
             }
 
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        logger.error(f"Traceback: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred: {str(e)}"
-        )
+        raise InternalError(e, "ownerLogin")
     finally:
         close_db_connection(connection)
 
@@ -192,8 +178,7 @@ def get_owner_term_content(
         raise
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_owner_term_content DB error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_term_content DB")
     finally:
         close_db_connection(connection)
 
@@ -210,13 +195,12 @@ def get_owner_term_content(
     except Exception as e:
         err_str = str(e)
         err_lower = err_str.lower()
-        logger.error(f"get_owner_term_content S3 error: bucket={TERMS_BUCKET_NAME}, key={key}, error={err_str}")
         if "nosuchkey" in err_lower or "404" in err_lower or "no such key" in err_lower:
             raise HTTPException(status_code=404, detail=f"약관 파일을 찾을 수 없습니다. key: {key}")
         if "accessdenied" in err_lower or "forbidden" in err_lower:
             raise HTTPException(status_code=403, detail="S3 access denied")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=err_str)
+        raise InternalError(e, "get_owner_term_content S3")
 
 
 @router.get("/terms/presigned-url")
@@ -237,8 +221,7 @@ def get_owner_term_presigned_url(
         raise
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_owner_term_presigned_url DB error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_term_presigned_url DB")
     finally:
         close_db_connection(connection)
 
@@ -256,10 +239,8 @@ def get_owner_term_presigned_url(
         )
         return {"url": url, "term_type": term_type, "version": version}
     except Exception as e:
-        err_str = str(e)
-        logger.error(f"get_owner_term_presigned_url S3 error: bucket={TERMS_BUCKET_NAME}, key={key}, error={err_str}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=err_str)
+        raise InternalError(e, "get_owner_term_presigned_url S3")
 
 
 @router.get("/terms/current")
@@ -271,8 +252,7 @@ def get_owner_terms_current():
         return {"terms": terms}
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_owner_terms_current: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_terms_current")
     finally:
         close_db_connection(connection)
 
@@ -286,8 +266,7 @@ def get_owner_terms_status(owner_id: int):
         return result
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_owner_terms_status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_terms_status")
     finally:
         close_db_connection(connection)
 
@@ -306,8 +285,7 @@ def post_owner_terms_agree(body: OwnerTermsAgreeRequest):
         raise
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"post_owner_terms_agree: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "post_owner_terms_agree")
     finally:
         close_db_connection(connection)
 
@@ -333,15 +311,10 @@ async def findOwnerId(owner: OwnerFind):
             return {'msg': "unregistered user"}
 
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"An unexpected error occurred: {str(e)}"
-        )
+        raise InternalError(e, "findOwnerId")
     finally:
         close_db_connection(connection)
-        
+
 @router.post("/find_ownerPw")
 async def findOwnerPW(owner: OwnerFindPw):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                     
@@ -388,16 +361,11 @@ async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
                 
         return {"message": "inquiry registered successfully"}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register inquiry: {str(e)}"
-        )
+        raise InternalError(e, "owner subjectInquiry")
     finally:
         close_db_connection(connection)
 
-#사장님용. 
+#사장님용.
 @router.get("/inquiry/{owner_id}")
 async def getInquiry(owner_id: int):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                 
@@ -426,12 +394,7 @@ async def getInquiry(owner_id: int):
                 
         return {'inquiry_list': list(reversed(inquiry_list))}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed get inquiry: {str(e)}"
-        )
+        raise InternalError(e, "owner getInquiry")
     finally:
         close_db_connection(connection)
 
@@ -465,15 +428,10 @@ async def getInquiry():
                 
         return {'inquiry_list': list(reversed(inquiry_list))}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed get all inquiry: {str(e)}"
-        )
+        raise InternalError(e, "owner getAllInquiry")
     finally:
         close_db_connection(connection)
-        
+
 @router.post("/reply/{inquiry_id}")
 async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
     connection = get_db_connection()  # 환경에 맞는 DB 연결               
@@ -539,12 +497,7 @@ async def subjectInquiry(inquiry_id: int, reply: OwnerInquiryResponse):
         
         return {"message": "reply registered successfully"}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register reply: {str(e)}"
-        )
+        raise InternalError(e, "owner subjectReply")
     finally:
         close_db_connection(connection)
 
@@ -646,13 +599,8 @@ async def registerOwnerPushToken(
         }
         
     except Exception as e:
-        print(f"Error during registerOwnerPushToken: {e}")
         traceback.print_exc()
-        logger.error(f"Error during registerOwnerPushToken: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during registerOwnerPushToken: {str(e)}"
-        )
+        raise InternalError(e, "registerOwnerPushToken")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -689,11 +637,7 @@ async def deleteOwnerPushToken(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error during deleteOwnerPushToken: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during deleteOwnerPushToken: {str(e)}"
-        )
+        raise InternalError(e, "deleteOwnerPushToken")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -767,13 +711,8 @@ async def updateOwnerPushTokenAgreement(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during updateOwnerPushTokenAgreement: {e}")
         traceback.print_exc()
-        logger.error(f"Error during updateOwnerPushTokenAgreement: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during updateOwnerPushTokenAgreement: {str(e)}"
-        )
+        raise InternalError(e, "updateOwnerPushTokenAgreement")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -816,14 +755,9 @@ async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during deleteOwner: {e}")
-        traceback.print_exc()
-        logger.error(f"Error during deleteOwner: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during deleteOwner: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "deleteOwner")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -838,8 +772,7 @@ def get_store_statistics(store_id: int):
         result = settlement_crud.get_store_statistics(store_id)
         return result
     except Exception as e:
-        print(f"Error in get_store_statistics: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_store_statistics")
     finally:
         close_db_connection(connection)
 
@@ -855,8 +788,7 @@ def get_account_by_store(store_id: int):
             return {"account": {}}
         return {"account": account}
     except Exception as e:
-        print(f"Error in get_account_by_store: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_account_by_store")
     finally:
         close_db_connection(connection)
 
@@ -897,8 +829,7 @@ def update_account(store_id: int, account: AccountUpdateRequest):
             "bank_book_put_url": bank_book_put_url,
         }
     except Exception as e:
-        print(f"Error in update_account: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "update_account")
     finally:
         close_db_connection(connection)
 
@@ -915,8 +846,7 @@ def get_owner_settlement_preview(store_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_owner_settlement_preview: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_settlement_preview")
 
 
 @router.get("/settlement/{store_id}")
@@ -930,8 +860,7 @@ def get_owner_settlement_data(
         items = settlement_crud.get_owner_settlement_list_unified(store_id, past_months=past_months)
         return {'settlements': items}
     except Exception as e:
-        print(f"Error in get_owner_settlement_data: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_settlement_data")
 
 
 @router.get("/settlement/detail/{settlement_id}")
@@ -946,8 +875,7 @@ def get_owner_settlement_detail(settlement_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_owner_settlement_detail: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_settlement_detail")
 
 
 @router.get("/list/{owner_id}")
@@ -1036,9 +964,7 @@ def get_owner_store_list(owner_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error in get_owner_store_list: {traceback.format_exc()}")
-        logger.error(f"Error in get_owner_store_list: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_owner_store_list")
     finally:
         cursor.close()
         close_db_connection(connection)

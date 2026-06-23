@@ -18,6 +18,7 @@ from db.session import get_db_connection, close_db_connection
 from core.config import settings
 from core.region_code import get_region_from_district, get_region_name, get_district_name
 from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.exceptions import InternalError
 
 logger = logging.getLogger("cafe_backend")
 
@@ -225,14 +226,8 @@ def searchStore(
         }
     
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
-        traceback.print_exc() 
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "getStoreMenu")
     finally:
         db_cursor.close()
         close_db_connection(connection)
@@ -294,14 +289,8 @@ def getStoreList():
         return {"store": storeList}
 
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
         traceback.print_exc()
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        raise InternalError(e, "getStoreList")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -339,14 +328,8 @@ def getOwnerStoreList(owner_id: int):
         return {"ownerStoreList": storeList}
     
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
-        traceback.print_exc() 
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "store endpoint")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -420,14 +403,8 @@ def getRegionsAndDistricts(offset: Optional[int] = Query(0, description="페이�
         return {"regions": region_list}
     
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
-        traceback.print_exc() 
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "store endpoint")
     finally:
         db_cursor.close()
         close_db_connection(connection)
@@ -582,14 +559,8 @@ def getStoreListByDistrict(
         }
     
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
-        traceback.print_exc() 
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "store endpoint")
     finally:
         db_cursor.close()
         close_db_connection(connection)
@@ -657,14 +628,8 @@ def getStoreListByLocation(lat: float, lng: float):
         return {"store": storeList}
     
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
-        traceback.print_exc() 
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"서버 오류 발생: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "store endpoint")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -804,14 +769,8 @@ async def registerStore(store: StoreCreate):
     except HTTPException:
         raise
     except Exception as e:
-        print(e)
-        logger.error(f"Error: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register store: {str(e)}"
-        )
-    
+        raise InternalError(e, "registerStore")
     finally:
         close_db_connection(connection)
 
@@ -878,11 +837,7 @@ def updateStore(store_id: int, store: StoreCreate):
         }
     except Exception as e:
         connection.rollback()
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed update store"
-        )
+        raise InternalError(e, "updateStore")
     finally:
         close_db_connection(connection)
 
@@ -909,12 +864,7 @@ def deleteStore(store_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed delete store"
-        )
+        raise InternalError(e, "deleteStore")
     finally:
         close_db_connection(connection)
 
@@ -1045,12 +995,7 @@ def searchStore(item: str, lat: float, lng: float):
 
             return {"storeList": storeList}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed search store"
-        )
+        raise InternalError(e, "searchStore")
     finally:
         close_db_connection(connection)
         
@@ -1099,12 +1044,7 @@ def getCurrentLocationStore(item: str, lat: float, lng: float):
 
         return {"storeList": storeList}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed get current location store"
-        )
+        raise InternalError(e, "getCurrentLocationStore")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -1164,12 +1104,7 @@ def getStoreInfo(store_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed get store info"
-        )
+        raise InternalError(e, "getStoreInfo")
     finally:        
         cursor.close()
         close_db_connection(connection)
@@ -1249,15 +1184,8 @@ def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate
     except HTTPException:
         raise
     except Exception as e:
-        print(f"오류 발생: {str(e)}")
-        print("스택 트레이스:")
         traceback.print_exc()
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update inspection status: {str(e)}"
-        )
-
+        raise InternalError(e, "update_inspection_status")
     finally:
         if cursor:
             cursor.close()
@@ -1286,7 +1214,7 @@ def update_contract_status(storeId: int, body: dict):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "update_contract_status")
     finally:
         if cursor:
             cursor.close()

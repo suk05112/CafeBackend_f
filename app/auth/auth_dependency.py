@@ -3,6 +3,7 @@ from firebase_admin import auth, app_check
 import firebase_admin
 import logging
 import traceback
+from core.exceptions import InternalError
 
 # CloudWatch에 직접 로깅하는 logger 사용 (main.py와 동일)
 logger = logging.getLogger("cafe_backend")
@@ -92,10 +93,9 @@ async def verify_firebase_token(request: Request,
         # HTTPException은 그대로 re-raise (이미 로깅됨)
         raise
     except Exception as e:
-        # 예상치 못한 예외
         error_traceback = traceback.format_exc()
         logger.error(f"verify_firebase_token - Unexpected error: {str(e)}\n{error_traceback} | URL: {request.url.path} | Method: {request.method}")
-        raise HTTPException(status_code=500, detail=f"Authentication error: {str(e)}")
+        raise InternalError(e, "verify_firebase_token")
 
 
 async def verify_firebase_token_any(

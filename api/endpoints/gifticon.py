@@ -17,6 +17,7 @@ from models.gifticon import Gifticon
 from models.store import StoreCreate
 
 import http.client
+from core.exceptions import InternalError
 
 router = APIRouter()
 
@@ -97,12 +98,7 @@ def getGifticonList(user_id: int):
         return {'gifticonList': gifticonList}
         
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed get gifticon list"
-        )
+        raise InternalError(e, "getGifticonList")
 
     finally:        
         cursor.close()
@@ -193,12 +189,7 @@ def getGifticon(gifticon_id: int):
     except HTTPException:
         raise
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="failed get gifticon"
-        )
+        raise InternalError(e, "getGifticon")
 
     finally:        
         cursor.close()
@@ -267,13 +258,8 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
         
     except Exception as e:
         connection.rollback()
-        print(e)
         traceback.print_exc()
-        logger.error(f"failed use gifticon::  {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed use gifticon: {str(e)}"
-        )
+        raise InternalError(e, "useGifticon")
 
     finally:
         cursor.close()
@@ -328,13 +314,8 @@ def getTodayUsedGifticon(store_id: int):
         return {"gifticonList": gifticonList}
     
     except Exception as e:
-        print(f"getTodayUsedGifticon:: {str(e)}")
-        traceback.print_exc() 
-        logger.error(f"getTodayUsedGifticon::  {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"getTodayUsedGifticon: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "getTodayUsedGifticon")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -386,14 +367,9 @@ def updateGifticonUser(gifticon_id: int, user_id: int, user=Depends(verify_fireb
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during updateGifticonUser: {e}")
-        traceback.print_exc()
-        logger.error(f"Error during updateGifticonUser: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during updateGifticonUser: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "updateGifticonUser")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -472,14 +448,9 @@ def linkGifticonToUser(request: LinkGifticonRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during linkGifticonToUser: {e}")
-        traceback.print_exc()
-        logger.error(f"Error during linkGifticonToUser: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during linkGifticonToUser: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "linkGifticonToUser")
     finally:
         cursor.close()
         close_db_connection(connection)

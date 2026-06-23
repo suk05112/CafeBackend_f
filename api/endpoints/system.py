@@ -3,6 +3,7 @@ import shutil
 import subprocess
 import traceback
 from fastapi import APIRouter, HTTPException
+from core.exceptions import InternalError
 
 router = APIRouter()
 
@@ -27,8 +28,7 @@ def get_disk_usage():
             "percent": percent,
         }
     except Exception as e:
-        print(f"Error in get_disk_usage: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_disk_usage")
 
 
 @router.get("/docker")
@@ -65,8 +65,7 @@ def get_docker_usage():
 
         return result
     except Exception as e:
-        print(f"Error in get_docker_usage: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_docker_usage")
 
 
 @router.post("/cleanup")
@@ -75,5 +74,4 @@ def run_cleanup():
         output = _run(["docker", "system", "prune", "-f"])
         return {"success": True, "output": output}
     except Exception as e:
-        print(f"Error in run_cleanup: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "run_cleanup")

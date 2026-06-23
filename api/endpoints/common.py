@@ -17,6 +17,7 @@ from app.fcm_service import (
 )
 from app.database import get_db_connection, close_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.exceptions import InternalError
 import boto3
 from botocore.client import Config
 
@@ -177,9 +178,6 @@ def broadcast_notification(notification: NotificationRequest):
         raise
     except Exception as e:
         logger.error(f"Error in broadcast_notification: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during broadcastNotification: {str(e)}"
-        )
+        raise InternalError(e, "broadcast_notification")
 
 

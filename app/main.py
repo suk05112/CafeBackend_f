@@ -24,6 +24,7 @@ from datetime import datetime, timezone, timedelta
 import json
 
 from core.config import settings
+from core.exceptions import InternalError, internal_error_handler
 from db.session import get_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from core.scheduler import create_scheduler
@@ -154,6 +155,7 @@ limiter = Limiter(key_func=get_remote_address)
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+app.add_exception_handler(InternalError, internal_error_handler)
 # app = FastAPI(redirect_slashes=False)
 # app.include_router(router)
 

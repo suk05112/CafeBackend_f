@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     db_user: str = Field(default="postgres")
     db_password: str = Field(default="password")
     db_name: str = Field(default="cafe_db")
-    debug: bool = Field(default=True)
+    debug: bool = Field(default=False)
     
     # Apple Sign In 설정
     apple_client_id: str = Field(default="", description="Apple Client ID")

@@ -50,6 +50,7 @@ from models.notice import NoticeResponse
 from app.fcm_service import send_fcm_notification_to_user
 from core.config import settings
 from core.s3_config import S3_CLIENT, TERMS_BUCKET_NAME
+from core.exceptions import InternalError
 from crud import terms as terms_crud
 
 router = APIRouter()
@@ -400,14 +401,9 @@ def signUp(user: User, firebase_project: Optional[str] = None):
         return {"user_id": user_id, "message": "new user registered"}
                                                   
     except Exception as e:
-        print(f"signUp 오류: {e}")
         traceback.print_exc()
         connection.rollback()
-        logger.error(f"signUp 오류: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"signUp failed: {str(e)}"
-        )
+        raise InternalError(e, "signUp")
     finally:
         close_db_connection(connection)
         
@@ -615,13 +611,8 @@ async def login_user(
             }
 
     except Exception as e:
-        print("login 오류", e)
-        logger.error(f"서버 오류 발생: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"login failed: {str(e)}"
-        )
+        raise InternalError(e, "login")
 
     finally:
         close_db_connection(connection)
@@ -703,15 +694,10 @@ async def idRegisteredUser(
     except HTTPException:
         raise
     except Exception as e:
-        print("isRegistered 오류", e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed check registration: {str(e)}"
-        )
+        raise InternalError(e, "isRegistered")
     finally:
         close_db_connection(connection)
-        
+
 @router.get("/isRegistered/phone")
 async def idRegisteredUserByPhone(
     phoneNumber: str = Query(...),
@@ -730,12 +716,7 @@ async def idRegisteredUserByPhone(
             return {'isRegistered': False}
 
     except Exception as e:
-        print("isRegistered 오류", e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed check registration: {str(e)}"
-        )
+        raise InternalError(e, "isRegisteredByPhone")
     finally:
         cursor.close()
 
@@ -754,12 +735,7 @@ async def idRegisteredAppleUser(phoneNumber: str):
             return {'isRegistered': False}
 
     except Exception as e:
-        print("isRegistered 오류", e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed check registration: {str(e)}"
-        )
+        raise InternalError(e, "isRegisteredApple")
     finally:
         close_db_connection(connection)
 
@@ -786,18 +762,12 @@ async def subjectInquiry(user_id: int, inquiry: Inquiry):
                 
         return {"message": "inquiry registered successfully"}
     except Exception as e:
-        print(e)
-        traceback.print_exc() 
-        logger.error(f"Error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register inquiry: {str(e)}"
-        )
-
+        traceback.print_exc()
+        raise InternalError(e, "subjectInquiry")
     finally:
         close_db_connection(connection)
 
-#유저용. 
+#유저용.
 @router.get("/inquiry/{user_id}")
 async def getInquiry(user_id: int):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                 
@@ -826,14 +796,8 @@ async def getInquiry(user_id: int):
                 
         return {'inquiry_list': list(reversed(inquiry_list))}
     except Exception as e:
-        print(e)
-        traceback.print_exc() 
-        logger.error(f"Error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed get inquiry: {str(e)}"
-        )
-
+        traceback.print_exc()
+        raise InternalError(e, "getInquiry")
     finally:
         close_db_connection(connection)
 
@@ -868,14 +832,8 @@ async def getInquiry():
                 
         return {'inquiry_list': list(reversed(inquiry_list))}
     except Exception as e:
-        print(e)
-        traceback.print_exc() 
-        logger.error(f"Error: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed get all inquiry: {str(e)}"
-        )
-
+        traceback.print_exc()
+        raise InternalError(e, "getAllInquiry")
     finally:
         close_db_connection(connection)
 
@@ -917,8 +875,7 @@ def get_user_term_content(
         raise
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_user_term_content DB error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_user_term_content DB")
     finally:
         close_db_connection(connection)
 
@@ -941,7 +898,7 @@ def get_user_term_content(
         if "accessdenied" in err_lower or "forbidden" in err_lower:
             raise HTTPException(status_code=403, detail="S3 access denied")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=err_str)
+        raise InternalError(e, "get_user_term_content S3")
 
 
 @router.get("/terms/presigned-url")
@@ -962,8 +919,7 @@ def get_user_term_presigned_url(
         raise
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_user_term_presigned_url DB error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_user_term_presigned_url DB")
     finally:
         close_db_connection(connection)
 
@@ -981,10 +937,8 @@ def get_user_term_presigned_url(
         )
         return {"url": url, "term_type": term_type, "version": version}
     except Exception as e:
-        err_str = str(e)
-        logger.error(f"get_user_term_presigned_url S3 error: bucket={TERMS_BUCKET_NAME}, key={key}, error={err_str}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=err_str)
+        raise InternalError(e, "get_user_term_presigned_url S3")
 
 
 @router.get("/terms/current")
@@ -996,8 +950,7 @@ def get_terms_current():
         return {"terms": terms}
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_terms_current: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_terms_current")
     finally:
         close_db_connection(connection)
 
@@ -1011,8 +964,7 @@ def get_user_terms_status(user_id: int):
         return result
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"get_user_terms_status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "get_user_terms_status")
     finally:
         close_db_connection(connection)
 
@@ -1031,8 +983,7 @@ def post_terms_agree(body: TermsAgreeRequest):
         raise
     except Exception as e:
         traceback.print_exc()
-        logger.error(f"post_terms_agree: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        raise InternalError(e, "post_terms_agree")
     finally:
         close_db_connection(connection)
 
@@ -1102,12 +1053,7 @@ async def subjectReply(inquiry_id: int, reply: InquiryResponse):
         
         return {"message": "reply registered successfully"}
     except Exception as e:
-        print(e)
-        logger.error(f"서버 오류 발생: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"failed register reply: {str(e)}"
-        )
+        raise InternalError(e, "subjectReply")
     finally:
         close_db_connection(connection)
 
@@ -1210,13 +1156,8 @@ async def registerPushToken(
         }
         
     except Exception as e:
-        print(f"Error during registerPushToken: {e}")
         traceback.print_exc()
-        logger.error(f"Error during registerPushToken: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during registerPushToken: {str(e)}"
-        )
+        raise InternalError(e, "registerPushToken")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -1253,11 +1194,7 @@ async def deletePushToken(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error during deletePushToken: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during deletePushToken: {str(e)}"
-        )
+        raise InternalError(e, "deletePushToken")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -1331,13 +1268,8 @@ async def updatePushTokenAgreement(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during updatePushTokenAgreement: {e}")
         traceback.print_exc()
-        logger.error(f"Error during updatePushTokenAgreement: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during updatePushTokenAgreement: {str(e)}"
-        )
+        raise InternalError(e, "updatePushTokenAgreement")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -1481,14 +1413,9 @@ async def deleteUser(
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during deleteUser: {e}")
-        traceback.print_exc()
-        logger.error(f"Error during deleteUser: {str(e)}")
         connection.rollback()
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during deleteUser: {str(e)}"
-        )
+        traceback.print_exc()
+        raise InternalError(e, "deleteUser")
     finally:
         close_db_connection(connection)
 
@@ -1524,13 +1451,8 @@ def get_user_notice():
         }
         
     except Exception as e:
-        print(f"Error during get_user_notice: {e}")
         traceback.print_exc()
-        logger.error(f"Error during get_user_notice: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error during get_user_notice: {str(e)}"
-        )
+        raise InternalError(e, "get_user_notice")
     finally:
         cursor.close()
         close_db_connection(connection)
@@ -1591,11 +1513,7 @@ def find_account(request: FindAccountRequest):
                 detail="Firebase에서 해당 계정을 찾을 수 없습니다."
             )
         except Exception as e:
-            logger.error(f"Firebase user lookup error: {traceback.format_exc()}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"계정 확인 중 오류가 발생했습니다: {str(e)}"
-            )
+            raise InternalError(e, "find_account Firebase lookup")
         
         # 3. type에 따라 응답 반환
         if request.type == "find_id":
@@ -1637,13 +1555,8 @@ def find_account(request: FindAccountRequest):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"Error during find_account: {e}")
         traceback.print_exc()
-        logger.error(f"Error during find_account: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"계정 찾기 중 오류가 발생했습니다: {str(e)}"
-        )
+        raise InternalError(e, "find_account")
     finally:
         cursor.close()
         close_db_connection(connection)
