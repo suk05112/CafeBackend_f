@@ -485,7 +485,7 @@ def getStoreListByDistrict(
         # inspection_status는 'APPROVED'만, 메뉴 1개 이상인 것만, cursor 기반 페이지네이션
         if cursor_updated_at and cursor_store_id:
             db_cursor.execute('''
-            SELECT DISTINCT
+            SELECT
                 s.id,
                 s.store_name,
                 s.open_yn,
@@ -496,7 +496,6 @@ def getStoreListByDistrict(
                 s.store_lat,
                 s.store_lng
             FROM store s
-            INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
               AND s.contract_completed = TRUE
@@ -504,14 +503,13 @@ def getStoreListByDistrict(
                   s.updated_at < %s
                   OR (s.updated_at = %s AND s.id < %s)
               )
-            GROUP BY s.id
-            HAVING COUNT(m.id) >= 1
+              AND EXISTS (SELECT 1 FROM menu m WHERE m.store_id = s.id)
             ORDER BY s.updated_at DESC, s.id DESC
             LIMIT %s
             ''', (region_code, cursor_updated_at, cursor_updated_at, cursor_store_id, limit))
         else:
             db_cursor.execute('''
-            SELECT DISTINCT
+            SELECT
                 s.id,
                 s.store_name,
                 s.open_yn,
@@ -522,12 +520,10 @@ def getStoreListByDistrict(
                 s.store_lat,
                 s.store_lng
             FROM store s
-            INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
               AND s.contract_completed = TRUE
-            GROUP BY s.id
-            HAVING COUNT(m.id) >= 1
+              AND EXISTS (SELECT 1 FROM menu m WHERE m.store_id = s.id)
             ORDER BY s.updated_at DESC, s.id DESC
             LIMIT %s
             ''', (region_code, limit))

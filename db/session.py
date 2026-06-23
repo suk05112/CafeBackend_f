@@ -29,33 +29,23 @@ class ConnectionPool:
     def get_connection(self):
         try:
             conn = self._pool.get_nowait()
-            # 연결이 살아있는지 확인
-            try:
-                conn.ping(reconnect=True)
-            except:
-                conn = self._create_connection()
             return conn
         except:
             with self._lock:
                 if self._created < self.max_connections:
                     self._created += 1
                     return self._create_connection()
-            # 풀이 비면 기다림
             try:
                 return self._pool.get(timeout=5)
             except:
-                # 타임아웃 시 새 연결 생성
                 with self._lock:
                     self._created += 1
                     return self._create_connection()
-    
+
     def return_connection(self, conn):
         try:
-            # 연결 상태 확인 후 반환
-            conn.ping(reconnect=False)
             self._pool.put_nowait(conn)
         except:
-            # 연결이 끊어졌으면 닫고 새로 생성
             try:
                 conn.close()
             except:
