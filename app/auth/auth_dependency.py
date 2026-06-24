@@ -38,10 +38,12 @@ async def verify_firebase_token(request: Request,
     app_check_token: str = Header(None, alias="X-Firebase-AppCheck"),
     firebase_project: str = Header(None, alias="X-Firebase-Project")):
 
-    client_ip = request.headers.get("X-Real-IP") or request.client.host
-    if client_ip in {"118.42.1.29", "119.203.17.126", "16.184.58.200"}:
-        return None
-    
+    has_token = (authorization and authorization.startswith("Bearer ")) or app_check_token
+    if not has_token:
+        client_ip = request.headers.get("X-Real-IP") or request.client.host
+        if client_ip in {"118.42.1.29", "119.203.17.126", "16.184.58.200"}:
+            return None
+
     # 프로젝트 타입 결정 (기본값: user)
     if firebase_project and firebase_project.lower() == "owner":
         project_type = "owner"
@@ -105,9 +107,11 @@ async def verify_firebase_token_any(
 ):
     """user 앱 또는 owner 앱 토큰 중 하나라도 유효하면 허용.
     X-Firebase-Project 헤더 없이 호출하는 owner 앱 클라이언트를 위한 의존성."""
-    client_ip = request.headers.get("X-Real-IP") or request.client.host
-    if client_ip in {"118.42.1.29", "119.203.17.126", "16.184.58.200"}:
-        return None
+    has_token = (authorization and authorization.startswith("Bearer ")) or app_check_token
+    if not has_token:
+        client_ip = request.headers.get("X-Real-IP") or request.client.host
+        if client_ip in {"118.42.1.29", "119.203.17.126", "16.184.58.200"}:
+            return None
 
     last_error = None
     for project_type in ("user", "owner"):

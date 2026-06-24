@@ -44,6 +44,10 @@ class ConnectionPool:
 
     def return_connection(self, conn):
         try:
+            conn.rollback()
+        except:
+            pass
+        try:
             self._pool.put_nowait(conn)
         except:
             try:

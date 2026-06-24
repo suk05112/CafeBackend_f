@@ -104,7 +104,7 @@ def get_gifnut_image_url(
             'get_object',
             Params={
                 'Bucket': common_resources_bucket,
-                'Key': 'gifnut-logo.png'
+                'Key': 'AppIcon.png.png'
             },
             ExpiresIn=expires_in
         )
