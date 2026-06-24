@@ -8,6 +8,7 @@ from typing import Union
 from pydantic import BaseModel
 from loguru import logger
 
+import re
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
@@ -374,6 +375,12 @@ def updateGifticonUser(gifticon_id: int, user_id: int, user=Depends(verify_fireb
         cursor.close()
         close_db_connection(connection)
 
+def normalize_phone(phone: str) -> str:
+    phone = re.sub(r'[\s\-()]', '', phone)
+    if phone.startswith('+82'):
+        phone = '0' + phone[3:]
+    return phone
+
 class LinkGifticonRequest(BaseModel):
     user_id: int
     gifticon_id: int
@@ -406,7 +413,7 @@ def linkGifticonToUser(request: LinkGifticonRequest):
             )
         
         # 2. receiver_phone 일치 여부 확인
-        if gifticon['receiver_phone'] != request.receiver_phone:
+        if normalize_phone(gifticon['receiver_phone']) != normalize_phone(request.receiver_phone):
             print(f"receiver_phone does not match: {gifticon['receiver_phone']} != {request.receiver_phone}")
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
