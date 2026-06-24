@@ -220,7 +220,10 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
         if gifticon['status'] in ('USED', 'CANCELED'):
             return {'result': 1}  # 이미 사용/취소된 기프티콘
 
-        if gifticon['validity'] and gifticon['validity'] < get_kst_now().date():
+        validity = gifticon['validity']
+        if hasattr(validity, 'date'):
+            validity = validity.date()
+        if validity and validity < get_kst_now().date():
             return {'result': 2}  # 유효기간 만료
 
         import math
