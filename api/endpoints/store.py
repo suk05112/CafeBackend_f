@@ -18,6 +18,7 @@ from db.session import get_db_connection, close_db_connection
 from core.config import settings
 from core.region_code import get_region_from_district, get_region_name, get_district_name
 from core.s3_config import S3_CLIENT, BUCKET_NAME
+from app.aligo_service import send_store_review_result
 from core.exceptions import InternalError
 
 logger = logging.getLogger("cafe_backend")
@@ -1151,8 +1152,13 @@ def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate
         connection = get_db_connection()  # 환경에 맞는 DB 연결
         cursor = connection.cursor(pymysql.cursors.DictCursor) # DB에 접속 및 DB 객체를 가져옴
         
-        # 먼저 store가 존재하는지 확인
-        cursor.execute('''SELECT id FROM store WHERE id = %s''', (storeId,))
+        # 먼저 store와 owner 전화번호 함께 조회
+        cursor.execute('''
+            SELECT s.id, s.store_name, o.phone
+            FROM store s
+            JOIN owner o ON s.owner_id = o.id
+            WHERE s.id = %s
+        ''', (storeId,))
         store = cursor.fetchone()
         
         if not store:
@@ -1174,6 +1180,15 @@ def update_inspection_status(storeId: int, status_update: InspectionStatusUpdate
 
         # 상태 변경 성공 확인
         if cursor.rowcount > 0:
+            if status_value in ("APPROVED", "REJECTED") and store.get("phone"):
+                result_text = "승인" if status_value == "APPROVED" else "반려"
+                detail_text = status_update.inspection_msg or ("-" if status_value == "APPROVED" else "사유 없음")
+                send_store_review_result(
+                    receiver=store["phone"],
+                    result=result_text,
+                    detail=detail_text,
+                    recvname="사장님",
+                )
             return {"message": f"Store {storeId} inspection status updated to {status_value}"}
         else:
             raise HTTPException(
