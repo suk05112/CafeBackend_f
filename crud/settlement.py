@@ -212,16 +212,16 @@ def get_store_statistics(store_id: int) -> Dict:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        # 전체 발행 수
-        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s", (store_id,))
+        # 전체 발행 수 (정상 결제 완료된 것만)
+        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s AND status IN ('UNUSED', 'USED')", (store_id,))
         total_issued = cursor.fetchone()['total'] or 0
-        
+
         # 사용 수
         cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s AND status = 'USED'", (store_id,))
         total_used = cursor.fetchone()['total'] or 0
-        
+
         # 미사용 수
-        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s AND status != 'USED'", (store_id,))
+        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE store_id = %s AND status = 'UNUSED'", (store_id,))
         total_unused = cursor.fetchone()['total'] or 0
         
         return {
