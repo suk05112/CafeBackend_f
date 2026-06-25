@@ -15,6 +15,14 @@ from core.config import settings
 
 ALIGO_SEND_URL = "https://kakaoapi.aligo.in/akv10/alimtalk/send/"
 
+
+def _normalize_phone(phone: str) -> str:
+    """'+821012345678' 또는 '01012345678' 형태를 '01012345678'으로 정규화"""
+    phone = phone.strip().replace("-", "").replace(" ", "")
+    if phone.startswith("+82"):
+        phone = "0" + phone[3:]
+    return phone
+
 CHANNEL_ADD_BUTTON = {
     "button": [{
         "name": "채널 추가",
@@ -57,7 +65,7 @@ def _send(
     }
 
     for i, r in enumerate(recipients, start=1):
-        params[f"receiver_{i}"] = r.receiver
+        params[f"receiver_{i}"] = _normalize_phone(r.receiver)
         params[f"subject_{i}"] = r.subject
         params[f"message_{i}"] = r.message
         if r.recvname:
