@@ -567,7 +567,7 @@ async def login_user(
 
         if result:
             user_id = result["id"]
-            user_email = result.get("email") or None
+            user_email = result.get("email") or result.get("fb_email") or None
 
             print("이미 등록 islinked", islinked)
             # 이미 등록된 유저
