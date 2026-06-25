@@ -1143,6 +1143,47 @@ def update_settlement_status(settlement_id: int, body: dict):
         updated = settlement_crud.update_settlement_status(settlement_id, status, failure_reason)
         if not updated:
             raise HTTPException(status_code=404, detail="Settlement not found")
+
+        if status == "COMPLETED":
+            try:
+                from app.aligo_service import send_settlement_complete
+                import pymysql
+                from db.session import get_db_connection, close_db_connection
+                conn = get_db_connection()
+                cur = conn.cursor(pymysql.cursors.DictCursor)
+                try:
+                    cur.execute("""
+                        SELECT s.store_id, st.store_name,
+                               s.period_start, s.period_end,
+                               s.net_payout_amount,
+                               COALESCE(s.bank_name, a.bank) AS bank_name,
+                               COALESCE(s.account_number, a.account) AS account_number,
+                               o.phone
+                        FROM settlement s
+                        JOIN store st ON s.store_id = st.id
+                        JOIN owner o ON st.owner_id = o.id
+                        LEFT JOIN account a ON s.store_id = a.store_id
+                        WHERE s.settlement_id = %s
+                    """, (settlement_id,))
+                    row = cur.fetchone()
+                finally:
+                    cur.close()
+                    close_db_connection(conn)
+
+                if row and row.get("phone"):
+                    period = f"{row['period_start'].strftime('%Y.%m.%d')} ~ {row['period_end'].strftime('%Y.%m.%d')}"
+                    amount = f"{int(row['net_payout_amount'] or 0):,}"
+                    send_settlement_complete(
+                        receiver=row["phone"],
+                        store_name=row["store_name"] or "",
+                        period=period,
+                        amount=amount,
+                        bank_name=row["bank_name"] or "",
+                        account_number=row["account_number"] or "",
+                    )
+            except Exception:
+                print(f"[알림톡] 정산 완료 발송 실패: {traceback.format_exc()}")
+
         return {"success": True, "settlement_id": settlement_id, "status": status}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
