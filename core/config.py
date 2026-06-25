@@ -35,6 +35,12 @@ class Settings(BaseSettings):
     payletter_naver_client_id: str = Field(default="", description="Payletter 네이버페이 Client ID")
     payletter_naver_payment_api_key: str = Field(default="", description="Payletter 네이버페이 Payment API Key")
 
+    # 알리고 카카오 알림톡 설정
+    aligo_api_key: str = Field(default="", description="알리고 API Key")
+    aligo_user_id: str = Field(default="", description="알리고 사용자 ID")
+    aligo_sender_key: str = Field(default="", description="알림톡 발신프로필 키")
+    aligo_sender: str = Field(default="", description="발신자 전화번호")
+
     def get_apple_private_key(self) -> str:
         """
         .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 반환
