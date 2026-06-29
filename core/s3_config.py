@@ -5,6 +5,7 @@ S3 공통 설정 모듈
 import os
 import boto3
 from botocore.client import Config
+from core.config import settings
 
 # 환경 변수 확인
 env = os.getenv("ENV", "dev")
@@ -22,8 +23,8 @@ TERMS_BUCKET_NAME = "cafeplatform"
 # S3 클라이언트 설정
 S3_CLIENT = boto3.client(
     's3',
-    aws_access_key_id='***REMOVED_AWS_KEY***',
-    aws_secret_access_key='***REMOVED_AWS_SECRET***',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
     region_name='ap-northeast-2',
     config=Config(signature_version='s3v4', region_name='ap-northeast-2')
 )

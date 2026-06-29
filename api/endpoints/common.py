@@ -18,6 +18,7 @@ from app.fcm_service import (
 from app.database import get_db_connection, close_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from core.exceptions import InternalError
+from core.config import settings
 import boto3
 from botocore.client import Config
 
@@ -34,8 +35,8 @@ bucket_name = BUCKET_NAME
 # 버킷이 ap-northeast-2에 있으므로 별도의 클라이언트 생성
 common_resources_s3 = boto3.client(
     's3',
-    aws_access_key_id='***REMOVED_AWS_KEY***',
-    aws_secret_access_key='***REMOVED_AWS_SECRET***',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
     region_name='ap-northeast-2',  # common-gifnut-resources 버킷의 실제 리전
     config=Config(signature_version='s3v4')
 )

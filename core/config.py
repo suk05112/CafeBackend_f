@@ -35,6 +35,10 @@ class Settings(BaseSettings):
     payletter_naver_client_id: str = Field(default="", description="Payletter 네이버페이 Client ID")
     payletter_naver_payment_api_key: str = Field(default="", description="Payletter 네이버페이 Payment API Key")
 
+    # AWS 설정
+    aws_access_key_id: str = Field(default="", description="AWS Access Key ID")
+    aws_secret_access_key: str = Field(default="", description="AWS Secret Access Key")
+
     # 알리고 카카오 알림톡 설정
     aligo_api_key: str = Field(default="", description="알리고 API Key")
     aligo_user_id: str = Field(default="", description="알리고 사용자 ID")

@@ -56,8 +56,8 @@ print(f"S3 Bucket Name: {bucket_name} (ENV: {env})")
 # CloudWatch 로깅 설정 (dev/prod 구분)
 boto3_client = boto3.client(
     'logs',
-    aws_access_key_id='***REMOVED_AWS_KEY***',
-    aws_secret_access_key='***REMOVED_AWS_SECRET***',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
     region_name='ap-northeast-2'
 )
 
