@@ -34,8 +34,8 @@ bucket_name = BUCKET_NAME
 # 버킷이 ap-northeast-2에 있으므로 별도의 클라이언트 생성
 common_resources_s3 = boto3.client(
     's3',
-    aws_access_key_id='***REMOVED***',
-    aws_secret_access_key='***REMOVED***',
+    aws_access_key_id='***REMOVED_AWS_KEY***',
+    aws_secret_access_key='***REMOVED_AWS_SECRET***',
     region_name='ap-northeast-2',  # common-gifnut-resources 버킷의 실제 리전
     config=Config(signature_version='s3v4')
 )
