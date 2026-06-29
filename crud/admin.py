@@ -122,64 +122,68 @@ def get_dashboard_statistics(connection) -> Dict:
         cursor.close()
 
 
-def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: int = 20,
+               inspection_status: Optional[str] = None, contract_completed: Optional[str] = None) -> Dict:
     """매장 리스트 (관리자용, 페이지네이션)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
+    def _build_conditions(search, inspection_status, contract_completed):
+        conditions = []
+        params = []
+        if search:
+            conditions.append('(s.store_name LIKE %s OR o.name LIKE %s)')
+            pattern = f'%{search}%'
+            params += [pattern, pattern]
+        if inspection_status:
+            conditions.append('s.inspection_status = %s')
+            params.append(inspection_status)
+        if contract_completed:
+            conditions.append('s.contract_completed = %s')
+            params.append(contract_completed)
+        where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        return where, params
+
     try:
-        # 전체 개수 조회
-        count_query = '''
+        where, base_params = _build_conditions(search, inspection_status, contract_completed)
+
+        count_query = f'''
             SELECT COUNT(*) as total
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
+            {where}
         '''
-        
-        count_params = []
-        if search:
-            count_query += ' WHERE s.store_name LIKE %s OR o.name LIKE %s'
-            search_pattern = f'%{search}%'
-            count_params = [search_pattern, search_pattern]
-        
-        cursor.execute(count_query, count_params)
+        cursor.execute(count_query, base_params)
         total_count = cursor.fetchone()['total']
-        
-        # 페이지네이션 계산
+
         offset = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-        
-        # 데이터 조회
-        query = '''
-            SELECT 
+
+        query = f'''
+            SELECT
                 s.id,
                 s.owner_id,
                 s.store_name as name,
                 s.created_at,
                 s.inspection_status as status,
+                s.contract_completed,
                 s.store_address as address,
                 o.name as owner_name
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
+            {where}
+            ORDER BY s.created_at DESC
+            LIMIT %s OFFSET %s
         '''
-        
-        params = []
-        if search:
-            query += ' WHERE s.store_name LIKE %s OR o.name LIKE %s'
-            search_pattern = f'%{search}%'
-            params = [search_pattern, search_pattern]
-        
-        query += ' ORDER BY s.created_at DESC'
-        query += ' LIMIT %s OFFSET %s'
-        params.extend([limit, offset])
-        
+        params = base_params + [limit, offset]
         cursor.execute(query, params)
         stores = cursor.fetchall()
-        
+
         result = []
         for store in stores:
             store['created_at'] = store['created_at'].isoformat() if store['created_at'] else None
             store['approved'] = store['status'].upper() == 'APPROVED' if store['status'] else False
             result.append(store)
-        
+
         return {
             'items': result,
             'total': total_count,

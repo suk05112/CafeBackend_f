@@ -1,7 +1,10 @@
 """Admin API endpoints"""
 import traceback
 import uuid
+import re
+import io
 from fastapi import APIRouter, HTTPException, status, Query
+from fastapi.responses import StreamingResponse
 from typing import Optional
 from db.session import get_db_connection, close_db_connection
 from crud import admin as admin_crud
@@ -11,8 +14,27 @@ from crud import terms as terms_crud
 from models.store import StoreCreate
 from models.menu import Menu
 from core.s3_config import S3_CLIENT, BUCKET_NAME, TERMS_BUCKET_NAME
+import os
+import openpyxl
+from copy import copy
+
+TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), '../../templates/contract_template.xlsx')
 
 router = APIRouter()
+
+
+def _normalize_phone(phone: str) -> str:
+    """전화번호를 010-XXXX-XXXX 형식으로 정규화"""
+    if not phone:
+        return ''
+    digits = re.sub(r'\D', '', phone)
+    if digits.startswith('82'):
+        digits = '0' + digits[2:]
+    if not digits.startswith('010'):
+        return phone
+    if len(digits) == 11:
+        return f'{digits[:3]}-{digits[3:7]}-{digits[7:]}'
+    return phone
 
 
 @router.get("/dashboard/statistics")
@@ -29,16 +51,103 @@ def get_dashboard_statistics():
         close_db_connection(connection)
 
 
+@router.get("/stores/export/excel")
+def export_stores_excel(
+    search: Optional[str] = Query(None),
+    inspection_status: Optional[str] = Query(None),
+    contract_completed: Optional[str] = Query(None),
+):
+    """계약서 발송용 엑셀 파일 생성 - 양식 템플릿 기반"""
+    connection = get_db_connection()
+    try:
+        import pymysql
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+        query = '''
+            SELECT
+                s.store_name,
+                s.store_address,
+                s.business_number,
+                o.name AS owner_name,
+                o.email AS owner_email,
+                o.phone AS owner_phone
+            FROM store s
+            LEFT JOIN owner o ON s.owner_id = o.id
+        '''
+        conditions = []
+        params = []
+
+        if search:
+            conditions.append('(s.store_name LIKE %s OR o.name LIKE %s)')
+            pattern = f'%{search}%'
+            params += [pattern, pattern]
+        if inspection_status:
+            conditions.append('s.inspection_status = %s')
+            params.append(inspection_status)
+        if contract_completed:
+            conditions.append('s.contract_completed = %s')
+            params.append(contract_completed)
+
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
+        query += ' ORDER BY s.created_at DESC'
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        # 양식 템플릿을 복사해서 데이터 채우기
+        template_path = os.path.abspath(TEMPLATE_PATH)
+        wb = openpyxl.load_workbook(template_path)
+        ws = wb['대량발송']
+
+        # 데이터는 12행부터 입력 (1~11행은 유의사항+헤더, 수정 금지)
+        DATA_START_ROW = 12
+        for row_idx, row in enumerate(rows, start=DATA_START_ROW):
+            # A: 수신자, B: 이메일, C: 휴대폰번호, D: 비밀번호(공란)
+            # E: 폼 이름(공란), F: 주소, G: 상호, H: 이름, I: 사업자번호
+            ws.cell(row=row_idx, column=1, value=row.get('owner_name') or '')
+            ws.cell(row=row_idx, column=2, value=row.get('owner_email') or '')
+            ws.cell(row=row_idx, column=3, value=_normalize_phone(row.get('owner_phone') or ''))
+            ws.cell(row=row_idx, column=4, value='')
+            ws.cell(row=row_idx, column=5, value='')
+            ws.cell(row=row_idx, column=6, value=row.get('store_address') or '')
+            ws.cell(row=row_idx, column=7, value=row.get('store_name') or '')
+            ws.cell(row=row_idx, column=8, value=row.get('owner_name') or '')
+            ws.cell(row=row_idx, column=9, value=row.get('business_number') or '')
+
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+
+        from urllib.parse import quote
+        filename = '기프넛_계약서_발송목록.xlsx'
+        encoded_filename = quote(filename, safe='')
+        return StreamingResponse(
+            output,
+            media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            headers={
+                'Content-Disposition': f"attachment; filename=\"contract.xlsx\"; filename*=UTF-8''{encoded_filename}"
+            }
+        )
+    except Exception as e:
+        print(f"Error in export_stores_excel: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
 @router.get("/stores")
 def get_stores(
     search: Optional[str] = Query(None, description="매장 이름, 사장님 이름으로 검색"),
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    inspection_status: Optional[str] = Query(None, description="승인상태 필터: PENDING, APPROVED, REJECTED, CLOSED"),
+    contract_completed: Optional[str] = Query(None, description="계약상태 필터: NONE, SENT, COMPLETED"),
 ):
     """매장 리스트 (관리자용, 페이지네이션)"""
     connection = get_db_connection()
     try:
-        result = admin_crud.get_stores(connection, search, page, limit)
+        result = admin_crud.get_stores(connection, search, page, limit, inspection_status, contract_completed)
         return {
             'stores': result['items'],
             'pagination': {
@@ -1309,6 +1418,97 @@ def get_owner_detail(owner_id: int):
         raise
     except Exception as e:
         print(f"Error in get_owner_detail: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+# ── 앱 버전 관리 ──────────────────────────────────────────────────────────────
+
+from pydantic import BaseModel as _BaseModel
+from typing import Optional as _Optional, Literal as _Literal
+import pymysql as _pymysql
+
+class AppVersionCreate(_BaseModel):
+    platform: _Literal['ios', 'android']
+    version: str
+    memo: _Optional[str] = None
+
+
+@router.get("/app-versions")
+def list_app_versions(platform: _Optional[str] = None):
+    """앱 버전 목록 조회 (매니저용)"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        if platform:
+            cursor.execute(
+                "SELECT * FROM app_versions WHERE platform = %s ORDER BY created_at DESC",
+                (platform,)
+            )
+        else:
+            cursor.execute("SELECT * FROM app_versions ORDER BY created_at DESC")
+        rows = cursor.fetchall()
+        for r in rows:
+            r['is_force_update'] = bool(r['is_force_update'])
+            if r.get('created_at'):
+                r['created_at'] = r['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        return rows
+    except Exception as e:
+        print(f"Error in list_app_versions: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/app-versions", status_code=201)
+def create_app_version(body: AppVersionCreate):
+    """앱 버전 등록"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        cursor.execute(
+            "INSERT INTO app_versions (platform, version, is_force_update, memo) VALUES (%s, %s, 0, %s)",
+            (body.platform, body.version, body.memo)
+        )
+        connection.commit()
+        new_id = cursor.lastrowid
+        cursor.execute("SELECT * FROM app_versions WHERE id = %s", (new_id,))
+        row = cursor.fetchone()
+        row['is_force_update'] = bool(row['is_force_update'])
+        if row.get('created_at'):
+            row['created_at'] = row['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        return row
+    except Exception as e:
+        print(f"Error in create_app_version: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.patch("/app-versions/{version_id}")
+def update_app_version_force(version_id: int, is_force_update: bool):
+    """강제업데이트 여부 변경"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        cursor.execute(
+            "UPDATE app_versions SET is_force_update = %s WHERE id = %s",
+            (1 if is_force_update else 0, version_id)
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Version not found")
+        connection.commit()
+        cursor.execute("SELECT * FROM app_versions WHERE id = %s", (version_id,))
+        row = cursor.fetchone()
+        row['is_force_update'] = bool(row['is_force_update'])
+        if row.get('created_at'):
+            row['created_at'] = row['created_at'].strftime('%Y-%m-%d %H:%M:%S')
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_app_version_force: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         close_db_connection(connection)

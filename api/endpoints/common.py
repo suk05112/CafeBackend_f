@@ -181,3 +181,36 @@ def broadcast_notification(notification: NotificationRequest):
         raise InternalError(e, "broadcast_notification")
 
 
+
+
+
+@router.get("/app-version")
+def get_app_version(
+    platform: Literal['ios', 'android'] = Query(..., description="플랫폼"),
+):
+    """앱 강제업데이트 여부 확인 — 가장 최근에 등록된 강제업데이트 버전 반환"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        cursor.execute(
+            """
+            SELECT version, is_force_update
+            FROM app_versions
+            WHERE platform = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (platform,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {"version": None, "is_force_update": False}
+        return {
+            "version": row["version"],
+            "is_force_update": bool(row["is_force_update"]),
+        }
+    except Exception as e:
+        logger.error(f"Error in get_app_version: {traceback.format_exc()}")
+        raise InternalError(e, "get_app_version")
+    finally:
+        close_db_connection(connection)
