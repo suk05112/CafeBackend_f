@@ -236,7 +236,7 @@ async def log_requests(request: Request, call_next):
     
     # 응답 본문 읽기 (에러 응답 또는 로그인/정산 엔드포인트만, 최대 1000자로 제한)
     response_body_str = None
-    if should_log and (response.status_code >= 400 or is_login_endpoint or is_settlement_endpoint):
+    if should_log and (response.status_code >= 400 or is_login_endpoint or is_isRegistered_endpoint or is_settlement_endpoint):
         try:
             response_body = [chunk async for chunk in response.body_iterator]
             response.body_iterator = iterate_in_threadpool(iter(response_body))
