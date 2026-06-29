@@ -722,7 +722,7 @@ async def idRegisteredUserByPhone(
         cursor.close()
 
 @router.get("/isRegistered/{phoneNumber}")
-async def idRegisteredAppleUser(phoneNumber: str):
+async def idRegisteredAppleUser(phoneNumber: str, _=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                     
     cursor = connection.cursor()
 
