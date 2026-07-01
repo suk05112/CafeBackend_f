@@ -26,7 +26,7 @@ from models.owner import OwnerInquiryResponse
 from models.owner import OwnerTermsAgreeRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from app.fcm_service import send_fcm_notification_to_owner
-from app.auth.auth_dependency import verify_firebase_token
+from app.auth.auth_dependency import verify_firebase_token, verify_firebase_token_any
 from crud import terms as terms_crud
 from core.exceptions import InternalError
 
@@ -718,7 +718,7 @@ async def updateOwnerPushTokenAgreement(
         close_db_connection(connection)
 
 @router.delete("/{owner_id}")
-async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
+async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token_any)):
     """
     사장님 회원 탈퇴 API (Soft Delete)
     owner_id에 해당하는 사장님 정보를 soft delete 처리
@@ -872,7 +872,7 @@ def get_owner_settlement_data(
 
 
 @router.get("/settlement/detail/{settlement_id}")
-def get_owner_settlement_detail(settlement_id: int, user=Depends(verify_firebase_token)):
+def get_owner_settlement_detail(settlement_id: int, user=Depends(verify_firebase_token_any)):
     """사장님 정산 상세: settlement 헤더 + details 건별 내역"""
     try:
         from crud import settlement as settlement_crud
