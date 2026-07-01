@@ -11,7 +11,7 @@ import pymysql
 from db.session import get_db_connection, close_db_connection
 from models.settlement import Account
 from crud import settlement as settlement_crud
-from app.auth.auth_dependency import verify_firebase_token
+from app.auth.auth_dependency import verify_firebase_token, verify_firebase_token_any
 from core.exceptions import InternalError
 
 router = APIRouter()
@@ -51,7 +51,7 @@ def register_account(store_id: int, account: Account, user=Depends(verify_fireba
 
 
 @router.get("/list/{store_id}")
-def get_settlement_list(store_id: int):
+def get_settlement_list(store_id: int, user=Depends(verify_firebase_token_any)):
     """매장별 정산 리스트 조회"""
     try:
         settlements = settlement_crud.get_settlements_by_store(store_id)
@@ -64,7 +64,7 @@ def get_settlement_list(store_id: int):
 
 
 @router.get("/detail/{settlement_id}")
-def get_detail_settlements(settlement_id: int):
+def get_detail_settlements(settlement_id: int, user=Depends(verify_firebase_token_any)):
     """정산 상세 내역 조회"""
     try:
         details = settlement_crud.get_settlement_detail(settlement_id)
@@ -77,7 +77,7 @@ def get_detail_settlements(settlement_id: int):
 
 
 @router.get("/info/{store_id}")
-def get_account(store_id: int):
+def get_account(store_id: int, user=Depends(verify_firebase_token_any)):
     """계좌 정보 조회"""
     try:
         account = settlement_crud.get_account_by_store(store_id)
@@ -92,7 +92,7 @@ def get_account(store_id: int):
 
 
 @router.put("/account/{store_id}")
-def update_account(store_id: int, account: Account):
+def update_account(store_id: int, account: Account, user=Depends(verify_firebase_token_any)):
     """계좌 정보 변경"""
     try:
         settlement_crud.update_account(store_id, account)
