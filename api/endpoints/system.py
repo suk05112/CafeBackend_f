@@ -2,7 +2,8 @@
 import shutil
 import subprocess
 import traceback
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+from app.auth.auth_dependency import verify_firebase_token_any
 from core.exceptions import InternalError
 
 router = APIRouter()
@@ -14,7 +15,7 @@ def _run(cmd: list[str]) -> str:
 
 
 @router.get("/disk")
-def get_disk_usage():
+def get_disk_usage(user=Depends(verify_firebase_token_any)):
     try:
         usage = shutil.disk_usage("/")
         total_gb = round(usage.total / (1024 ** 3), 2)
@@ -32,7 +33,7 @@ def get_disk_usage():
 
 
 @router.get("/docker")
-def get_docker_usage():
+def get_docker_usage(user=Depends(verify_firebase_token_any)):
     try:
         output = _run(["docker", "system", "df", "--format", "json"])
         # docker system df --format json outputs one JSON object per line (BuildKit 제외)
@@ -69,7 +70,7 @@ def get_docker_usage():
 
 
 @router.post("/cleanup")
-def run_cleanup():
+def run_cleanup(user=Depends(verify_firebase_token_any)):
     try:
         output = _run(["docker", "system", "prune", "-f"])
         return {"success": True, "output": output}
