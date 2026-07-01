@@ -23,12 +23,19 @@ dev_firebase_cred_path = os.getenv(
     os.path.join(BASE_DIR, "gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json")
 )
 
+# Manager 앱 Firebase 인증서 파일 경로
+manager_firebase_cred_path = os.getenv(
+    "MANAGER_FIREBASE_CRED_PATH",
+    os.path.join(BASE_DIR, "gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json")
+)
+
 print("initialize firebase")
 
 # 앱 객체를 모듈 변수로 관리 (fcm_service에서 app= 파라미터로 사용)
 user_app = None
 owner_app = None
 dev_app = None
+manager_app = None
 
 # 사용자 앱 초기화
 if "user_app" not in firebase_admin._apps:
@@ -65,3 +72,17 @@ except FileNotFoundError:
     print(f"⚠️  Dev App Firebase credentials not found: {dev_firebase_cred_path}")
 except Exception as e:
     print(f"⚠️  Dev App Firebase initialization failed: {str(e)}")
+
+# Manager 앱 Firebase 초기화
+try:
+    if "manager_app" not in firebase_admin._apps:
+        manager_cred = credentials.Certificate(manager_firebase_cred_path)
+        manager_app = firebase_admin.initialize_app(manager_cred, name="manager_app")
+        print(f"✅ Manager App Firebase initialized: {manager_firebase_cred_path}")
+    else:
+        manager_app = firebase_admin.get_app("manager_app")
+        print("⚠️  Manager App Firebase already initialized")
+except FileNotFoundError:
+    print(f"⚠️  Manager App Firebase credentials not found: {manager_firebase_cred_path}")
+except Exception as e:
+    print(f"⚠️  Manager App Firebase initialization failed: {str(e)}")
