@@ -3,9 +3,10 @@ import traceback
 import uuid
 import re
 import io
-from fastapi import APIRouter, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from typing import Optional
+from app.auth.auth_dependency import verify_manager_api_key as verify_firebase_token
 from db.session import get_db_connection, close_db_connection
 from crud import admin as admin_crud
 from crud import store as store_crud
@@ -38,7 +39,7 @@ def _normalize_phone(phone: str) -> str:
 
 
 @router.get("/dashboard/statistics")
-def get_dashboard_statistics():
+def get_dashboard_statistics(user=Depends(verify_firebase_token)):
     """대시보드 통계 데이터"""
     connection = get_db_connection()
     try:
@@ -56,6 +57,7 @@ def export_stores_excel(
     search: Optional[str] = Query(None),
     inspection_status: Optional[str] = Query(None),
     contract_completed: Optional[str] = Query(None),
+    user=Depends(verify_firebase_token),
 ):
     """계약서 발송용 엑셀 파일 생성 - 양식 템플릿 기반"""
     connection = get_db_connection()
@@ -143,6 +145,7 @@ def get_stores(
     limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
     inspection_status: Optional[str] = Query(None, description="승인상태 필터: PENDING, APPROVED, REJECTED, CLOSED"),
     contract_completed: Optional[str] = Query(None, description="계약상태 필터: NONE, SENT, COMPLETED"),
+    user=Depends(verify_firebase_token),
 ):
     """매장 리스트 (관리자용, 페이지네이션)"""
     connection = get_db_connection()
@@ -165,7 +168,7 @@ def get_stores(
 
 
 @router.get("/stores/{store_id}")
-def get_store_detail(store_id: int):
+def get_store_detail(store_id: int, user=Depends(verify_firebase_token)):
     """매장 상세 정보"""
     connection = get_db_connection()
     try:
@@ -186,7 +189,8 @@ def get_store_detail(store_id: int):
 def get_store_menus(
     store_id: int,
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """매장 메뉴 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -212,7 +216,8 @@ def get_store_menus(
 def get_store_giftcards(
     store_id: int,
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """매장의 깊티(기프티콘) 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -238,7 +243,8 @@ def get_store_giftcards(
 def get_users(
     search: Optional[str] = Query(None, description="이름, 아이디, 전화번호, ID로 검색"),
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """유저 리스트 (관리자용, 페이지네이션)"""
     connection = get_db_connection()
@@ -261,7 +267,7 @@ def get_users(
 
 
 @router.get("/users/{user_id}")
-def get_user_detail(user_id: int):
+def get_user_detail(user_id: int, user=Depends(verify_firebase_token)):
     """유저 상세 정보"""
     connection = get_db_connection()
     try:
@@ -279,7 +285,7 @@ def get_user_detail(user_id: int):
 
 
 @router.get("/users/{user_id}/orders")
-def get_user_orders(user_id: int):
+def get_user_orders(user_id: int, user=Depends(verify_firebase_token)):
     """유저 주문 내역"""
     connection = get_db_connection()
     try:
@@ -293,7 +299,7 @@ def get_user_orders(user_id: int):
 
 
 @router.get("/users/{user_id}/giftcards")
-def get_user_giftcards(user_id: int):
+def get_user_giftcards(user_id: int, user=Depends(verify_firebase_token)):
     """유저 기프티콘 리스트"""
     connection = get_db_connection()
     try:
@@ -310,7 +316,8 @@ def get_user_giftcards(user_id: int):
 def get_orders(
     search: Optional[str] = Query(None, description="주문번호, user id로 검색"),
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """주문 리스트 (관리자용, 페이지네이션)"""
     connection = get_db_connection()
@@ -333,7 +340,7 @@ def get_orders(
 
 
 @router.get("/orders/{order_id}")
-def get_order_detail(order_id: int):
+def get_order_detail(order_id: int, user=Depends(verify_firebase_token)):
     """주문 상세 정보"""
     connection = get_db_connection()
     try:
@@ -351,7 +358,7 @@ def get_order_detail(order_id: int):
 
 
 @router.get("/orders/{order_id}/giftcards")
-def get_order_giftcards(order_id: int):
+def get_order_giftcards(order_id: int, user=Depends(verify_firebase_token)):
     """주문의 기프티콘 리스트"""
     connection = get_db_connection()
     try:
@@ -367,7 +374,8 @@ def get_order_giftcards(order_id: int):
 @router.get("/menus")
 def get_all_menus(
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """전체 메뉴 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -393,7 +401,8 @@ def get_all_menus(
 def get_notices(
     target: Optional[str] = Query(None, description="'user' 또는 'owner', None이면 둘 다"),
     page: int = Query(1, ge=1, description="페이지 번호"),
-    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수")
+    limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """공지사항 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -416,7 +425,7 @@ def get_notices(
 
 
 @router.post("/notices")
-def create_notice(notice: dict):
+def create_notice(notice: dict, user=Depends(verify_firebase_token)):
     """공지사항 등록
     
     Body:
@@ -448,7 +457,7 @@ def create_notice(notice: dict):
 
 
 @router.get("/notices/{target}/{notice_id}")
-def get_notice_detail(target: str, notice_id: int):
+def get_notice_detail(target: str, notice_id: int, user=Depends(verify_firebase_token)):
     """공지사항 상세 조회"""
     connection = get_db_connection()
     try:
@@ -469,7 +478,7 @@ def get_notice_detail(target: str, notice_id: int):
 
 
 @router.put("/notices/{target}/{notice_id}")
-def update_notice(target: str, notice_id: int, notice: dict):
+def update_notice(target: str, notice_id: int, notice: dict, user=Depends(verify_firebase_token)):
     """공지사항 수정"""
     connection = get_db_connection()
     try:
@@ -493,7 +502,7 @@ def update_notice(target: str, notice_id: int, notice: dict):
 
 
 @router.delete("/notices/{target}/{notice_id}")
-def delete_notice(target: str, notice_id: int):
+def delete_notice(target: str, notice_id: int, user=Depends(verify_firebase_token)):
     """공지사항 삭제"""
     connection = get_db_connection()
     try:
@@ -516,7 +525,7 @@ def delete_notice(target: str, notice_id: int):
 # ---------- 약관 관리 ----------
 
 @router.post("/terms")
-def create_term(body: dict):
+def create_term(body: dict, user=Depends(verify_firebase_token)):
     """약관 종류 추가. Body: target('user'|'owner'), term_type, title, required(optional, default True)"""
     connection = get_db_connection()
     try:
@@ -542,7 +551,7 @@ def create_term(body: dict):
 
 
 @router.post("/terms/{term_id}/version")
-def create_term_version(term_id: int, body: dict):
+def create_term_version(term_id: int, body: dict, user=Depends(verify_firebase_token)):
     """약관 버전 추가. 이미 같은 버전이 있으면 기존 version_id로 성공 반환(재등록/재업로드 허용)."""
     connection = get_db_connection()
     try:
@@ -580,7 +589,7 @@ def create_term_version(term_id: int, body: dict):
 
 
 @router.get("/terms/all")
-def get_all_terms(target: Optional[str] = Query(None, description="'user' 또는 'owner', None이면 전체")):
+def get_all_terms(target: Optional[str] = Query(None, description="'user' 또는 'owner', None이면 전체"), user=Depends(verify_firebase_token)):
     """모든 약관 종류 및 버전 조회 (관리자용). target 지정 시 해당만."""
     connection = get_db_connection()
     try:
@@ -596,7 +605,7 @@ def get_all_terms(target: Optional[str] = Query(None, description="'user' 또는
 
 
 @router.put("/terms_version/{version_id}")
-def update_term_version(version_id: int, body: dict):
+def update_term_version(version_id: int, body: dict, user=Depends(verify_firebase_token)):
     """약관 버전 수정. Body: optional version, notice_date, effective_date, reagreement_required. 시행일은 공지일+30일 유지."""
     connection = get_db_connection()
     try:
@@ -633,6 +642,7 @@ def update_term_version(version_id: int, body: dict):
 def get_term_content(
     target: str = Query(..., description="user 또는 owner"),
     filename: str = Query(..., description="파일명 예: service_term_260101.html"),
+    user=Depends(verify_firebase_token),
 ):
     """S3에서 약관 본문 파일 조회. key: terms/{user|partner}/{filename}"""
     if target not in ("user", "owner"):
@@ -734,7 +744,7 @@ def _parse_terms_filename(filename: str, target: str):
 
 
 @router.post("/terms/upload")
-def upload_term_file(body: dict):
+def upload_term_file(body: dict, user=Depends(verify_firebase_token)):
     """S3에 약관 txt 업로드 후 DB에 term/term_version 등록. Body: target(user|owner), filename, content [, title, notice_date, effective_date, reagreement_required]"""
     target = body.get("target")
     filename = body.get("filename")
@@ -816,7 +826,7 @@ def upload_term_file(body: dict):
 
 
 @router.post("/test/store")
-def create_test_store(store: StoreCreate):
+def create_test_store(store: StoreCreate, user=Depends(verify_firebase_token)):
     """테스트 매장 추가"""
     try:
         store_id = store_crud.create_store(store)
@@ -858,7 +868,7 @@ def create_test_store(store: StoreCreate):
 
 
 @router.post("/test/menu/{store_id}")
-def create_test_menu(store_id: int, menu: Menu):
+def create_test_menu(store_id: int, menu: Menu, user=Depends(verify_firebase_token)):
     """테스트 메뉴 추가"""
     try:
         if menu.store_id != store_id:
@@ -883,7 +893,7 @@ def create_test_menu(store_id: int, menu: Menu):
 
 
 @router.get("/promotions")
-def get_all_promotions(active_only: bool = Query(False, description="활성 프로모션만 조회")):
+def get_all_promotions(active_only: bool = Query(False, description="활성 프로모션만 조회"), user=Depends(verify_firebase_token)):
     """전체 프로모션 리스트 조회 (적용 매장 수 포함)"""
     try:
         from crud import promotion as promotion_crud
@@ -895,7 +905,7 @@ def get_all_promotions(active_only: bool = Query(False, description="활성 프�
 
 
 @router.post("/promotions")
-def create_fee_promotion(promotion: dict):
+def create_fee_promotion(promotion: dict, user=Depends(verify_firebase_token)):
     """프로모션 생성
 
     Body:
@@ -934,7 +944,7 @@ def create_fee_promotion(promotion: dict):
 
 
 @router.get("/promotions/{promo_id}")
-def get_promotion_detail(promo_id: int):
+def get_promotion_detail(promo_id: int, user=Depends(verify_firebase_token)):
     """프로모션 상세 조회 (적용 매장 목록 포함)"""
     try:
         from crud import promotion as promotion_crud
@@ -950,7 +960,7 @@ def get_promotion_detail(promo_id: int):
 
 
 @router.delete("/promotions/{promo_id}")
-def delete_fee_promotion(promo_id: int):
+def delete_fee_promotion(promo_id: int, user=Depends(verify_firebase_token)):
     """프로모션 삭제"""
     try:
         from crud import promotion as promotion_crud
@@ -966,7 +976,7 @@ def delete_fee_promotion(promo_id: int):
 
 
 @router.get("/stores/{store_id}/promotions")
-def get_store_promotions(store_id: int):
+def get_store_promotions(store_id: int, user=Depends(verify_firebase_token)):
     """매장별 프로모션 리스트 조회 (하위 호환)"""
     try:
         from crud import promotion as promotion_crud
@@ -981,7 +991,8 @@ def get_store_promotions(store_id: int):
 def get_store_promotion_history(
     store_id: int,
     page: int = Query(1, ge=1),
-    limit: int = Query(5, ge=1, le=100)
+    limit: int = Query(5, ge=1, le=100),
+    user=Depends(verify_firebase_token),
 ):
     """매장 프로모션 이력 조회 (페이지네이션)"""
     try:
@@ -994,7 +1005,7 @@ def get_store_promotion_history(
 
 
 @router.post("/stores/{store_id}/promotions/{promo_id}/apply")
-def apply_promotion_to_store(store_id: int, promo_id: int):
+def apply_promotion_to_store(store_id: int, promo_id: int, user=Depends(verify_firebase_token)):
     """매장에 프로모션 적용"""
     try:
         from crud import promotion as promotion_crud
@@ -1008,7 +1019,7 @@ def apply_promotion_to_store(store_id: int, promo_id: int):
 
 
 @router.delete("/stores/{store_id}/promotions/{promo_id}")
-def remove_promotion_from_store(store_id: int, promo_id: int):
+def remove_promotion_from_store(store_id: int, promo_id: int, user=Depends(verify_firebase_token)):
     """매장 프로모션 적용 해제"""
     try:
         from crud import promotion as promotion_crud
@@ -1024,7 +1035,7 @@ def remove_promotion_from_store(store_id: int, promo_id: int):
 
 
 @router.get("/statistics/gifticons")
-def get_admin_gifticon_statistics():
+def get_admin_gifticon_statistics(user=Depends(verify_firebase_token)):
     """관리자 통계 데이터 조회 (전체 발행 수, 사용 수, 미사용 수)"""
     connection = get_db_connection()
     try:
@@ -1041,7 +1052,8 @@ def get_admin_gifticon_statistics():
 @router.get("/statistics/settlement")
 def get_admin_settlement_statistics(
     start_date: Optional[str] = Query(None, description="시작일 (YYYY-MM-DD)"),
-    end_date: Optional[str] = Query(None, description="종료일 (YYYY-MM-DD)")
+    end_date: Optional[str] = Query(None, description="종료일 (YYYY-MM-DD)"),
+    user=Depends(verify_firebase_token),
 ):
     """관리자 정산 데이터 조회 (정산금액, 플랫폼 수수료 매출)"""
     connection = get_db_connection()
@@ -1073,6 +1085,7 @@ def get_settlement_cycles(
     status: Optional[str] = Query(None, description="'OPEN' 또는 'CLOSED', None이면 전체"),
     start_date: Optional[str] = Query(None, description="조회 시작일 (YYYY-MM-DD)"),
     end_date: Optional[str] = Query(None, description="조회 종료일 (YYYY-MM-DD)"),
+    user=Depends(verify_firebase_token),
 ):
     """정산 주기 리스트 조회"""
     from datetime import date as date_type
@@ -1103,7 +1116,7 @@ def get_settlement_cycles(
 
 
 @router.get("/settlement/cycles/{cycle_id}")
-def get_settlement_cycle(cycle_id: int):
+def get_settlement_cycle(cycle_id: int, user=Depends(verify_firebase_token)):
     """정산 주기 상세 조회"""
     connection = get_db_connection()
     try:
@@ -1131,7 +1144,7 @@ def _close_settlement_cycle_impl(cycle_id: int):
 
 
 @router.patch("/settlement/cycles/{cycle_id}/close")
-def close_settlement_cycle_patch(cycle_id: int):
+def close_settlement_cycle_patch(cycle_id: int, user=Depends(verify_firebase_token)):
     """정산 주기 마감: settlement_cycles.status 를 CLOSED 로 변경 (PATCH)"""
     try:
         return _close_settlement_cycle_impl(cycle_id)
@@ -1143,7 +1156,7 @@ def close_settlement_cycle_patch(cycle_id: int):
 
 
 @router.post("/settlement/cycles/{cycle_id}/close")
-def close_settlement_cycle_post(cycle_id: int):
+def close_settlement_cycle_post(cycle_id: int, user=Depends(verify_firebase_token)):
     """정산 주기 마감 (POST - 프록시에서 PATCH 미지원 시 사용)"""
     try:
         return _close_settlement_cycle_impl(cycle_id)
@@ -1156,7 +1169,7 @@ def close_settlement_cycle_post(cycle_id: int):
 
 @router.patch("/settlement/cycles/{cycle_id}/status")
 @router.post("/settlement/cycles/{cycle_id}/status")
-def update_settlement_cycle_status(cycle_id: int, status: str = Query(..., description="변경할 상태: 'OPEN' 또는 'CLOSED'")):
+def update_settlement_cycle_status(cycle_id: int, status: str = Query(..., description="변경할 상태: 'OPEN' 또는 'CLOSED'"), user=Depends(verify_firebase_token)):
     """정산 주기 상태 변경 (OPEN ↔ CLOSED)"""
     try:
         from crud import settlement_cycle as cycle_crud
@@ -1176,7 +1189,8 @@ def update_settlement_cycle_status(cycle_id: int, status: str = Query(..., descr
 @router.post("/settlement/cycles/generate")
 def generate_settlement_cycles(
     start_date: Optional[str] = Query(None, description="시작일 (YYYY-MM-DD), 기본값: 오늘"),
-    months: int = Query(12, ge=1, le=24, description="생성할 개월 수 (1-24)")
+    months: int = Query(12, ge=1, le=24, description="생성할 개월 수 (1-24)"),
+    user=Depends(verify_firebase_token),
 ):
     """정산 주기 데이터 생성 (1년치)"""
     connection = get_db_connection()
@@ -1209,6 +1223,7 @@ def get_settlement_list_by_cycle(
     cycle_id: int = Query(..., description="정산 주기 ID"),
     page: int = Query(1, ge=1, description="페이지 번호"),
     limit: int = Query(10, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """정산 주기별 매장 정산 리스트 (페이지네이션)"""
     try:
@@ -1224,6 +1239,7 @@ def get_settlement_details_admin(
     settlement_id: int,
     detail_page: int = Query(1, ge=1, description="건별 내역 페이지 번호"),
     detail_limit: int = Query(10, ge=1, le=100, description="건별 내역 페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """정산 상세 (헤더 + 건별 내역, 페이지네이션)"""
     try:
@@ -1241,7 +1257,7 @@ def get_settlement_details_admin(
 
 @router.patch("/settlement/{settlement_id}/status")
 @router.post("/settlement/{settlement_id}/status")
-def update_settlement_status(settlement_id: int, body: dict):
+def update_settlement_status(settlement_id: int, body: dict, user=Depends(verify_firebase_token)):
     """정산 상태 변경. body: { "status": "PAID", "failure_reason": "..." }"""
     status = (body.get("status") or "").strip().upper()
     if not status:
@@ -1305,7 +1321,7 @@ def update_settlement_status(settlement_id: int, body: dict):
 
 @router.patch("/settlement/{settlement_id}/tax-invoice")
 @router.post("/settlement/{settlement_id}/tax-invoice")
-def update_settlement_tax_invoice(settlement_id: int, body: dict):
+def update_settlement_tax_invoice(settlement_id: int, body: dict, user=Depends(verify_firebase_token)):
     """세금계산서 발행 여부 변경. body: { "tax_invoice_issued": true }"""
     if "tax_invoice_issued" not in body:
         raise HTTPException(status_code=400, detail="tax_invoice_issued is required")
@@ -1324,7 +1340,7 @@ def update_settlement_tax_invoice(settlement_id: int, body: dict):
 
 
 @router.post("/settlement/create/{cycle_id}")
-def create_settlement_data(cycle_id: int):
+def create_settlement_data(cycle_id: int, user=Depends(verify_firebase_token)):
     """정산 데이터 생성 (정산 주기별)
     
     cycle_id는 /admin/settlement/cycles API로 조회 가능합니다.
@@ -1348,6 +1364,7 @@ def get_refund_list_api(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     refund_type: Optional[str] = Query(None, description="PURCHASER 또는 RECEIVER"),
+    user=Depends(verify_firebase_token),
 ):
     """환불 리스트 (관리자). id, 구매날짜, 환불요청날짜, 환불타입, 예금주, 계좌번호, 지급상태"""
     try:
@@ -1360,7 +1377,7 @@ def get_refund_list_api(
 
 
 @router.patch("/refund/{refund_id}/status")
-def update_refund_status_api(refund_id: int, body: dict):
+def update_refund_status_api(refund_id: int, body: dict, user=Depends(verify_firebase_token)):
     """환불 지급상태 변경. body: { \"status\": \"COMPLETED\" } (REQUESTED, COMPLETED, FAILED)"""
     status = (body.get("status") or "").strip().upper()
     if not status:
@@ -1384,6 +1401,7 @@ def get_owners(
     search: Optional[str] = Query(None, description="이름, 이메일, 전화번호, ID로 검색"),
     page: int = Query(1, ge=1, description="페이지 번호"),
     limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
 ):
     """사장님 리스트 (관리자용, 페이지네이션)"""
     connection = get_db_connection()
@@ -1406,7 +1424,7 @@ def get_owners(
 
 
 @router.get("/owners/{owner_id}")
-def get_owner_detail(owner_id: int):
+def get_owner_detail(owner_id: int, user=Depends(verify_firebase_token)):
     """사장님 상세 정보"""
     connection = get_db_connection()
     try:
@@ -1436,7 +1454,7 @@ class AppVersionCreate(_BaseModel):
 
 
 @router.get("/app-versions")
-def list_app_versions(platform: _Optional[str] = None):
+def list_app_versions(platform: _Optional[str] = None, user=Depends(verify_firebase_token)):
     """앱 버전 목록 조회 (매니저용)"""
     connection = get_db_connection()
     try:
@@ -1462,7 +1480,7 @@ def list_app_versions(platform: _Optional[str] = None):
 
 
 @router.post("/app-versions", status_code=201)
-def create_app_version(body: AppVersionCreate):
+def create_app_version(body: AppVersionCreate, user=Depends(verify_firebase_token)):
     """앱 버전 등록"""
     connection = get_db_connection()
     try:
@@ -1487,7 +1505,7 @@ def create_app_version(body: AppVersionCreate):
 
 
 @router.patch("/app-versions/{version_id}")
-def update_app_version_force(version_id: int, is_force_update: bool):
+def update_app_version_force(version_id: int, is_force_update: bool, user=Depends(verify_firebase_token)):
     """강제업데이트 여부 변경"""
     connection = get_db_connection()
     try:
