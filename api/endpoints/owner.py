@@ -43,6 +43,7 @@ async def check_duplicate(
     request: Request,
     email: Optional[str] = Query(None),
     phone_number: Optional[str] = Query(None),
+    user=Depends(verify_firebase_token),
 ):
     if email is None and phone_number is None:
         raise HTTPException(
@@ -77,7 +78,7 @@ async def check_duplicate(
 
 
 @router.post("/register")
-async def registerOwner(owner: Owner):
+async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결           
     cursor = connection.cursor()
     
@@ -104,7 +105,7 @@ async def registerOwner(owner: Owner):
         close_db_connection(connection)
 
 @router.get("/login/{uid}")
-async def login(uid: str):
+async def login(uid: str, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
@@ -348,7 +349,7 @@ async def findOwnerPW(owner: OwnerFindPw):
         close_db_connection(connection)
         
 @router.post("/inquiry/{owner_id}")
-async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
+async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                
     cursor = connection.cursor()
     
