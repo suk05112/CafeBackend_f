@@ -467,7 +467,7 @@ async def updatePaymentResult(request: Request):
         close_db_connection(connection)
         
 @router.get("/detail/{order_id}")
-def getOrderDetail(order_id: int):
+def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
     """
     order_id로 주문 상세내역을 조회하는 API
     주문 정보, 매장 정보, 주문에 포함된 기프티콘 목록을 반환

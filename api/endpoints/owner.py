@@ -872,7 +872,7 @@ def get_owner_settlement_data(
 
 
 @router.get("/settlement/detail/{settlement_id}")
-def get_owner_settlement_detail(settlement_id: int):
+def get_owner_settlement_detail(settlement_id: int, user=Depends(verify_firebase_token)):
     """사장님 정산 상세: settlement 헤더 + details 건별 내역"""
     try:
         from crud import settlement as settlement_crud

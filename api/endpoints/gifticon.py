@@ -34,7 +34,7 @@ s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
 
 @router.get("/list/{user_id}")
-def getGifticonList(user_id: int):
+def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     gifticonList = []
@@ -106,7 +106,7 @@ def getGifticonList(user_id: int):
         close_db_connection(connection)
 
 @router.get("/{gifticon_id}")
-def getGifticon(gifticon_id: int):
+def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
