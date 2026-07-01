@@ -624,37 +624,47 @@ async def idRegisteredUser(
     provider: str = Query(...),
     email: str = Query(None, description="SNS 가입 유저 확인용 (email, provider로 조회)"),
     phone: str = Query(None, description="Email 가입 유저 확인용 (phone, provider로 조회)"),
+    uid: str = Query(None, description="Firebase UID (uid, provider로 조회)"),
     firebase = Depends(verify_firebase_token)
 ):
-    """
-    등록 여부 검사
-    - provider는 필수
-    - email이 제공되면: email + provider로 조회 (SNS 가입 유저 확인)
-    - phone이 제공되면: phone + provider로 조회 (email 가입 유저 확인)
-    - email과 phone 모두 제공되면 둘 다 확인 (OR 조건)
-    - phone만 제공되어도 조회 가능
-    """
-    connection = get_db_connection()  # 환경에 맞는 DB 연결                     
+    connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # email과 phone이 모두 없는 경우 에러
-        if not email and not phone:
+        if not email and not phone and not uid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="email or phone is required"
+                detail="email, phone, or uid is required"
             )
-        
+
         # Apple private relay 이메일 처리
         if email and email.endswith("@privaterelay.appleid.com"):
             provider = "apple.priavate"
-        
-        result = None
-        
-        # SNS 가입 유저 확인: email + provider로 조회
+
+        # uid + provider로 조회 (Apple 로그인 등 email이 비정상인 경우 대체 수단)
+        if uid:
+            cursor.execute("""
+                SELECT up.*
+                FROM user_provider up
+                INNER JOIN user u ON up.user_id = u.id
+                WHERE u.uid = %s AND up.provider = %s
+                LIMIT 1;
+            """, (uid, provider))
+            result = cursor.fetchone()
+            if result:
+                logger.info(f"uid 가입 유저 확인됨: uid={uid}, provider={provider}, user_id={result.get('user_id')}")
+                return {'status': 'registered'}
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            user_check = cursor.fetchone()
+            if user_check:
+                logger.info(f"uid_exists(phone_exists): uid={uid}, provider={provider}, user_id={user_check['id']}")
+                return {'status': 'phone_exists'}
+            return {'status': 'new'}
+
+        # email + provider로 조회
         if email:
             cursor.execute("""
-                SELECT up.* 
+                SELECT up.*
                 FROM user_provider up
                 WHERE up.email = %s AND up.provider = %s
                 LIMIT 1;
@@ -662,13 +672,12 @@ async def idRegisteredUser(
             result = cursor.fetchone()
             if result:
                 print(f"SNS 가입 유저 확인됨: email={email}, provider={provider}")
-                return {'isRegistered': True}
-        
-        # Email 가입 유저 확인: phone + provider로 조회
-        # phone만 있어도 조회 가능
+                return {'status': 'registered'}
+
+        # phone + provider로 조회
         if phone:
             cursor.execute("""
-                SELECT up.* 
+                SELECT up.*
                 FROM user_provider up
                 INNER JOIN user u ON up.user_id = u.id
                 WHERE u.phone = %s AND up.provider = %s
@@ -676,21 +685,16 @@ async def idRegisteredUser(
             """, (phone, provider))
             result = cursor.fetchone()
             if result:
-                print(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
-                logger.info(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
-                return {'isRegistered': True}
-            # 디버깅: phone으로 user는 있는데 해당 provider가 없는 경우
-            cursor.execute("SELECT id, phone FROM user WHERE phone = %s LIMIT 1", (phone,))
+                print(f"phone 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}")
+                logger.info(f"phone 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}")
+                return {'status': 'registered'}
+            cursor.execute("SELECT id FROM user WHERE phone = %s LIMIT 1", (phone,))
             user_check = cursor.fetchone()
             if user_check:
-                cursor.execute("SELECT provider FROM user_provider WHERE user_id = %s", (user_check['id'],))
-                existing_providers = cursor.fetchall()
-                provider_list = [p['provider'] for p in existing_providers] if existing_providers else []
-                print(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
-                logger.info(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
+                logger.info(f"phone_exists: phone={phone}, provider={provider}, user_id={user_check['id']}")
+                return {'status': 'phone_exists'}
 
-        # 결과 확인 (일치하는 값이 없으면 등록 안됨)
-        return {'isRegistered': False}
+        return {'status': 'new'}
 
     except HTTPException:
         raise
