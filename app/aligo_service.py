@@ -4,6 +4,7 @@
 템플릿 목록:
   - UH_9771: 정산 완료 안내    변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
   - UH_9772: 입점 심사 결과 안내  변수: #{심사결과}, #{상세사유}
+  - UJ_1609: 선물 결제 취소 안내  변수: #{sender}, #{menu}
 """
 import json
 import urllib.request
@@ -117,6 +118,26 @@ def send_settlement_complete(
         recvname=recvname,
     )
     return _send("UH_9771", [recipient], button=CHANNEL_ADD_BUTTON)
+
+
+def send_gift_cancel_to_receiver(
+    receiver: str,
+    sender: str,
+    menu: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_1609: 선물 결제 취소 안내 (수신자에게 발송)"""
+    message = (
+        f"{sender} 님께서 선물하신 {menu} 주문이 취소되었습니다.\n"
+        f"해당 상품권은 사용할 수 없습니다."
+    )
+    recipient = AlimtalkRecipient(
+        receiver=receiver,
+        subject="선물 결제 취소 안내",
+        message=message,
+        recvname=recvname,
+    )
+    return _send("UJ_1609", [recipient], button=CHANNEL_ADD_BUTTON)
 
 
 def send_store_review_result(

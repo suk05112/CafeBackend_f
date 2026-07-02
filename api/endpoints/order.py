@@ -22,6 +22,7 @@ import hashlib
 
 from core.config import settings
 from core.exceptions import InternalError
+from app.aligo_service import send_gift_cancel_to_receiver
 
 router = APIRouter()
 
@@ -762,6 +763,30 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 (refund_id,),
             )
             connection.commit()
+
+            # 수신자 알림톡 발송 (커밋 완료 후, 실패해도 환불은 유지)
+            if gifticon_ids:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT g.receiver_phone, g.sender, m.name AS menu_name, g.receiver
+                        FROM gifticon g
+                        JOIN menu m ON g.menu_id = m.id
+                        WHERE g.id = %s
+                        LIMIT 1
+                        """,
+                        (gifticon_ids[0],),
+                    )
+                    gift_info = cursor.fetchone()
+                    if gift_info and gift_info.get("receiver_phone"):
+                        send_gift_cancel_to_receiver(
+                            receiver=gift_info["receiver_phone"],
+                            sender=gift_info["sender"],
+                            menu=gift_info["menu_name"],
+                            recvname=gift_info.get("receiver", ""),
+                        )
+                except Exception as e:
+                    logger.error(f"[알림톡] 선물 취소 알림톡 발송 실패 order_id={order_id}: {e}")
 
             return {
                 "message": "구매자에게 환불되었습니다.",
