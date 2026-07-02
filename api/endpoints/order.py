@@ -10,7 +10,7 @@ from loguru import logger
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timedelta, date, timezone
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 from models.gifticon import Gifticon, PaymentResult, VALID_PGCODES
 from models.store import StoreCreate
@@ -537,14 +537,7 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
         for row in gifticon_rows:
             # 메뉴 이미지 URL 생성
             menu_url = None
-            try:
-                menu_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': f'menu/menu_{order["store_id"]}_{row["menu_id"]}.png'},
-                    ExpiresIn=3600)
-            except Exception as e:
-                print(f"Error generating menu URL: {e}")
-                menu_url = None
+            menu_url = get_s3_public_url(bucket_name, f'menu/menu_{order["store_id"]}_{row["menu_id"]}.png')
             
             # orders_gifticon 테이블의 receiver_id가 비어있는지 확인
             is_receiver_linked = row['orders_gifticon_receiver_id'] is not None

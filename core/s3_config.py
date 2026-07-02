@@ -28,3 +28,9 @@ S3_CLIENT = boto3.client(
     region_name='ap-northeast-2',
     config=Config(signature_version='s3v4', region_name='ap-northeast-2')
 )
+
+S3_REGION = 'ap-northeast-2'
+
+
+def get_s3_public_url(bucket: str, key: str) -> str:
+    return f"https://{bucket}.s3.{S3_REGION}.amazonaws.com/{key}"

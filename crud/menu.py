@@ -6,7 +6,7 @@ import pymysql
 from typing import List, Dict, Optional
 
 from db.session import get_db_connection, close_db_connection
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 # schemas는 models를 직접 참조
 from models.menu import Menu
@@ -33,9 +33,7 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
         for row in rows:
             menu_photo_url = None
             if row['image_key']:
-                menu_photo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': row['image_key']},
-                    ExpiresIn=3600)
+                menu_photo_url = get_s3_public_url(bucket_name, row['image_key'])
 
             menus.append({
                 "menu_id": row['id'],
@@ -109,14 +107,10 @@ def generate_menu_s3_urls(store_id: int, menu_id: int) -> Dict:
         Params={'Bucket': bucket_name, 'Key': image_key},
         ExpiresIn=3600)
 
-    menu_get_url = s3.generate_presigned_url('get_object',
-        Params={'Bucket': bucket_name, 'Key': image_key},
-        ExpiresIn=3600)
-
     return {
         'image_key': image_key,
         'menu_put_url': menu_put_url,
-        'menu_get_url': menu_get_url
+        'menu_get_url': get_s3_public_url(bucket_name, image_key)
     }
 
 
@@ -341,11 +335,7 @@ def _build_menu_recommend_items(rows: List[Dict], include_distance: bool) -> Lis
     for row in rows:
         menu_photo_url = None
         if row['image_key']:
-            menu_photo_url = s3.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': bucket_name, 'Key': row['image_key']},
-                ExpiresIn=3600
-            )
+            menu_photo_url = get_s3_public_url(bucket_name, row['image_key'])
         store_logo_url = None
         if row['store_logo_key']:
             store_logo_url = s3.generate_presigned_url(

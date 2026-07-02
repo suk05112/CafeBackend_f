@@ -3,7 +3,7 @@ import pymysql
 from datetime import datetime
 from typing import Optional, Dict, List
 from db.session import get_db_connection, close_db_connection
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 from botocore.exceptions import ClientError
 from crud import store as store_crud
 from crud import menu as menu_crud
@@ -276,8 +276,7 @@ def get_store_menus(connection, store_id: int, page: int = 1, limit: int = 10) -
         for menu in menus:
             menu['image'] = None
             if menu.get('image_key'):
-                menu['image'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': menu['image_key']}, ExpiresIn=3600)
+                menu['image'] = get_s3_public_url(bucket_name, menu['image_key'])
             del menu['image_key']
             result.append(menu)
 
@@ -794,11 +793,12 @@ def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
         
         # 데이터 조회
         cursor.execute('''
-            SELECT 
+            SELECT
                 m.id,
                 m.menu_name as name,
                 m.price as price,
                 m.store_id,
+                m.image_key,
                 s.store_name
             FROM menu m
             LEFT JOIN store s ON m.store_id = s.id
@@ -810,15 +810,10 @@ def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
         
         result = []
         for menu in menus:
-            menu_id = menu['id']
-            image_key = f'menu_image/menu_image_{menu_id}.png'
             menu['image'] = None
-            try:
-                s3.head_object(Bucket=bucket_name, Key=image_key)
-                menu['image'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
-            except ClientError:
-                pass
+            if menu.get('image_key'):
+                menu['image'] = get_s3_public_url(bucket_name, menu['image_key'])
+            del menu['image_key']
             result.append(menu)
         
         return {

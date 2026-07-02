@@ -12,7 +12,7 @@ import re
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 from models.gifticon import Gifticon
 from models.store import StoreCreate
@@ -73,11 +73,7 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
 
         for row in rows:
             image_key = row.get('image_key') or ''
-            menu_url = s3.generate_presigned_url('get_object',
-                                    Params={'Bucket': bucket_name,
-                                            'Key': image_key,
-                                            },
-                                    ExpiresIn=3600) if image_key else ''
+            menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
                 "name": row.get('menu_name') or '',
@@ -158,11 +154,7 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             )
 
         image_key = menu_result.get('image_key') or ''
-        menu_url = s3.generate_presigned_url('get_object',
-                                Params={'Bucket': bucket_name,
-                                        'Key': image_key,
-                                        },
-                                ExpiresIn=3600) if image_key else ''
+        menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
             "gift_code": gifticon['gift_code'],
