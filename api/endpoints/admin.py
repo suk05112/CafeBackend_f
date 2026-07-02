@@ -1530,3 +1530,138 @@ def update_app_version_force(version_id: int, is_force_update: bool, user=Depend
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         close_db_connection(connection)
+
+
+# ── Popup Admin API ────────────────────────────────────────────────────────────
+from models.popup import PopupCreate, PopupUpdate
+
+
+@router.post("/popups/image")
+def popup_image_upload(target_type: str, user=Depends(verify_firebase_token)):
+    """팝업 이미지 S3 presigned URL 발급 (target_type: user | owner)"""
+    if target_type not in ('user', 'owner'):
+        raise HTTPException(status_code=400, detail="target_type must be 'user' or 'owner'")
+    key = f"{target_type}/popup/{uuid.uuid4().hex}.jpg"
+    put_url = S3_CLIENT.generate_presigned_url(
+        'put_object',
+        Params={'Bucket': BUCKET_NAME, 'Key': key, 'ContentType': 'image/jpeg'},
+        ExpiresIn=3600
+    )
+    image_url = f"https://{BUCKET_NAME}.s3.ap-northeast-2.amazonaws.com/{key}"
+    return {"put_url": put_url, "image_url": image_url, "key": key}
+
+
+@router.get("/popups")
+def list_popups(
+    target_type: Optional[str] = None,
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    user=Depends(verify_firebase_token)
+):
+    """팝업 목록 조회"""
+    if target_type and target_type not in ('user', 'owner'):
+        raise HTTPException(status_code=400, detail="target_type must be 'user' or 'owner'")
+    connection = get_db_connection()
+    try:
+        return admin_crud.get_popups(connection, target_type, page, limit)
+    except Exception as e:
+        print(f"Error in list_popups: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/popups", status_code=201)
+def create_popup(body: PopupCreate, user=Depends(verify_firebase_token)):
+    """팝업 생성"""
+    if body.target_type not in ('user', 'owner'):
+        raise HTTPException(status_code=400, detail="target_type must be 'user' or 'owner'")
+    connection = get_db_connection()
+    try:
+        return admin_crud.create_popup(
+            connection,
+            target_type=body.target_type,
+            title=body.title,
+            image_url=body.image_url,
+            link_url=body.link_url,
+            display_order=body.display_order,
+            is_active=body.is_active,
+            start_at=body.start_at,
+            end_at=body.end_at,
+        )
+    except Exception as e:
+        print(f"Error in create_popup: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.get("/popups/{popup_id}")
+def get_popup(popup_id: int, user=Depends(verify_firebase_token)):
+    """팝업 상세 조회"""
+    connection = get_db_connection()
+    try:
+        row = admin_crud.get_popup(connection, popup_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Popup not found")
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_popup: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.put("/popups/{popup_id}")
+def update_popup(popup_id: int, body: PopupUpdate, user=Depends(verify_firebase_token)):
+    """팝업 수정"""
+    connection = get_db_connection()
+    try:
+        row = admin_crud.update_popup(connection, popup_id, **body.model_dump(exclude_unset=True))
+        if not row:
+            raise HTTPException(status_code=404, detail="Popup not found")
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_popup: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.delete("/popups/{popup_id}", status_code=204)
+def delete_popup(popup_id: int, user=Depends(verify_firebase_token)):
+    """팝업 삭제"""
+    connection = get_db_connection()
+    try:
+        deleted = admin_crud.delete_popup(connection, popup_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Popup not found")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_popup: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.patch("/popups/{popup_id}/toggle")
+def toggle_popup(popup_id: int, user=Depends(verify_firebase_token)):
+    """팝업 활성화/중지 토글"""
+    connection = get_db_connection()
+    try:
+        row = admin_crud.toggle_popup(connection, popup_id)
+        if not row:
+            raise HTTPException(status_code=404, detail="Popup not found")
+        return row
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in toggle_popup: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
