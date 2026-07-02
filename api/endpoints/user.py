@@ -1579,3 +1579,33 @@ def find_account(request: FindAccountRequest):
     finally:
         cursor.close()
         close_db_connection(connection)
+
+
+# ── Popup App API (User) ───────────────────────────────────────────────────────
+
+@router.get("/popups")
+def get_user_popups(user_id: int = Query(...)):
+    """유저 활성 팝업 목록 조회"""
+    connection = get_db_connection()
+    try:
+        items = admin_crud.get_active_popups(connection, viewer_type='user', viewer_id=user_id)
+        return {"message": "팝업 목록 조회 성공", "data": items}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_user_popups")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/popups/hide")
+def hide_user_popups(user_id: int = Query(...)):
+    """유저 오늘 하루 팝업 숨기기"""
+    connection = get_db_connection()
+    try:
+        admin_crud.hide_popups_today(connection, viewer_type='user', viewer_id=user_id)
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "hide_user_popups")
+    finally:
+        close_db_connection(connection)
