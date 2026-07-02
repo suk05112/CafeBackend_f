@@ -109,10 +109,10 @@ def send_settlement_complete(
     message = (
         f"안녕하세요, 사장님.\n"
         f"정산대금 지급이 완료되었습니다.\n\n"
-        f"▪ 매장명: {store_name}\n"
-        f"▪ 정산 기간: {period}\n"
-        f"▪ 정산 금액: {amount}원\n"
-        f"▪ 입금 계좌: {bank_name} ({account_number})"
+        f"■ 매장명: {store_name}\n"
+        f"■ 정산 기간: {period}\n"
+        f"■ 정산 금액: {amount}원\n"
+        f"■ 입금 계좌: {bank_name} ({account_number})"
     )
     recipient = AlimtalkRecipient(
         receiver=receiver,
