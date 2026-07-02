@@ -29,6 +29,7 @@ from app.fcm_service import send_fcm_notification_to_owner
 from app.auth.auth_dependency import verify_firebase_token, verify_firebase_token_any
 from crud import terms as terms_crud
 from core.exceptions import InternalError
+from crud import admin as admin_crud
 
 from models.user import User
 from schemas.settlement import AccountUpdateRequest
@@ -976,4 +977,55 @@ def get_owner_store_list(owner_id: int):
         raise InternalError(e, "get_owner_store_list")
     finally:
         cursor.close()
+        close_db_connection(connection)
+
+
+@router.get("/notice")
+def get_owner_notice(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    """사장님 공지사항 목록 조회 (페이지네이션)"""
+    connection = get_db_connection()
+    try:
+        result = admin_crud.get_notices(connection, target='owner', page=page, limit=limit)
+        items = [{"id": n["id"], "title": n["title"], "created_at": n["created_at"]} for n in result["items"]]
+        return {
+            "message": "공지사항 목록 조회 성공",
+            "data": items,
+            "pagination": {
+                "total": result["total"],
+                "page": result["page"],
+                "limit": result["limit"],
+                "total_pages": result["total_pages"]
+            }
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_owner_notice")
+    finally:
+        close_db_connection(connection)
+
+
+@router.get("/notice/{notice_id}")
+def get_owner_notice_detail(notice_id: int):
+    """사장님 공지사항 상세 조회"""
+    connection = get_db_connection()
+    try:
+        notice = admin_crud.get_notice_detail(connection, target='owner', notice_id=notice_id)
+        if not notice:
+            raise HTTPException(status_code=404, detail="공지사항을 찾을 수 없습니다.")
+        return {
+            "message": "공지사항 상세 조회 성공",
+            "data": {
+                "id": notice["id"],
+                "title": notice["title"],
+                "content": notice["content"],
+                "created_at": notice["created_at"],
+                "updated_at": notice["updated_at"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_owner_notice_detail")
+    finally:
         close_db_connection(connection)
