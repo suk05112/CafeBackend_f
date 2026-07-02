@@ -769,7 +769,7 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 try:
                     cursor.execute(
                         """
-                        SELECT g.receiver_phone, g.sender, m.name AS menu_name, g.receiver
+                        SELECT g.receiver_phone, g.sender, m.menu_name, g.receiver
                         FROM gifticon g
                         JOIN menu m ON g.menu_id = m.id
                         WHERE g.id = %s
