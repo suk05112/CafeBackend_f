@@ -43,7 +43,8 @@ class AlimtalkRecipient:
     message: str         # 알림톡 본문 (템플릿 변수 치환 완료된 문자열)
     subject: str         # 알림톡 제목
     recvname: str = ""   # 수신자 이름 (선택)
-    emtitle: str = ""    # 강조표기형 타이틀 (선택)
+    emtitle: str = ""    # 강조표기형 핵심정보 (선택)
+    emtext: str = ""     # 강조표기형 보조문구 (선택)
 
 
 def _send(
@@ -73,6 +74,8 @@ def _send(
             params[f"recvname_{i}"] = r.recvname
         if r.emtitle:
             params[f"emtitle_{i}"] = r.emtitle
+        if r.emtext:
+            params[f"emtext_{i}"] = r.emtext
         if button:
             params[f"button_{i}"] = json.dumps(button, ensure_ascii=False)
 
@@ -136,8 +139,10 @@ def send_gift_cancel_to_receiver(
         subject="선물 결제 취소 안내",
         message=message,
         recvname=recvname,
+        emtitle="주문취소 안내",
+        emtext="상품권 주문이 취소되었습니다.",
     )
-    return _send("UJ_1609", [recipient], button=CHANNEL_ADD_BUTTON)
+    return _send("UJ_1609", [recipient])
 
 
 def send_store_review_result(
