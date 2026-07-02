@@ -46,7 +46,8 @@ from models.user import InquiryResponse
 from models.user import FindAccountRequest
 from models.user import TermsAgreeRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
-from models.notice import NoticeResponse
+from models.notice import NoticeResponse, NoticeListItem, NoticeDetail
+from crud import admin as admin_crud
 from app.fcm_service import send_fcm_notification_to_user
 from core.config import settings
 from core.s3_config import S3_CLIENT, TERMS_BUCKET_NAME
@@ -1426,40 +1427,53 @@ async def deleteUser(
 
 
 @router.get("/notice")
-def get_user_notice():
-    """
-    유저 공지사항 전체 조회 API
-    notice_user 테이블에서 모든 공지사항을 읽어옵니다.
-    """
+def get_user_notice(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    """유저 공지사항 목록 조회 (페이지네이션)"""
     connection = get_db_connection()
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
     try:
-        cursor.execute('''
-            SELECT id, title, content, created_at, updated_at
-            FROM notice_user
-            ORDER BY created_at DESC
-        ''')
-        
-        notices = cursor.fetchall()
-        
-        # 날짜 형식 변환
-        for notice in notices:
-            if notice.get('created_at'):
-                notice['created_at'] = notice['created_at'].isoformat()
-            if notice.get('updated_at'):
-                notice['updated_at'] = notice['updated_at'].isoformat()
-        
+        result = admin_crud.get_notices(connection, target='user', page=page, limit=limit)
+        items = [{"id": n["id"], "title": n["title"], "created_at": n["created_at"]} for n in result["items"]]
         return {
-            "notices": notices,
-            "total": len(notices)
+            "message": "공지사항 목록 조회 성공",
+            "data": items,
+            "pagination": {
+                "total": result["total"],
+                "page": result["page"],
+                "limit": result["limit"],
+                "total_pages": result["total_pages"]
+            }
         }
-        
     except Exception as e:
         traceback.print_exc()
         raise InternalError(e, "get_user_notice")
     finally:
-        cursor.close()
+        close_db_connection(connection)
+
+
+@router.get("/notice/{notice_id}")
+def get_user_notice_detail(notice_id: int):
+    """유저 공지사항 상세 조회"""
+    connection = get_db_connection()
+    try:
+        notice = admin_crud.get_notice_detail(connection, target='user', notice_id=notice_id)
+        if not notice:
+            raise HTTPException(status_code=404, detail="공지사항을 찾을 수 없습니다.")
+        return {
+            "message": "공지사항 상세 조회 성공",
+            "data": {
+                "id": notice["id"],
+                "title": notice["title"],
+                "content": notice["content"],
+                "created_at": notice["created_at"],
+                "updated_at": notice["updated_at"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_user_notice_detail")
+    finally:
         close_db_connection(connection)
 
 
