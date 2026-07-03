@@ -1193,18 +1193,19 @@ def reorder_popups(connection, ordered_ids: list) -> None:
 
 # ── Popup App CRUD ─────────────────────────────────────────────────────────────
 
-def get_active_popups(connection, viewer_type: str, viewer_id: int) -> list:
+def get_active_popups(connection, viewer_type: str, viewer_id: Optional[int] = None) -> list:
     """활성 팝업 목록 조회 (오늘 하루 보지 않기 적용)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        # 숨김 여부 확인
-        cursor.execute(
-            "SELECT hidden_until FROM popup_views WHERE viewer_type = %s AND viewer_id = %s",
-            (viewer_type, viewer_id)
-        )
-        view_row = cursor.fetchone()
-        if view_row and view_row['hidden_until'] > datetime.now():
-            return []
+        # 숨김 여부 확인 (로그인 유저만)
+        if viewer_id is not None:
+            cursor.execute(
+                "SELECT hidden_until FROM popup_views WHERE viewer_type = %s AND viewer_id = %s",
+                (viewer_type, viewer_id)
+            )
+            view_row = cursor.fetchone()
+            if view_row and view_row['hidden_until'] > datetime.now():
+                return []
 
         cursor.execute(
             """SELECT id, title, image_url, link_url, display_order

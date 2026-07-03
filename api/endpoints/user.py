@@ -1584,8 +1584,8 @@ def find_account(request: FindAccountRequest):
 # ── Popup App API (User) ───────────────────────────────────────────────────────
 
 @router.get("/popups")
-def get_user_popups(user_id: int = Query(...)):
-    """유저 활성 팝업 목록 조회"""
+def get_user_popups(user_id: Optional[int] = Query(None)):
+    """유저 활성 팝업 목록 조회 (비로그인 가능)"""
     connection = get_db_connection()
     try:
         items = admin_crud.get_active_popups(connection, viewer_type='user', viewer_id=user_id)
@@ -1598,8 +1598,10 @@ def get_user_popups(user_id: int = Query(...)):
 
 
 @router.post("/popups/hide")
-def hide_user_popups(user_id: int = Query(...)):
-    """유저 오늘 하루 팝업 숨기기"""
+def hide_user_popups(user_id: Optional[int] = Query(None)):
+    """유저 오늘 하루 팝업 숨기기 (비로그인 시 no-op)"""
+    if user_id is None:
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
     connection = get_db_connection()
     try:
         admin_crud.hide_popups_today(connection, viewer_type='user', viewer_id=user_id)
