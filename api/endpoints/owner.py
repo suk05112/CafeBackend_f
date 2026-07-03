@@ -1029,3 +1029,34 @@ def get_owner_notice_detail(notice_id: int):
         raise InternalError(e, "get_owner_notice_detail")
     finally:
         close_db_connection(connection)
+
+# ── Popup App API (Owner) ──────────────────────────────────────────────────────
+
+@router.get("/popups")
+def get_owner_popups(owner_id: Optional[int] = Query(None)):
+    """사장님 활성 팝업 목록 조회 (비로그인 가능)"""
+    connection = get_db_connection()
+    try:
+        items = admin_crud.get_active_popups(connection, viewer_type='owner', viewer_id=owner_id)
+        return {"message": "팝업 목록 조회 성공", "data": items}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_owner_popups")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/popups/hide")
+def hide_owner_popups(owner_id: Optional[int] = Query(None)):
+    """사장님 오늘 하루 팝업 숨기기 (비로그인 시 no-op)"""
+    if owner_id is None:
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    connection = get_db_connection()
+    try:
+        admin_crud.hide_popups_today(connection, viewer_type='owner', viewer_id=owner_id)
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "hide_owner_popups")
+    finally:
+        close_db_connection(connection)
