@@ -42,6 +42,11 @@ class Settings(BaseSettings):
     # Manager API Key
     manager_api_key: str = Field(default="", description="Manager 대시보드 API Key")
 
+    # 드림시큐리티 본인확인
+    mok_key_file_path: str = Field(default="/etc/secrets/mok_keyInfo.dat", description="mok_keyInfo.dat 경로")
+    mok_key_password: str = Field(default="", description="mok_keyInfo.dat 비밀번호")
+    mok_return_url: str = Field(default="", description="본인확인 결과 수신 URL (https://... /user/mok/return)")
+
     # 알리고 카카오 알림톡 설정
     aligo_api_key: str = Field(default="", description="알리고 API Key")
     aligo_user_id: str = Field(default="", description="알리고 사용자 ID")

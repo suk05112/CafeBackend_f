@@ -37,6 +37,7 @@ import os
 import time
 import json
 import jwt
+import urllib.parse
 
 logger = logging.getLogger("cafe_backend")
 
@@ -1578,4 +1579,125 @@ def find_account(request: FindAccountRequest):
         raise InternalError(e, "find_account")
     finally:
         cursor.close()
+
+
+# ── 드림시큐리티 본인확인 ──────────────────────────────────────────────────────
+
+import uuid as _uuid
+from datetime import datetime, timezone
+from core.dreamsecurity import (
+    generate_encrypt_req_client_info,
+    request_mok_verification,
+    decrypt_mok_result,
+)
+
+
+@router.post("/mok/client-info")
+async def mok_client_info():
+    """드림시큐리티 표준창 거래 요청 정보 생성"""
+    from core.dreamsecurity import get_mok_key_info
+
+    key_info = get_mok_key_info()
+    service_id = key_info["ServiceId"]
+
+    client_tx_id = f"GFN-{_uuid.uuid4().hex[:32]}"  # 4 + 1 + 32 = 37자
+
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            "INSERT INTO mok_client_tx (client_tx_id) VALUES (%s)",
+            (client_tx_id,)
+        )
+        connection.commit()
+
+        encrypt_req_client_info = generate_encrypt_req_client_info(client_tx_id)
+
+        return {
+            "serviceId": service_id,
+            "encryptReqClientInfo": encrypt_req_client_info,
+            "serviceType": "telcoAuth",
+            "usageCode": "01001",
+            "retTransferType": "MOKToken",
+            "returnUrl": f"{settings.mok_return_url}",
+            "encryptVersion": "V2",
+        }
+    except Exception as e:
+        connection.rollback()
+        traceback.print_exc()
+        raise InternalError(e, "mok_client_info")
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
+@router.post("/mok/return")
+async def mok_return(request: Request):
+    """드림시큐리티 표준창 결과 수신 및 본인확인 처리 (returnUrl)"""
+    body = await request.body()
+    decoded = body.decode("utf-8")
+    parsed = dict(pair.split("=", 1) for pair in decoded.split("&") if "=" in pair)
+    data_str = urllib.parse.unquote(parsed.get("data", "{}"))
+    data = json.loads(data_str)
+
+    encrypt_mok_key_token = data.get("encryptMOKKeyToken")
+    if not encrypt_mok_key_token:
+        raise HTTPException(status_code=400, detail="encryptMOKKeyToken이 없습니다.")
+
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor()
+
+        # clientTxId 검증 (재사용 방지)
+        client_tx_id = data.get("clientTxId")
+        if client_tx_id:
+            cursor.execute(
+                "SELECT id, used FROM mok_client_tx WHERE client_tx_id = %s",
+                (client_tx_id,)
+            )
+            tx = cursor.fetchone()
+            if not tx or tx["used"]:
+                raise HTTPException(status_code=400, detail="유효하지 않은 거래 ID입니다.")
+
+            # requestTime 5초 TTL 검증
+            request_time_str = data.get("requestTime")
+            if request_time_str:
+                try:
+                    req_dt = datetime.strptime(request_time_str, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+                    elapsed = (datetime.now(timezone.utc) - req_dt).total_seconds()
+                    if elapsed > 5:
+                        raise HTTPException(status_code=400, detail="본인확인 요청이 만료되었습니다.")
+                except ValueError:
+                    pass
+
+            cursor.execute(
+                "UPDATE mok_client_tx SET used = 1 WHERE client_tx_id = %s",
+                (client_tx_id,)
+            )
+            connection.commit()
+
+        # 드림시큐리티 서버에 검증 요청
+        mok_data = await request_mok_verification(encrypt_mok_key_token)
+        encrypt_mok_result = mok_data.get("encryptMOKResult")
+        if not encrypt_mok_result:
+            raise HTTPException(status_code=400, detail="본인확인 결과가 없습니다.")
+
+        # 복호화
+        person_info = decrypt_mok_result(encrypt_mok_result)
+
+        return {
+            "name": person_info.get("name"),
+            "birthdate": person_info.get("birthdate"),
+            "phone": person_info.get("mobileNo"),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        connection.rollback()
+        traceback.print_exc()
+        raise InternalError(e, "mok_return")
+    finally:
+        cursor.close()
+        close_db_connection(connection)
         close_db_connection(connection)
