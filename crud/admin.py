@@ -1177,6 +1177,20 @@ def toggle_popup(connection, popup_id: int) -> Optional[dict]:
         cursor.close()
 
 
+def reorder_popups(connection, ordered_ids: list) -> None:
+    """팝업 순서 일괄 업데이트 (id 배열 인덱스 = display_order)"""
+    cursor = connection.cursor()
+    try:
+        for idx, popup_id in enumerate(ordered_ids):
+            cursor.execute("UPDATE popup SET display_order = %s WHERE id = %s", (idx, popup_id))
+        connection.commit()
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
 # ── Popup App CRUD ─────────────────────────────────────────────────────────────
 
 def get_active_popups(connection, viewer_type: str, viewer_id: int) -> list:

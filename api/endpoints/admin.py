@@ -1573,24 +1573,48 @@ def list_popups(
 
 @router.post("/popups", status_code=201)
 def create_popup(body: PopupCreate, user=Depends(verify_firebase_token)):
-    """팝업 생성"""
+    """팝업 생성 (display_order는 해당 target_type 마지막 순서 + 1 자동 부여)"""
     if body.target_type not in ('user', 'owner'):
         raise HTTPException(status_code=400, detail="target_type must be 'user' or 'owner'")
     connection = get_db_connection()
     try:
+        import pymysql as _pym
+        cursor = connection.cursor(_pym.cursors.DictCursor)
+        cursor.execute(
+            "SELECT COALESCE(MAX(display_order), -1) + 1 as next_order FROM popup WHERE target_type = %s",
+            (body.target_type,)
+        )
+        next_order = cursor.fetchone()['next_order']
+        cursor.close()
         return admin_crud.create_popup(
             connection,
             target_type=body.target_type,
             title=body.title,
             image_url=body.image_url,
             link_url=body.link_url,
-            display_order=body.display_order,
+            display_order=next_order,
             is_active=body.is_active,
             start_at=body.start_at,
             end_at=body.end_at,
         )
     except Exception as e:
         print(f"Error in create_popup: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.patch("/popups/reorder")
+def reorder_popups(ordered_ids: list[int], user=Depends(verify_firebase_token)):
+    """팝업 순서 일괄 변경 (id 배열 순서대로 display_order 0부터 재부여)"""
+    if not ordered_ids:
+        raise HTTPException(status_code=400, detail="ordered_ids is required")
+    connection = get_db_connection()
+    try:
+        admin_crud.reorder_popups(connection, ordered_ids)
+        return {"message": "순서가 업데이트되었습니다."}
+    except Exception as e:
+        print(f"Error in reorder_popups: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         close_db_connection(connection)

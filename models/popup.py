@@ -9,7 +9,6 @@ class PopupCreate(BaseModel):
     title: str
     image_url: str
     link_url: Optional[str] = None
-    display_order: int = 0
     is_active: bool = True
     start_at: Optional[datetime] = None
     end_at: Optional[datetime] = None
