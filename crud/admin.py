@@ -1049,3 +1049,179 @@ def delete_notice(connection, target: str, notice_id: int) -> bool:
     finally:
         cursor.close()
 
+
+
+# ── Popup CRUD ────────────────────────────────────────────────────────────────
+
+def get_popups(connection, target_type: Optional[str] = None, page: int = 1, limit: int = 20) -> dict:
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        offset = (page - 1) * limit
+        if target_type:
+            count_q = "SELECT COUNT(*) as total FROM popup WHERE target_type = %s"
+            cursor.execute(count_q, (target_type,))
+            total = cursor.fetchone()['total']
+            cursor.execute(
+                "SELECT * FROM popup WHERE target_type = %s ORDER BY display_order ASC, id ASC LIMIT %s OFFSET %s",
+                (target_type, limit, offset)
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) as total FROM popup")
+            total = cursor.fetchone()['total']
+            cursor.execute(
+                "SELECT * FROM popup ORDER BY target_type ASC, display_order ASC, id ASC LIMIT %s OFFSET %s",
+                (limit, offset)
+            )
+        rows = cursor.fetchall()
+        for r in rows:
+            r['is_active'] = bool(r['is_active'])
+            for f in ('start_at', 'end_at', 'created_at', 'updated_at'):
+                if r.get(f):
+                    r[f] = r[f].strftime('%Y-%m-%d %H:%M:%S')
+        return {"total": total, "page": page, "limit": limit, "items": rows}
+    finally:
+        cursor.close()
+
+
+def get_popup(connection, popup_id: int) -> Optional[dict]:
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("SELECT * FROM popup WHERE id = %s", (popup_id,))
+        row = cursor.fetchone()
+        if row:
+            row['is_active'] = bool(row['is_active'])
+            for f in ('start_at', 'end_at', 'created_at', 'updated_at'):
+                if row.get(f):
+                    row[f] = row[f].strftime('%Y-%m-%d %H:%M:%S')
+        return row
+    finally:
+        cursor.close()
+
+
+def create_popup(connection, target_type: str, title: str, image_url: str,
+                 link_url: Optional[str], display_order: int, is_active: bool,
+                 start_at, end_at) -> dict:
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            """INSERT INTO popup (target_type, title, image_url, link_url, display_order, is_active, start_at, end_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (target_type, title, image_url, link_url, display_order, 1 if is_active else 0, start_at, end_at)
+        )
+        connection.commit()
+        new_id = cursor.lastrowid
+        return get_popup(connection, new_id)
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def update_popup(connection, popup_id: int, **kwargs) -> Optional[dict]:
+    cursor = connection.cursor()
+    try:
+        updates = []
+        params = []
+        field_map = {
+            'title': 'title', 'image_url': 'image_url', 'link_url': 'link_url',
+            'display_order': 'display_order', 'start_at': 'start_at', 'end_at': 'end_at'
+        }
+        for key, col in field_map.items():
+            if key in kwargs and kwargs[key] is not None:
+                updates.append(f'{col} = %s')
+                params.append(kwargs[key])
+        if 'is_active' in kwargs and kwargs['is_active'] is not None:
+            updates.append('is_active = %s')
+            params.append(1 if kwargs['is_active'] else 0)
+        if not updates:
+            return get_popup(connection, popup_id)
+        params.append(popup_id)
+        cursor.execute(f"UPDATE popup SET {', '.join(updates)} WHERE id = %s", params)
+        connection.commit()
+        if cursor.rowcount == 0:
+            return None
+        return get_popup(connection, popup_id)
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def delete_popup(connection, popup_id: int) -> bool:
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM popup WHERE id = %s", (popup_id,))
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def toggle_popup(connection, popup_id: int) -> Optional[dict]:
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE popup SET is_active = NOT is_active WHERE id = %s", (popup_id,))
+        connection.commit()
+        if cursor.rowcount == 0:
+            return None
+        return get_popup(connection, popup_id)
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+# ── Popup App CRUD ─────────────────────────────────────────────────────────────
+
+def get_active_popups(connection, viewer_type: str, viewer_id: int) -> list:
+    """활성 팝업 목록 조회 (오늘 하루 보지 않기 적용)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        # 숨김 여부 확인
+        cursor.execute(
+            "SELECT hidden_until FROM popup_views WHERE viewer_type = %s AND viewer_id = %s",
+            (viewer_type, viewer_id)
+        )
+        view_row = cursor.fetchone()
+        if view_row and view_row['hidden_until'] > datetime.now():
+            return []
+
+        cursor.execute(
+            """SELECT id, title, image_url, link_url, display_order
+               FROM popup
+               WHERE target_type = %s
+                 AND is_active = 1
+                 AND (start_at IS NULL OR start_at <= NOW())
+                 AND (end_at IS NULL OR end_at >= NOW())
+               ORDER BY display_order ASC, id ASC""",
+            (viewer_type,)
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+
+
+def hide_popups_today(connection, viewer_type: str, viewer_id: int) -> None:
+    """오늘 하루 보지 않기 (자정까지 숨김)"""
+    from datetime import date, timedelta
+    hidden_until = datetime.combine(date.today() + timedelta(days=1), datetime.min.time())
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """INSERT INTO popup_views (viewer_type, viewer_id, hidden_until)
+               VALUES (%s, %s, %s)
+               ON DUPLICATE KEY UPDATE hidden_until = VALUES(hidden_until)""",
+            (viewer_type, viewer_id, hidden_until)
+        )
+        connection.commit()
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
