@@ -214,7 +214,7 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
             WHERE s.store_lat IS NOT NULL
               AND s.store_lng IS NOT NULL
               AND s.inspection_status = 'APPROVED'
-              AND s.contract_completed = TRUE
+              AND s.contract_completed = 'COMPLETED'
               AND m.status = 'ACTIVE'
               AND m.is_deleted = 0
               AND m.image_key IS NOT NULL
@@ -291,7 +291,7 @@ def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Op
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
-              AND s.contract_completed = TRUE
+              AND s.contract_completed = 'COMPLETED'
               AND m.status = 'ACTIVE'
               AND m.is_deleted = 0
               AND m.image_key IS NOT NULL
