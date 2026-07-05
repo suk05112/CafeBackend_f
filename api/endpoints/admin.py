@@ -3,6 +3,8 @@ import traceback
 import uuid
 import re
 import io
+import time
+import threading
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from fastapi.responses import StreamingResponse
 from typing import Optional
@@ -38,12 +40,24 @@ def _normalize_phone(phone: str) -> str:
     return phone
 
 
+_dashboard_cache: dict = {"data": None, "expires_at": 0}
+_dashboard_cache_lock = threading.Lock()
+_DASHBOARD_CACHE_TTL = 30  # seconds
+
 @router.get("/dashboard/statistics")
 def get_dashboard_statistics(user=Depends(verify_firebase_token)):
-    """대시보드 통계 데이터"""
+    """대시보드 통계 데이터 (30초 캐싱)"""
+    now = time.time()
+    with _dashboard_cache_lock:
+        if _dashboard_cache["data"] is not None and now < _dashboard_cache["expires_at"]:
+            return _dashboard_cache["data"]
+
     connection = get_db_connection()
     try:
         result = admin_crud.get_dashboard_statistics(connection)
+        with _dashboard_cache_lock:
+            _dashboard_cache["data"] = result
+            _dashboard_cache["expires_at"] = time.time() + _DASHBOARD_CACHE_TTL
         return result
     except Exception as e:
         print(f"Error in get_dashboard_statistics: {traceback.format_exc()}")
