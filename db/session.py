@@ -29,30 +29,65 @@ class ConnectionPool:
     def get_connection(self):
         try:
             conn = self._pool.get_nowait()
-            return conn
-        except:
-            with self._lock:
-                if self._created < self.max_connections:
-                    self._created += 1
-                    return self._create_connection()
+        except Exception:
+            conn = None
+
+        if conn is not None:
             try:
-                return self._pool.get(timeout=5)
-            except:
+                conn.ping(reconnect=True)
+                return conn
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
                 with self._lock:
-                    self._created += 1
-                    return self._create_connection()
+                    if self._created > 0:
+                        self._created -= 1
+
+        with self._lock:
+            if self._created < self.max_connections:
+                self._created += 1
+                create_new = True
+            else:
+                create_new = False
+        if create_new:
+            try:
+                return self._create_connection()
+            except Exception:
+                with self._lock:
+                    if self._created > 0:
+                        self._created -= 1
+                raise
+        try:
+            return self._pool.get(timeout=5)
+        except Exception:
+            raise Exception("DB 연결 풀 초과: 잠시 후 다시 시도해주세요")
 
     def return_connection(self, conn):
+        rollback_ok = True
         try:
-            conn.rollback()
-        except:
-            pass
-        try:
-            self._pool.put_nowait(conn)
-        except:
+            if not conn.get_autocommit():
+                conn.rollback()
+        except Exception:
+            rollback_ok = False
+
+        if not rollback_ok:
             try:
                 conn.close()
-            except:
+            except Exception:
+                pass
+            with self._lock:
+                if self._created > 0:
+                    self._created -= 1
+            return
+
+        try:
+            self._pool.put_nowait(conn)
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
                 pass
             with self._lock:
                 if self._created > 0:
