@@ -23,62 +23,62 @@ def get_dashboard_statistics(connection) -> Dict:
         # 상품권 발행 수 (일)
         cursor.execute('''
             SELECT COUNT(*) as count FROM gifticon
-            WHERE DATE(created_at) = %s
-        ''', (today,))
+            WHERE created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)
+        ''', (today, today))
         gift_issued_today = cursor.fetchone()['count'] or 0
-        
+
         # 상품권 발행 수 (월)
         cursor.execute('''
             SELECT COUNT(*) as count FROM gifticon
-            WHERE DATE(created_at) >= %s
+            WHERE created_at >= %s
         ''', (start_of_month,))
         gift_issued_month = cursor.fetchone()['count'] or 0
-        
+
         # 상품권 사용금액 (일)
         cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total 
+            SELECT COALESCE(SUM(m.price), 0) as total
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND DATE(g.used_at) = %s
-        ''', (today,))
+            WHERE g.status = 'USED' AND g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+        ''', (today, today))
         gift_used_amount_today = cursor.fetchone()['total'] or 0
-        
+
         # 상품권 사용금액 (월)
         cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total 
+            SELECT COALESCE(SUM(m.price), 0) as total
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND DATE(g.used_at) >= %s
+            WHERE g.status = 'USED' AND g.used_at >= %s
         ''', (start_of_month,))
         gift_used_amount_month = cursor.fetchone()['total'] or 0
-        
+
         # 상품권 사용 수
         cursor.execute('''
             SELECT COUNT(*) as count FROM gifticon
             WHERE status = 'USED'
         ''')
         gift_used_count = cursor.fetchone()['count'] or 0
-        
+
         # 정산 금액 (월)
         cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total 
+            SELECT COALESCE(SUM(m.price), 0) as total
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND DATE(g.used_at) >= %s
+            WHERE g.status = 'USED' AND g.used_at >= %s
         ''', (start_of_month,))
         settlement_amount_month = cursor.fetchone()['total'] or 0
-        
+
         # 신규 매장 등록 수 (일)
         cursor.execute('''
             SELECT COUNT(*) as count FROM store
-            WHERE DATE(created_at) = %s
-        ''', (today,))
+            WHERE created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)
+        ''', (today, today))
         new_stores_today = cursor.fetchone()['count'] or 0
-        
+
         # 신규 매장 등록 수 (월)
         cursor.execute('''
             SELECT COUNT(*) as count FROM store
-            WHERE DATE(created_at) >= %s
+            WHERE created_at >= %s
         ''', (start_of_month,))
         new_stores_month = cursor.fetchone()['count'] or 0
         
@@ -96,8 +96,8 @@ def get_dashboard_statistics(connection) -> Dict:
         # 신규 가입 유저 (일)
         cursor.execute('''
             SELECT COUNT(*) as count FROM user
-            WHERE DATE(created_at) = %s
-        ''', (today,))
+            WHERE created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)
+        ''', (today, today))
         new_users_today = cursor.fetchone()['count'] or 0
         
         # 전체 유저
