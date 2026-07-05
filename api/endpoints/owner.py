@@ -828,7 +828,7 @@ def update_account(store_id: int, account: AccountUpdateRequest):
             cur2.execute("UPDATE store SET bankbook_key = %s WHERE id = %s", (bankbook_key, store_id))
             conn2.commit()
         finally:
-            conn2.close()
+            close_db_connection(conn2)
         bank_book_put_url = s3.generate_presigned_url(
             "put_object",
             Params={"Bucket": bucket_name, "Key": bankbook_key},

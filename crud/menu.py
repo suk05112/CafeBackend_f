@@ -251,7 +251,7 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
         return {"menuList": items, "next_cursor": next_cursor, "has_next": len(items) == limit}
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Optional[str]) -> Dict:
@@ -327,7 +327,7 @@ def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Op
         return {"menuList": items, "next_cursor": next_cursor, "has_next": len(items) == limit}
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def _build_menu_recommend_items(rows: List[Dict], include_distance: bool) -> List[Dict]:

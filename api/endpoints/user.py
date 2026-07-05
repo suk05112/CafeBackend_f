@@ -725,6 +725,7 @@ async def idRegisteredUserByPhone(
         raise InternalError(e, "isRegisteredByPhone")
     finally:
         cursor.close()
+        close_db_connection(connection)
 
 @router.get("/isRegistered/{phoneNumber}")
 async def idRegisteredAppleUser(phoneNumber: str, _=Depends(verify_firebase_token)):

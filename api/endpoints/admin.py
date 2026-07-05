@@ -844,7 +844,7 @@ def create_test_store(store: StoreCreate, user=Depends(verify_firebase_token)):
             )
             conn2.commit()
         finally:
-            conn2.close()
+            close_db_connection(conn2)
 
         store_logo_url = S3_CLIENT.generate_presigned_url('put_object',
             Params={'Bucket': BUCKET_NAME, 'Key': logo_key}, ExpiresIn=3600)
