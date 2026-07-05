@@ -376,8 +376,8 @@ def get_owner_settlement_list_unified(
                 JOIN gifticon g ON sd.gifticon_id = g.id
                 WHERE sd.settlement_id IS NULL
                   AND g.store_id = %s
-                  AND DATE(g.used_at) >= %s
-                  AND DATE(g.used_at) <= %s
+                  AND g.used_at >= %s
+                  AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
             """, (store_id, period_start_str, period_end_str))
             rows = cursor.fetchall()
             total_sales = 0
@@ -562,8 +562,8 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
             LEFT JOIN menu m ON g.menu_id = m.id
             WHERE sd.settlement_id IS NULL
               AND g.store_id = %s
-              AND DATE(g.used_at) >= %s
-              AND DATE(g.used_at) <= %s
+              AND g.used_at >= %s
+              AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
             ORDER BY g.used_at ASC
         """, (store_id, period_start_str, period_end_str))
         rows = cursor.fetchall()

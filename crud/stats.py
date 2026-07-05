@@ -109,8 +109,8 @@ def create_settlement_data(cycle_id: int) -> Dict:
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN account a ON g.store_id = a.store_id
             WHERE sd.settlement_id IS NULL
-            AND DATE(g.used_at) >= %s
-            AND DATE(g.used_at) <= %s
+            AND g.used_at >= %s
+            AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
         """, (period_start, period_end))
 
         details = cursor.fetchall()
