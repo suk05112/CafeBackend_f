@@ -89,55 +89,42 @@ def create_settlement_data(cycle_id: int) -> Dict:
         
         period_start = cycle['period_start_date']
         period_end = cycle['period_end_date']
-        
-        # 2. 미정산 settlement_details 조회 (settlement_id IS NULL, 기간 내 사용된 기프티콘)
+
+        # 2. 매장별 집계 + 계좌정보를 DB에서 GROUP BY로 한 번에 조회
         cursor.execute("""
             SELECT
-                sd.id as detail_id,
-                sd.gifticon_id,
-                sd.sales_amount,
-                sd.fee_amount,
-                sd.settlement_amount,
                 g.store_id,
-                COALESCE(a.bank, '') as bank_name,
-                COALESCE(a.account, '') as account_number
+                SUM(sd.sales_amount) AS total_sales,
+                SUM(sd.fee_amount) AS total_fee,
+                SUM(sd.settlement_amount) AS total_payout,
+                COALESCE(a.bank, '') AS bank_name,
+                COALESCE(a.account, '') AS account_number
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN account a ON g.store_id = a.store_id
             WHERE sd.settlement_id IS NULL
-            AND g.used_at >= %s
-            AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+              AND g.used_at >= %s
+              AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            GROUP BY g.store_id, a.bank, a.account
         """, (period_start, period_end))
 
-        details = cursor.fetchall()
+        store_rows = cursor.fetchall()
 
-        if not details:
+        if not store_rows:
             return {'message': '정산할 기프티콘이 없습니다.', 'settlement_count': 0}
 
-        # 3. 매장별로 그룹화
-        store_settlements = {}
-
-        for row in details:
-            store_id = row['store_id']
-            if store_id not in store_settlements:
-                store_settlements[store_id] = {
-                    'details': [],
-                    'bank_name': row['bank_name'],
-                    'account_number': row['account_number']
-                }
-            store_settlements[store_id]['details'].append(row)
-
-        # 4. 각 매장별로 settlement 마스터 생성 후 settlement_details.settlement_id 업데이트
+        # 3. 각 매장별로 settlement 마스터 생성 후 settlement_details.settlement_id 업데이트
         created_count = 0
         failed_count = 0
         failed_reasons = []
 
-        for store_id, data in store_settlements.items():
-            total_sales = sum(d['sales_amount'] for d in data['details'])
-            total_fee = sum(d['fee_amount'] for d in data['details'])
-            total_payout = sum(d['settlement_amount'] for d in data['details'])
-            bank_name = data.get('bank_name') or ''
-            account_number = data.get('account_number') or ''
+        for row in store_rows:
+            store_id = row['store_id']
+            total_sales = int(row['total_sales'] or 0)
+            total_fee = int(row['total_fee'] or 0)
+            total_payout = int(row['total_payout'] or 0)
+            bank_name = row['bank_name'] or ''
+            account_number = row['account_number'] or ''
 
             try:
                 if not bank_name.strip() and not account_number.strip():
@@ -158,11 +145,16 @@ def create_settlement_data(cycle_id: int) -> Dict:
                 ))
                 settlement_id = cursor.lastrowid
 
-                detail_ids = [d['detail_id'] for d in data['details']]
-                cursor.execute(
-                    f"UPDATE settlement_details SET settlement_id = %s WHERE id IN ({','.join(['%s'] * len(detail_ids))})",
-                    [settlement_id] + detail_ids
-                )
+                # settlement_details를 JOIN으로 일괄 업데이트 (id IN 반복 제거)
+                cursor.execute("""
+                    UPDATE settlement_details sd
+                    JOIN gifticon g ON sd.gifticon_id = g.id
+                    SET sd.settlement_id = %s
+                    WHERE sd.settlement_id IS NULL
+                      AND g.store_id = %s
+                      AND g.used_at >= %s
+                      AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                """, (settlement_id, store_id, period_start, period_end))
 
                 connection.commit()
                 created_count += 1
