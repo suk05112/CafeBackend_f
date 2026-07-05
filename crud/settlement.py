@@ -711,13 +711,11 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
                 s.bank_name,
                 s.account_number,
                 a.name AS account_holder,
-                COUNT(sd.id) AS detail_count
+                (SELECT COUNT(*) FROM settlement_details sd WHERE sd.settlement_id = s.settlement_id) AS detail_count
             FROM settlement s
             LEFT JOIN store st ON s.store_id = st.id
             LEFT JOIN account a ON s.store_id = a.store_id
-            LEFT JOIN settlement_details sd ON s.settlement_id = sd.settlement_id
             WHERE s.cycle_id = %s
-            GROUP BY s.settlement_id
             ORDER BY s.store_id
             LIMIT %s OFFSET %s
         """, (cycle_id, limit, offset))
