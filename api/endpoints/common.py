@@ -18,6 +18,7 @@ from app.fcm_service import (
 from app.database import get_db_connection, close_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from core.exceptions import InternalError
+from core.config import settings
 import boto3
 from botocore.client import Config
 
@@ -34,8 +35,8 @@ bucket_name = BUCKET_NAME
 # 버킷이 ap-northeast-2에 있으므로 별도의 클라이언트 생성
 common_resources_s3 = boto3.client(
     's3',
-    aws_access_key_id='***REMOVED***',
-    aws_secret_access_key='***REMOVED***',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
     region_name='ap-northeast-2',  # common-gifnut-resources 버킷의 실제 리전
     config=Config(signature_version='s3v4')
 )
@@ -181,3 +182,36 @@ def broadcast_notification(notification: NotificationRequest):
         raise InternalError(e, "broadcast_notification")
 
 
+
+
+
+@router.get("/app-version")
+def get_app_version(
+    platform: Literal['ios', 'android'] = Query(..., description="플랫폼"),
+):
+    """앱 강제업데이트 여부 확인 — 가장 최근에 등록된 강제업데이트 버전 반환"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        cursor.execute(
+            """
+            SELECT version, is_force_update
+            FROM app_versions
+            WHERE platform = %s
+            ORDER BY created_at DESC
+            LIMIT 1
+            """,
+            (platform,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {"version": None, "is_force_update": False}
+        return {
+            "version": row["version"],
+            "is_force_update": bool(row["is_force_update"]),
+        }
+    except Exception as e:
+        logger.error(f"Error in get_app_version: {traceback.format_exc()}")
+        raise InternalError(e, "get_app_version")
+    finally:
+        close_db_connection(connection)

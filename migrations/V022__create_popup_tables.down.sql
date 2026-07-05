@@ -1,0 +1,2 @@
+DROP TABLE IF EXISTS popup_views;
+DROP TABLE IF EXISTS popup;

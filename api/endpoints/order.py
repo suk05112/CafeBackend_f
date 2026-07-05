@@ -10,7 +10,7 @@ from loguru import logger
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timedelta, date, timezone
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 from models.gifticon import Gifticon, PaymentResult, VALID_PGCODES
 from models.store import StoreCreate
@@ -22,6 +22,7 @@ import hashlib
 
 from core.config import settings
 from core.exceptions import InternalError
+from app.aligo_service import send_gift_cancel_to_receiver
 
 router = APIRouter()
 
@@ -467,7 +468,7 @@ async def updatePaymentResult(request: Request):
         close_db_connection(connection)
         
 @router.get("/detail/{order_id}")
-def getOrderDetail(order_id: int):
+def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
     """
     order_id로 주문 상세내역을 조회하는 API
     주문 정보, 매장 정보, 주문에 포함된 기프티콘 목록을 반환
@@ -536,14 +537,7 @@ def getOrderDetail(order_id: int):
         for row in gifticon_rows:
             # 메뉴 이미지 URL 생성
             menu_url = None
-            try:
-                menu_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name,
-                            'Key': f'menu/menu_{order["store_id"]}_{row["menu_id"]}.png'},
-                    ExpiresIn=3600)
-            except Exception as e:
-                print(f"Error generating menu URL: {e}")
-                menu_url = None
+            menu_url = get_s3_public_url(bucket_name, f'menu/menu_{order["store_id"]}_{row["menu_id"]}.png')
             
             # orders_gifticon 테이블의 receiver_id가 비어있는지 확인
             is_receiver_linked = row['orders_gifticon_receiver_id'] is not None
@@ -762,6 +756,30 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 (refund_id,),
             )
             connection.commit()
+
+            # 수신자 알림톡 발송 (커밋 완료 후, 실패해도 환불은 유지)
+            if gifticon_ids:
+                try:
+                    cursor.execute(
+                        """
+                        SELECT g.receiver_phone, g.sender, m.menu_name, g.receiver
+                        FROM gifticon g
+                        JOIN menu m ON g.menu_id = m.id
+                        WHERE g.id = %s
+                        LIMIT 1
+                        """,
+                        (gifticon_ids[0],),
+                    )
+                    gift_info = cursor.fetchone()
+                    if gift_info and gift_info.get("receiver_phone"):
+                        send_gift_cancel_to_receiver(
+                            receiver=gift_info["receiver_phone"],
+                            sender=gift_info["sender"],
+                            menu=gift_info["menu_name"],
+                            recvname=gift_info.get("receiver", ""),
+                        )
+                except Exception as e:
+                    logger.error(f"[알림톡] 선물 취소 알림톡 발송 실패 order_id={order_id}: {e}")
 
             return {
                 "message": "구매자에게 환불되었습니다.",

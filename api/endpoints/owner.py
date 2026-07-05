@@ -26,9 +26,10 @@ from models.owner import OwnerInquiryResponse
 from models.owner import OwnerTermsAgreeRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from app.fcm_service import send_fcm_notification_to_owner
-from app.auth.auth_dependency import verify_firebase_token
+from app.auth.auth_dependency import verify_firebase_token, verify_firebase_token_any
 from crud import terms as terms_crud
 from core.exceptions import InternalError
+from crud import admin as admin_crud
 
 from models.user import User
 from schemas.settlement import AccountUpdateRequest
@@ -43,6 +44,7 @@ async def check_duplicate(
     request: Request,
     email: Optional[str] = Query(None),
     phone_number: Optional[str] = Query(None),
+    user=Depends(verify_firebase_token),
 ):
     if email is None and phone_number is None:
         raise HTTPException(
@@ -77,7 +79,7 @@ async def check_duplicate(
 
 
 @router.post("/register")
-async def registerOwner(owner: Owner):
+async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결           
     cursor = connection.cursor()
     
@@ -104,7 +106,7 @@ async def registerOwner(owner: Owner):
         close_db_connection(connection)
 
 @router.get("/login/{uid}")
-async def login(uid: str):
+async def login(uid: str, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                      
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
@@ -348,7 +350,7 @@ async def findOwnerPW(owner: OwnerFindPw):
         close_db_connection(connection)
         
 @router.post("/inquiry/{owner_id}")
-async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry):
+async def subjectInquiry(owner_id: int, inquiry: OwnerInquiry, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                
     cursor = connection.cursor()
     
@@ -718,7 +720,7 @@ async def updateOwnerPushTokenAgreement(
         close_db_connection(connection)
 
 @router.delete("/{owner_id}")
-async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token)):
+async def deleteOwner(owner_id: int, user=Depends(verify_firebase_token_any)):
     """
     사장님 회원 탈퇴 API (Soft Delete)
     owner_id에 해당하는 사장님 정보를 soft delete 처리
@@ -826,7 +828,7 @@ def update_account(store_id: int, account: AccountUpdateRequest):
             cur2.execute("UPDATE store SET bankbook_key = %s WHERE id = %s", (bankbook_key, store_id))
             conn2.commit()
         finally:
-            conn2.close()
+            close_db_connection(conn2)
         bank_book_put_url = s3.generate_presigned_url(
             "put_object",
             Params={"Bucket": bucket_name, "Key": bankbook_key},
@@ -872,7 +874,7 @@ def get_owner_settlement_data(
 
 
 @router.get("/settlement/detail/{settlement_id}")
-def get_owner_settlement_detail(settlement_id: int):
+def get_owner_settlement_detail(settlement_id: int, user=Depends(verify_firebase_token_any)):
     """사장님 정산 상세: settlement 헤더 + details 건별 내역"""
     try:
         from crud import settlement as settlement_crud
@@ -975,4 +977,86 @@ def get_owner_store_list(owner_id: int):
         raise InternalError(e, "get_owner_store_list")
     finally:
         cursor.close()
+        close_db_connection(connection)
+
+
+@router.get("/notice")
+def get_owner_notice(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    """사장님 공지사항 목록 조회 (페이지네이션)"""
+    connection = get_db_connection()
+    try:
+        result = admin_crud.get_notices(connection, target='owner', page=page, limit=limit)
+        items = [{"id": n["id"], "title": n["title"], "created_at": n["created_at"]} for n in result["items"]]
+        return {
+            "message": "공지사항 목록 조회 성공",
+            "data": items,
+            "pagination": {
+                "total": result["total"],
+                "page": result["page"],
+                "limit": result["limit"],
+                "total_pages": result["total_pages"]
+            }
+        }
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_owner_notice")
+    finally:
+        close_db_connection(connection)
+
+
+@router.get("/notice/{notice_id}")
+def get_owner_notice_detail(notice_id: int):
+    """사장님 공지사항 상세 조회"""
+    connection = get_db_connection()
+    try:
+        notice = admin_crud.get_notice_detail(connection, target='owner', notice_id=notice_id)
+        if not notice:
+            raise HTTPException(status_code=404, detail="공지사항을 찾을 수 없습니다.")
+        return {
+            "message": "공지사항 상세 조회 성공",
+            "data": {
+                "id": notice["id"],
+                "title": notice["title"],
+                "content": notice["content"],
+                "created_at": notice["created_at"],
+                "updated_at": notice["updated_at"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_owner_notice_detail")
+    finally:
+        close_db_connection(connection)
+
+# ── Popup App API (Owner) ──────────────────────────────────────────────────────
+
+@router.get("/popups")
+def get_owner_popups(owner_id: Optional[int] = Query(None)):
+    """사장님 활성 팝업 목록 조회 (비로그인 가능)"""
+    connection = get_db_connection()
+    try:
+        items = admin_crud.get_active_popups(connection, viewer_type='owner', viewer_id=owner_id)
+        return {"message": "팝업 목록 조회 성공", "data": items}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_owner_popups")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/popups/hide")
+def hide_owner_popups(owner_id: Optional[int] = Query(None)):
+    """사장님 오늘 하루 팝업 숨기기 (비로그인 시 no-op)"""
+    if owner_id is None:
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    connection = get_db_connection()
+    try:
+        admin_crud.hide_popups_today(connection, viewer_type='owner', viewer_id=owner_id)
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "hide_owner_popups")
+    finally:
         close_db_connection(connection)

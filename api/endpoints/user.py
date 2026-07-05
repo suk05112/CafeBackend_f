@@ -46,7 +46,8 @@ from models.user import InquiryResponse
 from models.user import FindAccountRequest
 from models.user import TermsAgreeRequest
 from models.push_token import PushTokenCreate, PushTokenUpdate
-from models.notice import NoticeResponse
+from models.notice import NoticeResponse, NoticeListItem, NoticeDetail
+from crud import admin as admin_crud
 from app.fcm_service import send_fcm_notification_to_user
 from core.config import settings
 from core.s3_config import S3_CLIENT, TERMS_BUCKET_NAME
@@ -567,7 +568,8 @@ async def login_user(
 
         if result:
             user_id = result["id"]
-            user_email = result.get("email") or result.get("fb_email") or None
+            raw_email = result.get("email") or result.get("fb_email") or None
+            user_email = f"USR-{user_id}" if raw_email == "apple" else raw_email
 
             print("이미 등록 islinked", islinked)
             # 이미 등록된 유저
@@ -623,37 +625,47 @@ async def idRegisteredUser(
     provider: str = Query(...),
     email: str = Query(None, description="SNS 가입 유저 확인용 (email, provider로 조회)"),
     phone: str = Query(None, description="Email 가입 유저 확인용 (phone, provider로 조회)"),
+    uid: str = Query(None, description="Firebase UID (uid, provider로 조회)"),
     firebase = Depends(verify_firebase_token)
 ):
-    """
-    등록 여부 검사
-    - provider는 필수
-    - email이 제공되면: email + provider로 조회 (SNS 가입 유저 확인)
-    - phone이 제공되면: phone + provider로 조회 (email 가입 유저 확인)
-    - email과 phone 모두 제공되면 둘 다 확인 (OR 조건)
-    - phone만 제공되어도 조회 가능
-    """
-    connection = get_db_connection()  # 환경에 맞는 DB 연결                     
+    connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        # email과 phone이 모두 없는 경우 에러
-        if not email and not phone:
+        if not email and not phone and not uid:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="email or phone is required"
+                detail="email, phone, or uid is required"
             )
-        
+
         # Apple private relay 이메일 처리
         if email and email.endswith("@privaterelay.appleid.com"):
             provider = "apple.priavate"
-        
-        result = None
-        
-        # SNS 가입 유저 확인: email + provider로 조회
+
+        # uid + provider로 조회 (Apple 로그인 등 email이 비정상인 경우 대체 수단)
+        if uid:
+            cursor.execute("""
+                SELECT up.*
+                FROM user_provider up
+                INNER JOIN user u ON up.user_id = u.id
+                WHERE u.uid = %s AND up.provider = %s
+                LIMIT 1;
+            """, (uid, provider))
+            result = cursor.fetchone()
+            if result:
+                logger.info(f"uid 가입 유저 확인됨: uid={uid}, provider={provider}, user_id={result.get('user_id')}")
+                return {'status': 'registered'}
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            user_check = cursor.fetchone()
+            if user_check:
+                logger.info(f"uid_exists(phone_exists): uid={uid}, provider={provider}, user_id={user_check['id']}")
+                return {'status': 'phone_exists'}
+            return {'status': 'new'}
+
+        # email + provider로 조회
         if email:
             cursor.execute("""
-                SELECT up.* 
+                SELECT up.*
                 FROM user_provider up
                 WHERE up.email = %s AND up.provider = %s
                 LIMIT 1;
@@ -661,13 +673,12 @@ async def idRegisteredUser(
             result = cursor.fetchone()
             if result:
                 print(f"SNS 가입 유저 확인됨: email={email}, provider={provider}")
-                return {'isRegistered': True}
-        
-        # Email 가입 유저 확인: phone + provider로 조회
-        # phone만 있어도 조회 가능
+                return {'status': 'registered'}
+
+        # phone + provider로 조회
         if phone:
             cursor.execute("""
-                SELECT up.* 
+                SELECT up.*
                 FROM user_provider up
                 INNER JOIN user u ON up.user_id = u.id
                 WHERE u.phone = %s AND up.provider = %s
@@ -675,21 +686,16 @@ async def idRegisteredUser(
             """, (phone, provider))
             result = cursor.fetchone()
             if result:
-                print(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
-                logger.info(f"Email 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}, up_id={result.get('id')}")
-                return {'isRegistered': True}
-            # 디버깅: phone으로 user는 있는데 해당 provider가 없는 경우
-            cursor.execute("SELECT id, phone FROM user WHERE phone = %s LIMIT 1", (phone,))
+                print(f"phone 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}")
+                logger.info(f"phone 가입 유저 확인됨: phone={phone}, provider={provider}, user_id={result.get('user_id')}")
+                return {'status': 'registered'}
+            cursor.execute("SELECT id FROM user WHERE phone = %s LIMIT 1", (phone,))
             user_check = cursor.fetchone()
             if user_check:
-                cursor.execute("SELECT provider FROM user_provider WHERE user_id = %s", (user_check['id'],))
-                existing_providers = cursor.fetchall()
-                provider_list = [p['provider'] for p in existing_providers] if existing_providers else []
-                print(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
-                logger.info(f"Email 가입 유저 확인 실패: phone={phone}, provider={provider}, user_id={user_check['id']}, 기존 providers={provider_list}")
+                logger.info(f"phone_exists: phone={phone}, provider={provider}, user_id={user_check['id']}")
+                return {'status': 'phone_exists'}
 
-        # 결과 확인 (일치하는 값이 없으면 등록 안됨)
-        return {'isRegistered': False}
+        return {'status': 'new'}
 
     except HTTPException:
         raise
@@ -719,9 +725,10 @@ async def idRegisteredUserByPhone(
         raise InternalError(e, "isRegisteredByPhone")
     finally:
         cursor.close()
+        close_db_connection(connection)
 
 @router.get("/isRegistered/{phoneNumber}")
-async def idRegisteredAppleUser(phoneNumber: str):
+async def idRegisteredAppleUser(phoneNumber: str, _=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결                     
     cursor = connection.cursor()
 
@@ -1421,40 +1428,53 @@ async def deleteUser(
 
 
 @router.get("/notice")
-def get_user_notice():
-    """
-    유저 공지사항 전체 조회 API
-    notice_user 테이블에서 모든 공지사항을 읽어옵니다.
-    """
+def get_user_notice(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    """유저 공지사항 목록 조회 (페이지네이션)"""
     connection = get_db_connection()
-    cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
     try:
-        cursor.execute('''
-            SELECT id, title, content, created_at, updated_at
-            FROM notice_user
-            ORDER BY created_at DESC
-        ''')
-        
-        notices = cursor.fetchall()
-        
-        # 날짜 형식 변환
-        for notice in notices:
-            if notice.get('created_at'):
-                notice['created_at'] = notice['created_at'].isoformat()
-            if notice.get('updated_at'):
-                notice['updated_at'] = notice['updated_at'].isoformat()
-        
+        result = admin_crud.get_notices(connection, target='user', page=page, limit=limit)
+        items = [{"id": n["id"], "title": n["title"], "created_at": n["created_at"]} for n in result["items"]]
         return {
-            "notices": notices,
-            "total": len(notices)
+            "message": "공지사항 목록 조회 성공",
+            "data": items,
+            "pagination": {
+                "total": result["total"],
+                "page": result["page"],
+                "limit": result["limit"],
+                "total_pages": result["total_pages"]
+            }
         }
-        
     except Exception as e:
         traceback.print_exc()
         raise InternalError(e, "get_user_notice")
     finally:
-        cursor.close()
+        close_db_connection(connection)
+
+
+@router.get("/notice/{notice_id}")
+def get_user_notice_detail(notice_id: int):
+    """유저 공지사항 상세 조회"""
+    connection = get_db_connection()
+    try:
+        notice = admin_crud.get_notice_detail(connection, target='user', notice_id=notice_id)
+        if not notice:
+            raise HTTPException(status_code=404, detail="공지사항을 찾을 수 없습니다.")
+        return {
+            "message": "공지사항 상세 조회 성공",
+            "data": {
+                "id": notice["id"],
+                "title": notice["title"],
+                "content": notice["content"],
+                "created_at": notice["created_at"],
+                "updated_at": notice["updated_at"]
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_user_notice_detail")
+    finally:
         close_db_connection(connection)
 
 
@@ -1559,4 +1579,36 @@ def find_account(request: FindAccountRequest):
         raise InternalError(e, "find_account")
     finally:
         cursor.close()
+        close_db_connection(connection)
+
+
+# ── Popup App API (User) ───────────────────────────────────────────────────────
+
+@router.get("/popups")
+def get_user_popups(user_id: Optional[int] = Query(None)):
+    """유저 활성 팝업 목록 조회 (비로그인 가능)"""
+    connection = get_db_connection()
+    try:
+        items = admin_crud.get_active_popups(connection, viewer_type='user', viewer_id=user_id)
+        return {"message": "팝업 목록 조회 성공", "data": items}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "get_user_popups")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/popups/hide")
+def hide_user_popups(user_id: Optional[int] = Query(None)):
+    """유저 오늘 하루 팝업 숨기기 (비로그인 시 no-op)"""
+    if user_id is None:
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    connection = get_db_connection()
+    try:
+        admin_crud.hide_popups_today(connection, viewer_type='user', viewer_id=user_id)
+        return {"message": "오늘 하루 팝업이 숨겨졌습니다."}
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "hide_user_popups")
+    finally:
         close_db_connection(connection)

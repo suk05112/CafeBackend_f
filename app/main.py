@@ -25,7 +25,6 @@ import json
 
 from core.config import settings
 from core.exceptions import InternalError, internal_error_handler
-from db.session import get_db_connection
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from core.scheduler import create_scheduler
 
@@ -56,8 +55,8 @@ print(f"S3 Bucket Name: {bucket_name} (ENV: {env})")
 # CloudWatch 로깅 설정 (dev/prod 구분)
 boto3_client = boto3.client(
     'logs',
-    aws_access_key_id='***REMOVED***',
-    aws_secret_access_key='***REMOVED***',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
     region_name='ap-northeast-2'
 )
 
@@ -120,18 +119,6 @@ async def lifespan(app: FastAPI):
     if not settings.payletter_api_host:
         raise RuntimeError("PAYLETTER_API_HOST 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
 
-    # 서버 시작 시 DB 연결
-    connection = None
-    try:
-        connection = get_db_connection()  # 환경에 맞는 DB 연결
-
-        app.state.db = connection
-        print("DB 연결 완료")
-        print(f"연결된 config: db_host={settings.db_host}, db_user={settings.db_user}")
-    except Exception as e:
-        logger.error(f"❌ DB 연결 실패: {e}")
-        app.state.db = None
-
     # 스케줄러 시작 (15분마다 PENDING 만료, 매일 03:00 오래된 레코드 삭제)
     scheduler = create_scheduler()
     scheduler.start()
@@ -139,14 +126,9 @@ async def lifespan(app: FastAPI):
 
     yield  # 서버가 실행 중일 때
 
-    # 서버 종료 시 스케줄러 및 DB 연결 해제
+    # 서버 종료 시 스케줄러 정리
     scheduler.shutdown(wait=False)
     print("스케줄러 종료 완료")
-
-    from db.session import close_db_connection
-    if connection:
-        close_db_connection(connection)
-    print("DB 연결 종료")
 
 # Rate Limiter 설정
 limiter = Limiter(key_func=get_remote_address)
@@ -236,7 +218,7 @@ async def log_requests(request: Request, call_next):
     
     # 응답 본문 읽기 (에러 응답 또는 로그인/정산 엔드포인트만, 최대 1000자로 제한)
     response_body_str = None
-    if should_log and (response.status_code >= 400 or is_login_endpoint or is_settlement_endpoint):
+    if should_log and (response.status_code >= 400 or is_login_endpoint or is_isRegistered_endpoint or is_settlement_endpoint):
         try:
             response_body = [chunk async for chunk in response.body_iterator]
             response.body_iterator = iterate_in_threadpool(iter(response_body))

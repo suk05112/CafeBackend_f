@@ -12,7 +12,7 @@ import re
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 from models.gifticon import Gifticon
 from models.store import StoreCreate
@@ -34,7 +34,7 @@ s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
 
 @router.get("/list/{user_id}")
-def getGifticonList(user_id: int):
+def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     gifticonList = []
@@ -73,11 +73,7 @@ def getGifticonList(user_id: int):
 
         for row in rows:
             image_key = row.get('image_key') or ''
-            menu_url = s3.generate_presigned_url('get_object',
-                                    Params={'Bucket': bucket_name,
-                                            'Key': image_key,
-                                            },
-                                    ExpiresIn=3600) if image_key else ''
+            menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
                 "name": row.get('menu_name') or '',
@@ -106,7 +102,7 @@ def getGifticonList(user_id: int):
         close_db_connection(connection)
 
 @router.get("/{gifticon_id}")
-def getGifticon(gifticon_id: int):
+def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
@@ -158,11 +154,7 @@ def getGifticon(gifticon_id: int):
             )
 
         image_key = menu_result.get('image_key') or ''
-        menu_url = s3.generate_presigned_url('get_object',
-                                Params={'Bucket': bucket_name,
-                                        'Key': image_key,
-                                        },
-                                ExpiresIn=3600) if image_key else ''
+        menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
             "gift_code": gifticon['gift_code'],

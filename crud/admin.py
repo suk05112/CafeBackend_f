@@ -3,7 +3,7 @@ import pymysql
 from datetime import datetime
 from typing import Optional, Dict, List
 from db.session import get_db_connection, close_db_connection
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 from botocore.exceptions import ClientError
 from crud import store as store_crud
 from crud import menu as menu_crud
@@ -15,102 +15,71 @@ bucket_name = BUCKET_NAME
 def get_dashboard_statistics(connection) -> Dict:
     """대시보드 통계 데이터"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
         today = datetime.now().date()
         start_of_month = today.replace(day=1)
-        
-        # 상품권 발행 수 (일)
+
+        # gifticon 관련 집계 1회 쿼리
         cursor.execute('''
-            SELECT COUNT(*) as count FROM gifticon
-            WHERE DATE(created_at) = %s
-        ''', (today,))
-        gift_issued_today = cursor.fetchone()['count'] or 0
-        
-        # 상품권 발행 수 (월)
+            SELECT
+                SUM(created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)) AS gift_issued_today,
+                SUM(created_at >= %s) AS gift_issued_month,
+                SUM(status = 'USED') AS gift_used_count
+            FROM gifticon
+        ''', (today, today, start_of_month))
+        gift_row = cursor.fetchone()
+        gift_issued_today = int(gift_row['gift_issued_today'] or 0)
+        gift_issued_month = int(gift_row['gift_issued_month'] or 0)
+        gift_used_count = int(gift_row['gift_used_count'] or 0)
+
+        # gifticon 사용금액 집계 (menu JOIN 필요)
         cursor.execute('''
-            SELECT COUNT(*) as count FROM gifticon
-            WHERE DATE(created_at) >= %s
-        ''', (start_of_month,))
-        gift_issued_month = cursor.fetchone()['count'] or 0
-        
-        # 상품권 사용금액 (일)
-        cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total 
+            SELECT
+                COALESCE(SUM(CASE WHEN g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY) THEN m.price ELSE 0 END), 0) AS gift_used_amount_today,
+                COALESCE(SUM(CASE WHEN g.used_at >= %s THEN m.price ELSE 0 END), 0) AS gift_used_amount_month
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND DATE(g.used_at) = %s
-        ''', (today,))
-        gift_used_amount_today = cursor.fetchone()['total'] or 0
-        
-        # 상품권 사용금액 (월)
+            WHERE g.status = 'USED'
+        ''', (today, today, start_of_month))
+        used_row = cursor.fetchone()
+        gift_used_amount_today = float(used_row['gift_used_amount_today'] or 0)
+        gift_used_amount_month = float(used_row['gift_used_amount_month'] or 0)
+        settlement_amount_month = gift_used_amount_month
+
+        # store 집계 1회 쿼리
         cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total 
-            FROM gifticon g
-            LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND DATE(g.used_at) >= %s
-        ''', (start_of_month,))
-        gift_used_amount_month = cursor.fetchone()['total'] or 0
-        
-        # 상품권 사용 수
+            SELECT
+                SUM(created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)) AS new_stores_today,
+                SUM(created_at >= %s) AS new_stores_month,
+                SUM(inspection_status != 'approved' OR inspection_status IS NULL) AS pending_stores,
+                COUNT(*) AS total_stores
+            FROM store
+        ''', (today, today, start_of_month))
+        store_row = cursor.fetchone()
+        new_stores_today = int(store_row['new_stores_today'] or 0)
+        new_stores_month = int(store_row['new_stores_month'] or 0)
+        pending_stores = int(store_row['pending_stores'] or 0)
+        total_stores = int(store_row['total_stores'] or 0)
+
+        # user 집계 1회 쿼리
         cursor.execute('''
-            SELECT COUNT(*) as count FROM gifticon
-            WHERE status = 'USED'
-        ''')
-        gift_used_count = cursor.fetchone()['count'] or 0
-        
-        # 정산 금액 (월)
-        cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total 
-            FROM gifticon g
-            LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND DATE(g.used_at) >= %s
-        ''', (start_of_month,))
-        settlement_amount_month = cursor.fetchone()['total'] or 0
-        
-        # 신규 매장 등록 수 (일)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM store
-            WHERE DATE(created_at) = %s
-        ''', (today,))
-        new_stores_today = cursor.fetchone()['count'] or 0
-        
-        # 신규 매장 등록 수 (월)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM store
-            WHERE DATE(created_at) >= %s
-        ''', (start_of_month,))
-        new_stores_month = cursor.fetchone()['count'] or 0
-        
-        # 승인 안된 매장 수
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM store
-            WHERE inspection_status != 'approved' OR inspection_status IS NULL
-        ''')
-        pending_stores = cursor.fetchone()['count'] or 0
-        
-        # 전체 매장 수
-        cursor.execute('SELECT COUNT(*) as count FROM store')
-        total_stores = cursor.fetchone()['count'] or 0
-        
-        # 신규 가입 유저 (일)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM user
-            WHERE DATE(created_at) = %s
-        ''', (today,))
-        new_users_today = cursor.fetchone()['count'] or 0
-        
-        # 전체 유저
-        cursor.execute('SELECT COUNT(*) as count FROM user')
-        total_users = cursor.fetchone()['count'] or 0
-        
+            SELECT
+                SUM(created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)) AS new_users_today,
+                COUNT(*) AS total_users
+            FROM user
+        ''', (today, today))
+        user_row = cursor.fetchone()
+        new_users_today = int(user_row['new_users_today'] or 0)
+        total_users = int(user_row['total_users'] or 0)
+
         return {
             'gift_issued_today': gift_issued_today,
             'gift_issued_month': gift_issued_month,
-            'gift_used_amount_today': float(gift_used_amount_today),
-            'gift_used_amount_month': float(gift_used_amount_month),
+            'gift_used_amount_today': gift_used_amount_today,
+            'gift_used_amount_month': gift_used_amount_month,
             'gift_used_count': gift_used_count,
-            'settlement_amount_month': float(settlement_amount_month),
+            'settlement_amount_month': settlement_amount_month,
             'new_stores_today': new_stores_today,
             'new_stores_month': new_stores_month,
             'pending_stores': pending_stores,
@@ -122,64 +91,68 @@ def get_dashboard_statistics(connection) -> Dict:
         cursor.close()
 
 
-def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: int = 20,
+               inspection_status: Optional[str] = None, contract_completed: Optional[str] = None) -> Dict:
     """매장 리스트 (관리자용, 페이지네이션)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
+    def _build_conditions(search, inspection_status, contract_completed):
+        conditions = []
+        params = []
+        if search:
+            conditions.append('(s.store_name LIKE %s OR o.name LIKE %s)')
+            pattern = f'%{search}%'
+            params += [pattern, pattern]
+        if inspection_status:
+            conditions.append('s.inspection_status = %s')
+            params.append(inspection_status)
+        if contract_completed:
+            conditions.append('s.contract_completed = %s')
+            params.append(contract_completed)
+        where = (' WHERE ' + ' AND '.join(conditions)) if conditions else ''
+        return where, params
+
     try:
-        # 전체 개수 조회
-        count_query = '''
+        where, base_params = _build_conditions(search, inspection_status, contract_completed)
+
+        count_query = f'''
             SELECT COUNT(*) as total
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
+            {where}
         '''
-        
-        count_params = []
-        if search:
-            count_query += ' WHERE s.store_name LIKE %s OR o.name LIKE %s'
-            search_pattern = f'%{search}%'
-            count_params = [search_pattern, search_pattern]
-        
-        cursor.execute(count_query, count_params)
+        cursor.execute(count_query, base_params)
         total_count = cursor.fetchone()['total']
-        
-        # 페이지네이션 계산
+
         offset = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-        
-        # 데이터 조회
-        query = '''
-            SELECT 
+
+        query = f'''
+            SELECT
                 s.id,
                 s.owner_id,
                 s.store_name as name,
                 s.created_at,
                 s.inspection_status as status,
+                s.contract_completed,
                 s.store_address as address,
                 o.name as owner_name
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
+            {where}
+            ORDER BY s.created_at DESC
+            LIMIT %s OFFSET %s
         '''
-        
-        params = []
-        if search:
-            query += ' WHERE s.store_name LIKE %s OR o.name LIKE %s'
-            search_pattern = f'%{search}%'
-            params = [search_pattern, search_pattern]
-        
-        query += ' ORDER BY s.created_at DESC'
-        query += ' LIMIT %s OFFSET %s'
-        params.extend([limit, offset])
-        
+        params = base_params + [limit, offset]
         cursor.execute(query, params)
         stores = cursor.fetchall()
-        
+
         result = []
         for store in stores:
             store['created_at'] = store['created_at'].isoformat() if store['created_at'] else None
             store['approved'] = store['status'].upper() == 'APPROVED' if store['status'] else False
             result.append(store)
-        
+
         return {
             'items': result,
             'total': total_count,
@@ -272,8 +245,7 @@ def get_store_menus(connection, store_id: int, page: int = 1, limit: int = 10) -
         for menu in menus:
             menu['image'] = None
             if menu.get('image_key'):
-                menu['image'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': menu['image_key']}, ExpiresIn=3600)
+                menu['image'] = get_s3_public_url(bucket_name, menu['image_key'])
             del menu['image_key']
             result.append(menu)
 
@@ -790,11 +762,12 @@ def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
         
         # 데이터 조회
         cursor.execute('''
-            SELECT 
+            SELECT
                 m.id,
                 m.menu_name as name,
                 m.price as price,
                 m.store_id,
+                m.image_key,
                 s.store_name
             FROM menu m
             LEFT JOIN store s ON m.store_id = s.id
@@ -806,15 +779,10 @@ def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
         
         result = []
         for menu in menus:
-            menu_id = menu['id']
-            image_key = f'menu_image/menu_image_{menu_id}.png'
             menu['image'] = None
-            try:
-                s3.head_object(Bucket=bucket_name, Key=image_key)
-                menu['image'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': image_key}, ExpiresIn=3600)
-            except ClientError:
-                pass
+            if menu.get('image_key'):
+                menu['image'] = get_s3_public_url(bucket_name, menu['image_key'])
+            del menu['image_key']
             result.append(menu)
         
         return {
@@ -1050,3 +1018,194 @@ def delete_notice(connection, target: str, notice_id: int) -> bool:
     finally:
         cursor.close()
 
+
+
+# ── Popup CRUD ────────────────────────────────────────────────────────────────
+
+def get_popups(connection, target_type: Optional[str] = None, page: int = 1, limit: int = 20) -> dict:
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        offset = (page - 1) * limit
+        if target_type:
+            count_q = "SELECT COUNT(*) as total FROM popup WHERE target_type = %s"
+            cursor.execute(count_q, (target_type,))
+            total = cursor.fetchone()['total']
+            cursor.execute(
+                "SELECT * FROM popup WHERE target_type = %s ORDER BY display_order ASC, id ASC LIMIT %s OFFSET %s",
+                (target_type, limit, offset)
+            )
+        else:
+            cursor.execute("SELECT COUNT(*) as total FROM popup")
+            total = cursor.fetchone()['total']
+            cursor.execute(
+                "SELECT * FROM popup ORDER BY target_type ASC, display_order ASC, id ASC LIMIT %s OFFSET %s",
+                (limit, offset)
+            )
+        rows = cursor.fetchall()
+        for r in rows:
+            r['is_active'] = bool(r['is_active'])
+            for f in ('start_at', 'end_at', 'created_at', 'updated_at'):
+                if r.get(f):
+                    r[f] = r[f].strftime('%Y-%m-%d %H:%M:%S')
+        return {"total": total, "page": page, "limit": limit, "items": rows}
+    finally:
+        cursor.close()
+
+
+def get_popup(connection, popup_id: int) -> Optional[dict]:
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("SELECT * FROM popup WHERE id = %s", (popup_id,))
+        row = cursor.fetchone()
+        if row:
+            row['is_active'] = bool(row['is_active'])
+            for f in ('start_at', 'end_at', 'created_at', 'updated_at'):
+                if row.get(f):
+                    row[f] = row[f].strftime('%Y-%m-%d %H:%M:%S')
+        return row
+    finally:
+        cursor.close()
+
+
+def create_popup(connection, target_type: str, title: str, image_url: str,
+                 link_url: Optional[str], display_order: int, is_active: bool,
+                 start_at, end_at) -> dict:
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute(
+            """INSERT INTO popup (target_type, title, image_url, link_url, display_order, is_active, start_at, end_at)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (target_type, title, image_url, link_url, display_order, 1 if is_active else 0, start_at, end_at)
+        )
+        connection.commit()
+        new_id = cursor.lastrowid
+        return get_popup(connection, new_id)
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def update_popup(connection, popup_id: int, **kwargs) -> Optional[dict]:
+    cursor = connection.cursor()
+    try:
+        updates = []
+        params = []
+        field_map = {
+            'title': 'title', 'image_url': 'image_url', 'link_url': 'link_url',
+            'display_order': 'display_order', 'start_at': 'start_at', 'end_at': 'end_at'
+        }
+        for key, col in field_map.items():
+            if key in kwargs and kwargs[key] is not None:
+                updates.append(f'{col} = %s')
+                params.append(kwargs[key])
+        if 'is_active' in kwargs and kwargs['is_active'] is not None:
+            updates.append('is_active = %s')
+            params.append(1 if kwargs['is_active'] else 0)
+        if not updates:
+            return get_popup(connection, popup_id)
+        params.append(popup_id)
+        cursor.execute(f"UPDATE popup SET {', '.join(updates)} WHERE id = %s", params)
+        connection.commit()
+        if cursor.rowcount == 0:
+            return None
+        return get_popup(connection, popup_id)
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def delete_popup(connection, popup_id: int) -> bool:
+    cursor = connection.cursor()
+    try:
+        cursor.execute("DELETE FROM popup WHERE id = %s", (popup_id,))
+        connection.commit()
+        return cursor.rowcount > 0
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def toggle_popup(connection, popup_id: int) -> Optional[dict]:
+    cursor = connection.cursor()
+    try:
+        cursor.execute("UPDATE popup SET is_active = NOT is_active WHERE id = %s", (popup_id,))
+        connection.commit()
+        if cursor.rowcount == 0:
+            return None
+        return get_popup(connection, popup_id)
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+def reorder_popups(connection, ordered_ids: list) -> None:
+    """팝업 순서 일괄 업데이트 (id 배열 인덱스 = display_order)"""
+    cursor = connection.cursor()
+    try:
+        for idx, popup_id in enumerate(ordered_ids):
+            cursor.execute("UPDATE popup SET display_order = %s WHERE id = %s", (idx, popup_id))
+        connection.commit()
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()
+
+
+# ── Popup App CRUD ─────────────────────────────────────────────────────────────
+
+def get_active_popups(connection, viewer_type: str, viewer_id: Optional[int] = None) -> list:
+    """활성 팝업 목록 조회 (오늘 하루 보지 않기 적용)"""
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        # 숨김 여부 확인 (로그인 유저만)
+        if viewer_id is not None:
+            cursor.execute(
+                "SELECT hidden_until FROM popup_views WHERE viewer_type = %s AND viewer_id = %s",
+                (viewer_type, viewer_id)
+            )
+            view_row = cursor.fetchone()
+            if view_row and view_row['hidden_until'] > datetime.now():
+                return []
+
+        cursor.execute(
+            """SELECT id, title, image_url, link_url, display_order
+               FROM popup
+               WHERE target_type = %s
+                 AND is_active = 1
+                 AND (start_at IS NULL OR start_at <= NOW())
+                 AND (end_at IS NULL OR end_at >= NOW())
+               ORDER BY display_order ASC, id ASC""",
+            (viewer_type,)
+        )
+        return cursor.fetchall()
+    finally:
+        cursor.close()
+
+
+def hide_popups_today(connection, viewer_type: str, viewer_id: int) -> None:
+    """오늘 하루 보지 않기 (자정까지 숨김)"""
+    from datetime import date, timedelta
+    hidden_until = datetime.combine(date.today() + timedelta(days=1), datetime.min.time())
+    cursor = connection.cursor()
+    try:
+        cursor.execute(
+            """INSERT INTO popup_views (viewer_type, viewer_id, hidden_until)
+               VALUES (%s, %s, %s)
+               ON DUPLICATE KEY UPDATE hidden_until = VALUES(hidden_until)""",
+            (viewer_type, viewer_id, hidden_until)
+        )
+        connection.commit()
+    except Exception as e:
+        connection.rollback()
+        raise e
+    finally:
+        cursor.close()

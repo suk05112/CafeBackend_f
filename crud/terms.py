@@ -117,9 +117,9 @@ def get_user_terms_status(conn, user_id: int) -> Dict:
                     cursor.execute("""
                         INSERT IGNORE INTO user_terms_agreement (user_id, term_version_id, agreed_at)
                         VALUES (%s, %s, %s)
-                    """, (user_id, vid, today))
+                    """, (user_id, vid, datetime.now()))
                     conn.commit()
-                    agreed_at = today
+                    agreed_at = datetime.now()
                     agreed_version_id = vid
                     agreed_version = cur["current_version"]
                     needs_reagreement = False
@@ -225,7 +225,7 @@ def save_user_agreements(
                 INSERT INTO user_terms_agreement (user_id, term_version_id, agreed_at)
                 VALUES (%s, %s, %s)
                 ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at)
-            """, (user_id, term_version_id, today))
+            """, (user_id, term_version_id, datetime.now()))
             agreed_count += 1
         conn.commit()
         return True, None, agreed_count
@@ -297,9 +297,9 @@ def get_owner_terms_status(conn, owner_id: int) -> Dict:
                     cursor.execute("""
                         INSERT IGNORE INTO owner_terms_agreement (owner_id, term_version_id, agreed_at)
                         VALUES (%s, %s, %s)
-                    """, (owner_id, vid, today))
+                    """, (owner_id, vid, datetime.now()))
                     conn.commit()
-                    agreed_at = today
+                    agreed_at = datetime.now()
                     agreed_version_id = vid
                     agreed_version = cur["current_version"]
                     needs_reagreement = False
@@ -367,7 +367,7 @@ def save_owner_agreements(
                 INSERT INTO owner_terms_agreement (owner_id, term_version_id, agreed_at)
                 VALUES (%s, %s, %s)
                 ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at)
-            """, (owner_id, term_version_id, today))
+            """, (owner_id, term_version_id, datetime.now()))
             agreed_count += 1
         conn.commit()
         return True, None, agreed_count

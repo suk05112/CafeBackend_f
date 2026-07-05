@@ -4,6 +4,7 @@
 템플릿 목록:
   - UH_9771: 정산 완료 안내    변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
   - UH_9772: 입점 심사 결과 안내  변수: #{심사결과}, #{상세사유}
+  - UJ_1609: 선물 결제 취소 안내  변수: #{sender}, #{menu}
 """
 import json
 import urllib.request
@@ -42,7 +43,8 @@ class AlimtalkRecipient:
     message: str         # 알림톡 본문 (템플릿 변수 치환 완료된 문자열)
     subject: str         # 알림톡 제목
     recvname: str = ""   # 수신자 이름 (선택)
-    emtitle: str = ""    # 강조표기형 타이틀 (선택)
+    emtitle: str = ""    # 강조표기형 핵심정보 (선택)
+    emtext: str = ""     # 강조표기형 보조문구 (선택)
 
 
 def _send(
@@ -72,6 +74,8 @@ def _send(
             params[f"recvname_{i}"] = r.recvname
         if r.emtitle:
             params[f"emtitle_{i}"] = r.emtitle
+        if r.emtext:
+            params[f"emtext_{i}"] = r.emtext
         if button:
             params[f"button_{i}"] = json.dumps(button, ensure_ascii=False)
 
@@ -105,10 +109,10 @@ def send_settlement_complete(
     message = (
         f"안녕하세요, 사장님.\n"
         f"정산대금 지급이 완료되었습니다.\n\n"
-        f"▪ 매장명: {store_name}\n"
-        f"▪ 정산 기간: {period}\n"
-        f"▪ 정산 금액: {amount}원\n"
-        f"▪ 입금 계좌: {bank_name} ({account_number})"
+        f"■ 매장명: {store_name}\n"
+        f"■ 정산 기간: {period}\n"
+        f"■ 정산 금액: {amount}원\n"
+        f"■ 입금 계좌: {bank_name} ({account_number})"
     )
     recipient = AlimtalkRecipient(
         receiver=receiver,
@@ -117,6 +121,28 @@ def send_settlement_complete(
         recvname=recvname,
     )
     return _send("UH_9771", [recipient], button=CHANNEL_ADD_BUTTON)
+
+
+def send_gift_cancel_to_receiver(
+    receiver: str,
+    sender: str,
+    menu: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_1609: 선물 결제 취소 안내 (수신자에게 발송)"""
+    message = (
+        f"{sender} 님께서 선물하신 {menu} 주문이 취소되었습니다.\n"
+        f"해당 상품권은 사용할 수 없습니다."
+    )
+    recipient = AlimtalkRecipient(
+        receiver=receiver,
+        subject="선물 결제 취소 안내",
+        message=message,
+        recvname=recvname,
+        emtitle="주문취소 안내",
+        emtext="상품권 주문이 취소되었습니다.",
+    )
+    return _send("UJ_1609", [recipient])
 
 
 def send_store_review_result(

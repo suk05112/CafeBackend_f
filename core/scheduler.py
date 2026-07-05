@@ -2,7 +2,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timezone, timedelta
 from loguru import logger
 
-from db.session import get_db_connection
+from db.session import get_db_connection, close_db_connection
 
 KST = timezone(timedelta(hours=9))
 
@@ -57,7 +57,7 @@ def expire_pending_orders():
         if lock_acquired:
             _release_lock(cursor, "expire_pending_orders")
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def delete_old_records():
@@ -104,7 +104,7 @@ def delete_old_records():
         if lock_acquired:
             _release_lock(cursor, "delete_old_records")
         cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def create_scheduler() -> BackgroundScheduler:

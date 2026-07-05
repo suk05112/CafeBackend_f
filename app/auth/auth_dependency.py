@@ -4,6 +4,7 @@ import firebase_admin
 import logging
 import traceback
 from core.exceptions import InternalError
+from core.config import settings
 
 # CloudWatch에 직접 로깅하는 logger 사용 (main.py와 동일)
 logger = logging.getLogger("cafe_backend")
@@ -15,6 +16,7 @@ def get_firebase_app(project_type: str = "user"):
     - "user": 사용자 앱 (기본값)
     - "owner": 사장님 앱
     - "dev": Dev 앱 (gifnut-dev)
+    - "manager": Manager 앱 (gifnutmanager)
     """
     if project_type == "owner":
         try:
@@ -26,11 +28,25 @@ def get_firebase_app(project_type: str = "user"):
             return firebase_admin.get_app("dev_app")
         except ValueError:
             raise ValueError("Firebase dev_app not initialized.")
+    elif project_type == "manager":
+        try:
+            return firebase_admin.get_app("manager_app")
+        except ValueError:
+            raise ValueError("Firebase manager_app not initialized.")
     else:
         try:
             return firebase_admin.get_app("user_app")
         except ValueError:
             return firebase_admin.get_app()
+
+
+async def verify_manager_api_key(
+    x_manager_api_key: str = Header(None, alias="X-Manager-API-Key"),
+):
+    """Manager 대시보드 전용 API Key 검증"""
+    if not x_manager_api_key or x_manager_api_key != settings.manager_api_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing Manager API Key")
+    return True
 
 
 async def verify_firebase_token(request: Request,
@@ -49,6 +65,8 @@ async def verify_firebase_token(request: Request,
         project_type = "owner"
     elif firebase_project and firebase_project.lower() == "dev":
         project_type = "dev"
+    elif firebase_project and firebase_project.lower() == "manager":
+        project_type = "manager"
     else:
         project_type = "user"
     

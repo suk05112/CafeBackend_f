@@ -6,7 +6,7 @@ import pymysql
 from typing import List, Dict, Optional
 
 from db.session import get_db_connection, close_db_connection
-from core.s3_config import S3_CLIENT, BUCKET_NAME
+from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 # schemas는 models를 직접 참조
 from models.menu import Menu
@@ -33,9 +33,7 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
         for row in rows:
             menu_photo_url = None
             if row['image_key']:
-                menu_photo_url = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': row['image_key']},
-                    ExpiresIn=3600)
+                menu_photo_url = get_s3_public_url(bucket_name, row['image_key'])
 
             menus.append({
                 "menu_id": row['id'],
@@ -109,14 +107,10 @@ def generate_menu_s3_urls(store_id: int, menu_id: int) -> Dict:
         Params={'Bucket': bucket_name, 'Key': image_key},
         ExpiresIn=3600)
 
-    menu_get_url = s3.generate_presigned_url('get_object',
-        Params={'Bucket': bucket_name, 'Key': image_key},
-        ExpiresIn=3600)
-
     return {
         'image_key': image_key,
         'menu_put_url': menu_put_url,
-        'menu_get_url': menu_get_url
+        'menu_get_url': get_s3_public_url(bucket_name, image_key)
     }
 
 
@@ -220,7 +214,7 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
             WHERE s.store_lat IS NOT NULL
               AND s.store_lng IS NOT NULL
               AND s.inspection_status = 'APPROVED'
-              AND s.contract_completed = TRUE
+              AND s.contract_completed = 'COMPLETED'
               AND m.status = 'ACTIVE'
               AND m.is_deleted = 0
               AND m.image_key IS NOT NULL
@@ -257,7 +251,7 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
         return {"menuList": items, "next_cursor": next_cursor, "has_next": len(items) == limit}
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Optional[str]) -> Dict:
@@ -297,7 +291,7 @@ def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Op
             INNER JOIN menu m ON s.id = m.store_id
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
-              AND s.contract_completed = TRUE
+              AND s.contract_completed = 'COMPLETED'
               AND m.status = 'ACTIVE'
               AND m.is_deleted = 0
               AND m.image_key IS NOT NULL
@@ -333,7 +327,7 @@ def get_recommended_menus_by_district(district_code: str, limit: int, cursor: Op
         return {"menuList": items, "next_cursor": next_cursor, "has_next": len(items) == limit}
     finally:
         db_cursor.close()
-        connection.close()
+        close_db_connection(connection)
 
 
 def _build_menu_recommend_items(rows: List[Dict], include_distance: bool) -> List[Dict]:
@@ -341,11 +335,7 @@ def _build_menu_recommend_items(rows: List[Dict], include_distance: bool) -> Lis
     for row in rows:
         menu_photo_url = None
         if row['image_key']:
-            menu_photo_url = s3.generate_presigned_url(
-                'get_object',
-                Params={'Bucket': bucket_name, 'Key': row['image_key']},
-                ExpiresIn=3600
-            )
+            menu_photo_url = get_s3_public_url(bucket_name, row['image_key'])
         store_logo_url = None
         if row['store_logo_key']:
             store_logo_url = s3.generate_presigned_url(

@@ -16,3 +16,4 @@ cryptography
 slowapi
 apscheduler
 cachetools
+openpyxl

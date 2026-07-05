@@ -376,8 +376,8 @@ def get_owner_settlement_list_unified(
                 JOIN gifticon g ON sd.gifticon_id = g.id
                 WHERE sd.settlement_id IS NULL
                   AND g.store_id = %s
-                  AND DATE(g.used_at) >= %s
-                  AND DATE(g.used_at) <= %s
+                  AND g.used_at >= %s
+                  AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
             """, (store_id, period_start_str, period_end_str))
             rows = cursor.fetchall()
             total_sales = 0
@@ -562,8 +562,8 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
             LEFT JOIN menu m ON g.menu_id = m.id
             WHERE sd.settlement_id IS NULL
               AND g.store_id = %s
-              AND DATE(g.used_at) >= %s
-              AND DATE(g.used_at) <= %s
+              AND g.used_at >= %s
+              AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
             ORDER BY g.used_at ASC
         """, (store_id, period_start_str, period_end_str))
         rows = cursor.fetchall()
@@ -711,13 +711,11 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
                 s.bank_name,
                 s.account_number,
                 a.name AS account_holder,
-                COUNT(sd.id) AS detail_count
+                (SELECT COUNT(*) FROM settlement_details sd WHERE sd.settlement_id = s.settlement_id) AS detail_count
             FROM settlement s
             LEFT JOIN store st ON s.store_id = st.id
             LEFT JOIN account a ON s.store_id = a.store_id
-            LEFT JOIN settlement_details sd ON s.settlement_id = sd.settlement_id
             WHERE s.cycle_id = %s
-            GROUP BY s.settlement_id
             ORDER BY s.store_id
             LIMIT %s OFFSET %s
         """, (cycle_id, limit, offset))
