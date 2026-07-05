@@ -15,102 +15,71 @@ bucket_name = BUCKET_NAME
 def get_dashboard_statistics(connection) -> Dict:
     """대시보드 통계 데이터"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
         today = datetime.now().date()
         start_of_month = today.replace(day=1)
-        
-        # 상품권 발행 수 (일)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM gifticon
-            WHERE created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)
-        ''', (today, today))
-        gift_issued_today = cursor.fetchone()['count'] or 0
 
-        # 상품권 발행 수 (월)
+        # gifticon 관련 집계 1회 쿼리
         cursor.execute('''
-            SELECT COUNT(*) as count FROM gifticon
-            WHERE created_at >= %s
-        ''', (start_of_month,))
-        gift_issued_month = cursor.fetchone()['count'] or 0
+            SELECT
+                SUM(created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)) AS gift_issued_today,
+                SUM(created_at >= %s) AS gift_issued_month,
+                SUM(status = 'USED') AS gift_used_count
+            FROM gifticon
+        ''', (today, today, start_of_month))
+        gift_row = cursor.fetchone()
+        gift_issued_today = int(gift_row['gift_issued_today'] or 0)
+        gift_issued_month = int(gift_row['gift_issued_month'] or 0)
+        gift_used_count = int(gift_row['gift_used_count'] or 0)
 
-        # 상품권 사용금액 (일)
+        # gifticon 사용금액 집계 (menu JOIN 필요)
         cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total
+            SELECT
+                COALESCE(SUM(CASE WHEN g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY) THEN m.price ELSE 0 END), 0) AS gift_used_amount_today,
+                COALESCE(SUM(CASE WHEN g.used_at >= %s THEN m.price ELSE 0 END), 0) AS gift_used_amount_month
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            WHERE g.status = 'USED'
+        ''', (today, today, start_of_month))
+        used_row = cursor.fetchone()
+        gift_used_amount_today = float(used_row['gift_used_amount_today'] or 0)
+        gift_used_amount_month = float(used_row['gift_used_amount_month'] or 0)
+        settlement_amount_month = gift_used_amount_month
+
+        # store 집계 1회 쿼리
+        cursor.execute('''
+            SELECT
+                SUM(created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)) AS new_stores_today,
+                SUM(created_at >= %s) AS new_stores_month,
+                SUM(inspection_status != 'approved' OR inspection_status IS NULL) AS pending_stores,
+                COUNT(*) AS total_stores
+            FROM store
+        ''', (today, today, start_of_month))
+        store_row = cursor.fetchone()
+        new_stores_today = int(store_row['new_stores_today'] or 0)
+        new_stores_month = int(store_row['new_stores_month'] or 0)
+        pending_stores = int(store_row['pending_stores'] or 0)
+        total_stores = int(store_row['total_stores'] or 0)
+
+        # user 집계 1회 쿼리
+        cursor.execute('''
+            SELECT
+                SUM(created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)) AS new_users_today,
+                COUNT(*) AS total_users
+            FROM user
         ''', (today, today))
-        gift_used_amount_today = cursor.fetchone()['total'] or 0
+        user_row = cursor.fetchone()
+        new_users_today = int(user_row['new_users_today'] or 0)
+        total_users = int(user_row['total_users'] or 0)
 
-        # 상품권 사용금액 (월)
-        cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total
-            FROM gifticon g
-            LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND g.used_at >= %s
-        ''', (start_of_month,))
-        gift_used_amount_month = cursor.fetchone()['total'] or 0
-
-        # 상품권 사용 수
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM gifticon
-            WHERE status = 'USED'
-        ''')
-        gift_used_count = cursor.fetchone()['count'] or 0
-
-        # 정산 금액 (월)
-        cursor.execute('''
-            SELECT COALESCE(SUM(m.price), 0) as total
-            FROM gifticon g
-            LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.status = 'USED' AND g.used_at >= %s
-        ''', (start_of_month,))
-        settlement_amount_month = cursor.fetchone()['total'] or 0
-
-        # 신규 매장 등록 수 (일)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM store
-            WHERE created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)
-        ''', (today, today))
-        new_stores_today = cursor.fetchone()['count'] or 0
-
-        # 신규 매장 등록 수 (월)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM store
-            WHERE created_at >= %s
-        ''', (start_of_month,))
-        new_stores_month = cursor.fetchone()['count'] or 0
-        
-        # 승인 안된 매장 수
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM store
-            WHERE inspection_status != 'approved' OR inspection_status IS NULL
-        ''')
-        pending_stores = cursor.fetchone()['count'] or 0
-        
-        # 전체 매장 수
-        cursor.execute('SELECT COUNT(*) as count FROM store')
-        total_stores = cursor.fetchone()['count'] or 0
-        
-        # 신규 가입 유저 (일)
-        cursor.execute('''
-            SELECT COUNT(*) as count FROM user
-            WHERE created_at >= %s AND created_at < DATE_ADD(%s, INTERVAL 1 DAY)
-        ''', (today, today))
-        new_users_today = cursor.fetchone()['count'] or 0
-        
-        # 전체 유저
-        cursor.execute('SELECT COUNT(*) as count FROM user')
-        total_users = cursor.fetchone()['count'] or 0
-        
         return {
             'gift_issued_today': gift_issued_today,
             'gift_issued_month': gift_issued_month,
-            'gift_used_amount_today': float(gift_used_amount_today),
-            'gift_used_amount_month': float(gift_used_amount_month),
+            'gift_used_amount_today': gift_used_amount_today,
+            'gift_used_amount_month': gift_used_amount_month,
             'gift_used_count': gift_used_count,
-            'settlement_amount_month': float(settlement_amount_month),
+            'settlement_amount_month': settlement_amount_month,
             'new_stores_today': new_stores_today,
             'new_stores_month': new_stores_month,
             'pending_stores': pending_stores,

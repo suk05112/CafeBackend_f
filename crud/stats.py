@@ -12,24 +12,20 @@ def get_admin_statistics() -> Dict:
     """관리자 통계 데이터 조회 (전체 발행 수, 사용 수, 미사용 수)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
-        # 전체 발행 수
-        cursor.execute("SELECT COUNT(*) as total FROM gifticon")
-        total_issued = cursor.fetchone()['total'] or 0
-        
-        # 사용 수
-        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE status = 'USED'")
-        total_used = cursor.fetchone()['total'] or 0
-        
-        # 미사용 수
-        cursor.execute("SELECT COUNT(*) as total FROM gifticon WHERE status != 'USED'")
-        total_unused = cursor.fetchone()['total'] or 0
-        
+        cursor.execute("""
+            SELECT
+                COUNT(*) AS total_issued,
+                SUM(status = 'USED') AS total_used,
+                SUM(status != 'USED') AS total_unused
+            FROM gifticon
+        """)
+        row = cursor.fetchone()
         return {
-            'total_issued': total_issued,
-            'total_used': total_used,
-            'total_unused': total_unused
+            'total_issued': int(row['total_issued'] or 0),
+            'total_used': int(row['total_used'] or 0),
+            'total_unused': int(row['total_unused'] or 0),
         }
     finally:
         cursor.close()
