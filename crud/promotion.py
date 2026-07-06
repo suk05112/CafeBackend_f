@@ -190,14 +190,15 @@ def get_fee_promotions_by_store(store_id: int, page: int = 1, limit: int = 5) ->
         close_db_connection(connection)
 
 
-def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
-    """구매 시점 기준 수수료 정보 조회
+def get_fee_info_for_settlement(store_id: int, payout_date: date) -> dict:
+    """정산 지급 예정일 기준 수수료 정보 조회 (GNB-142)
 
     Returns:
         {
-            'base_fee_rate': float,       # 플랫폼 기본 수수료율
-            'applied_fee_rate': float,    # 최종 적용 수수료율 (프로모션 적용 후)
-            'applied_promo_id': int|None, # 적용된 프로모션 ID (없으면 None)
+            'base_fee_rate': float,           # 플랫폼 기본 수수료율
+            'applied_fee_rate': float,        # 최종 적용 수수료율 (프로모션 적용 후)
+            'applied_promo_id': int|None,     # 적용된 프로모션 ID (없으면 None)
+            'applied_promo_title': str|None,  # 적용된 프로모션 제목
         }
     """
     connection = get_db_connection()
@@ -209,7 +210,7 @@ def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
         base_fee_rate = float(config['base_fee_rate']) if config else 3.00
 
         cursor.execute("""
-            SELECT fp.promo_id, fp.promo_fee_rate
+            SELECT fp.promo_id, fp.promo_fee_rate, fp.title
             FROM fee_promotions fp
             JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
             WHERE fps.store_id = %s
@@ -218,7 +219,7 @@ def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
               AND fp.end_date >= %s
             ORDER BY fp.start_date ASC
             LIMIT 1
-        """, (store_id, order_date, order_date))
+        """, (store_id, payout_date, payout_date))
 
         promo = cursor.fetchone()
 
@@ -227,12 +228,14 @@ def get_fee_info_for_order(store_id: int, order_date: date) -> dict:
                 'base_fee_rate': base_fee_rate,
                 'applied_fee_rate': float(promo['promo_fee_rate']),
                 'applied_promo_id': int(promo['promo_id']),
+                'applied_promo_title': promo.get('title'),
             }
 
         return {
             'base_fee_rate': base_fee_rate,
             'applied_fee_rate': base_fee_rate,
             'applied_promo_id': None,
+            'applied_promo_title': None,
         }
     finally:
         cursor.close()

@@ -12,14 +12,6 @@ KST = ZoneInfo('Asia/Seoul')
 from db.session import get_db_connection, close_db_connection
 
 
-def calc_fee_supply_and_vat(sales_amount: int, fee_rate_pct: float) -> Tuple[int, int, int]:
-    """수수료 공급가액(원미만 절사) + 부가세(소수점 첫째 자리 반올림).
-    예: 2,220원 3.5% → 공급가액 77원 + 부가세 8원 = 수수료 85원.
-    Returns (공급가액, 부가세, 총수수료)."""
-    supply = math.floor(sales_amount * fee_rate_pct / 100)  # 원미만 절사
-    vat = round(supply * 0.1)  # 부가세 10%, 소수점 첫째 자리 반올림
-    total_fee = supply + vat
-    return (supply, vat, total_fee)
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from models.settlement import Account
 
@@ -120,7 +112,7 @@ def get_settlements_by_store(store_id: int) -> List[Dict]:
 
 
 def get_settlement_detail(settlement_id: int) -> List[Dict]:
-    """정산 상세 내역 조회"""
+    """정산 상세 내역 조회 (개별 기프티콘 매출만 표시, 수수료는 정산 헤더 참조)"""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
@@ -129,8 +121,7 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
             SELECT
                 m.menu_name AS name,
                 sd.sales_amount AS price,
-                g.used_at AS used_time,
-                sd.fee_amount AS commission
+                g.used_at AS used_time
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -142,13 +133,10 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
         details = []
 
         for result in results:
-            commission = result['commission'] or 0
             price = result['price'] or 0
             details.append({
                 'menu_name': result['name'],
-                'commission': commission,
                 'price': price,
-                'deposit': price - commission,
                 'used_time': result['used_time'].isoformat() if result.get('used_time') else None,
             })
 
@@ -327,10 +315,15 @@ def get_owner_settlement_list_unified(
             cursor.execute("""
                 SELECT s.settlement_id, s.cycle_id, s.period_start, s.period_end,
                     s.total_sales_amount, s.total_fee_amount, s.net_payout_amount,
+                    s.base_fee_rate, s.applied_promo_id, s.applied_fee_rate,
+                    s.original_fee_supply, s.original_fee_vat, s.original_fee_amount,
+                    s.promo_fee_supply, s.promo_fee_vat, s.promo_fee_amount,
                     s.status, s.payout_date, s.failure_reason,
-                    sc.payout_date AS expected_payout_date
+                    sc.payout_date AS expected_payout_date,
+                    fp.title AS applied_promo_title
                 FROM settlement s
                 LEFT JOIN settlement_cycles sc ON s.cycle_id = sc.cycle_id
+                LEFT JOIN fee_promotions fp ON s.applied_promo_id = fp.promo_id
                 WHERE s.store_id = %s AND s.cycle_id = %s
                 ORDER BY s.settlement_id DESC
                 LIMIT 1
@@ -351,6 +344,16 @@ def get_owner_settlement_list_unified(
                 'period_start': row['period_start'].isoformat() if row.get('period_start') else None,
                 'period_end': row['period_end'].isoformat() if row.get('period_end') else None,
                 'total_sales_amount': int(row['total_sales_amount'] or 0),
+                'base_fee_rate': float(row['base_fee_rate']) if row.get('base_fee_rate') is not None else None,
+                'applied_fee_rate': float(row['applied_fee_rate']) if row.get('applied_fee_rate') is not None else None,
+                'applied_promo_id': row.get('applied_promo_id'),
+                'applied_promo_title': row.get('applied_promo_title'),
+                'original_fee_supply': int(row['original_fee_supply']) if row.get('original_fee_supply') is not None else None,
+                'original_fee_vat': int(row['original_fee_vat']) if row.get('original_fee_vat') is not None else None,
+                'original_fee_amount': int(row['original_fee_amount']) if row.get('original_fee_amount') is not None else None,
+                'promo_fee_supply': int(row['promo_fee_supply']) if row.get('promo_fee_supply') is not None else None,
+                'promo_fee_vat': int(row['promo_fee_vat']) if row.get('promo_fee_vat') is not None else None,
+                'promo_fee_amount': int(row['promo_fee_amount']) if row.get('promo_fee_amount') is not None else None,
                 'total_fee_amount': int(row['total_fee_amount'] or 0),
                 'net_payout_amount': int(row['net_payout_amount'] or 0),
                 'expected_amount': float(row['net_payout_amount'] or 0),
@@ -362,46 +365,8 @@ def get_owner_settlement_list_unified(
             })
 
         if current_cycle:
-            period_start = current_cycle.get('period_start_date')
-            period_end = current_cycle.get('period_end_date')
-            cycle_id = current_cycle['cycle_id']
-            payout_date = current_cycle.get('payout_date')
-            period_start_str = period_start.isoformat() if hasattr(period_start, 'isoformat') else str(period_start)
-            period_end_str = period_end.isoformat() if hasattr(period_end, 'isoformat') else str(period_end)
-            payout_date_str = payout_date.isoformat() if payout_date and hasattr(payout_date, 'isoformat') else (str(payout_date) if payout_date else None)
-
-            cursor.execute("""
-                SELECT sd.sales_amount, sd.fee_amount
-                FROM settlement_details sd
-                JOIN gifticon g ON sd.gifticon_id = g.id
-                WHERE sd.settlement_id IS NULL
-                  AND g.store_id = %s
-                  AND g.used_at >= %s
-                  AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
-            """, (store_id, period_start_str, period_end_str))
-            rows = cursor.fetchall()
-            total_sales = 0
-            total_fee = 0
-            for r in rows:
-                total_sales += int(r['sales_amount'] or 0)
-                total_fee += int(r['fee_amount'] or 0)
-            net = total_sales - total_fee
-            if total_sales > 0:
-                preview = {
-                    'settlement_id': None,
-                    'cycle_id': cycle_id,
-                    'period_start': period_start_str,
-                    'period_end': period_end_str,
-                    'total_sales_amount': total_sales,
-                    'total_fee_amount': total_fee,
-                    'net_payout_amount': net,
-                    'expected_amount': float(net),
-                    'fee_amount': float(total_fee),
-                    'expected_payout_date': payout_date_str,
-                    'status': 'PENDING',
-                    'payout_date': None,
-                    'failure_reason': None,
-                }
+            preview = _build_preview_summary(cursor, store_id, current_cycle)
+            if preview:
                 result.insert(0, preview)
 
         result.sort(key=lambda x: (x.get('period_start') or ''), reverse=True)
@@ -412,24 +377,29 @@ def get_owner_settlement_list_unified(
 
 
 def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
-    """사장님 정산 상세: 헤더(settlement) + 건별 내역(details). 없으면 None."""
+    """사장님 정산 상세: 헤더(settlement) + 건별 내역(details). 없으면 None. (GNB-142)"""
     sid = int(settlement_id)
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         cursor.execute("""
-            SELECT settlement_id, store_id, cycle_id, period_start, period_end,
-                total_sales_amount, total_fee_amount, net_payout_amount,
-                status, payout_date, failure_reason
-            FROM settlement
-            WHERE settlement_id = %s
+            SELECT s.settlement_id, s.store_id, s.cycle_id, s.period_start, s.period_end,
+                s.total_sales_amount, s.total_fee_amount, s.net_payout_amount,
+                s.base_fee_rate, s.applied_promo_id, s.applied_fee_rate,
+                s.original_fee_supply, s.original_fee_vat, s.original_fee_amount,
+                s.promo_fee_supply, s.promo_fee_vat, s.promo_fee_amount,
+                s.status, s.payout_date, s.failure_reason,
+                fp.title AS applied_promo_title
+            FROM settlement s
+            LEFT JOIN fee_promotions fp ON s.applied_promo_id = fp.promo_id
+            WHERE s.settlement_id = %s
         """, (sid,))
         settlement = cursor.fetchone()
         if not settlement:
             return None
+
         cursor.execute("""
-            SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
-                sd.base_fee_rate, sd.applied_promo_id, sd.applied_fee_rate, sd.fee_supply, sd.fee_vat,
+            SELECT sd.id, sd.gifticon_id, sd.sales_amount,
                 g.used_at, m.menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
@@ -439,39 +409,20 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         """, (sid,))
         rows = cursor.fetchall()
         details = []
-        supply_amount = 0
-        vat_amount = 0
-        base_fee_rate = None
-        promo_fee_rate = None
-        promo_discount_amount = None
         for d in rows:
             used_at = d.get('used_at')
             if used_at and hasattr(used_at, 'strftime'):
                 used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
             else:
                 used_at_str = str(used_at) if used_at else None
-            supply_amount += int(d['fee_supply'] or 0)
-            vat_amount += int(d['fee_vat'] or 0)
-            if base_fee_rate is None and d.get('base_fee_rate') is not None:
-                base_fee_rate = float(d['base_fee_rate'])
-            if d.get('applied_promo_id') is not None:
-                promo_fee_rate = float(d['applied_fee_rate']) if d.get('applied_fee_rate') is not None else promo_fee_rate
             details.append({
                 'id': d['id'],
                 'gifticon_id': d['gifticon_id'],
                 'menu_name': d.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(d['sales_amount'] or 0),
-                'fee_amount': int(d['fee_amount'] or 0),
-                'settlement_amount': int(d['settlement_amount'] or 0),
-                'status': settlement.get('status'),
             })
-        total_sales = int(settlement['total_sales_amount'] or 0)
-        if promo_fee_rate is not None and base_fee_rate is not None:
-            base_fee = int(total_sales * base_fee_rate / 100)
-            actual_fee = int(settlement['total_fee_amount'] or 0)
-            diff = base_fee - actual_fee
-            promo_discount_amount = diff if diff > 0 else None
+
         return {
             'settlement': {
                 'settlement_id': settlement['settlement_id'],
@@ -479,17 +430,22 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'cycle_id': settlement['cycle_id'],
                 'period_start': settlement['period_start'].isoformat() if settlement.get('period_start') else None,
                 'period_end': settlement['period_end'].isoformat() if settlement.get('period_end') else None,
-                'total_sales_amount': total_sales,
+                'total_sales_amount': int(settlement['total_sales_amount'] or 0),
+                'base_fee_rate': float(settlement['base_fee_rate']) if settlement.get('base_fee_rate') is not None else None,
+                'applied_fee_rate': float(settlement['applied_fee_rate']) if settlement.get('applied_fee_rate') is not None else None,
+                'applied_promo_id': settlement.get('applied_promo_id'),
+                'applied_promo_title': settlement.get('applied_promo_title'),
+                'original_fee_supply': int(settlement['original_fee_supply']) if settlement.get('original_fee_supply') is not None else None,
+                'original_fee_vat': int(settlement['original_fee_vat']) if settlement.get('original_fee_vat') is not None else None,
+                'original_fee_amount': int(settlement['original_fee_amount']) if settlement.get('original_fee_amount') is not None else None,
+                'promo_fee_supply': int(settlement['promo_fee_supply']) if settlement.get('promo_fee_supply') is not None else None,
+                'promo_fee_vat': int(settlement['promo_fee_vat']) if settlement.get('promo_fee_vat') is not None else None,
+                'promo_fee_amount': int(settlement['promo_fee_amount']) if settlement.get('promo_fee_amount') is not None else None,
                 'total_fee_amount': int(settlement['total_fee_amount'] or 0),
                 'net_payout_amount': int(settlement['net_payout_amount'] or 0),
                 'status': settlement['status'],
                 'payout_date': settlement['payout_date'].isoformat() if settlement.get('payout_date') else None,
                 'failure_reason': settlement.get('failure_reason'),
-                'base_fee_rate': base_fee_rate,
-                'promo_fee_rate': promo_fee_rate,
-                'promo_discount_amount': promo_discount_amount,
-                'supply_amount': supply_amount,
-                'vat_amount': vat_amount,
             },
             'details': details,
         }
@@ -498,137 +454,179 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
         close_db_connection(connection)
 
 
+def _fetch_current_cycle(cursor) -> Optional[Dict]:
+    today = datetime.now(tz=KST).date()
+    cursor.execute("""
+        SELECT cycle_id, period_start_date, period_end_date, payout_date
+        FROM settlement_cycles
+        WHERE period_start_date <= %s AND period_end_date >= %s
+        LIMIT 1
+    """, (today, today))
+    return cursor.fetchone()
+
+
+def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict]:
+    """진행중 주기의 총 매출을 집계하고 payout_date 기준 프로모션 적용해 예상 정산액 계산."""
+    from crud import promotion as promotion_crud
+
+    period_start = cycle['period_start_date']
+    period_end = cycle['period_end_date']
+    payout_date = cycle['payout_date']
+
+    if hasattr(period_start, 'date') and callable(period_start.date):
+        period_start = period_start.date()
+    if hasattr(period_end, 'date') and callable(period_end.date):
+        period_end = period_end.date()
+
+    period_start_str = period_start.isoformat()
+    period_end_str = period_end.isoformat()
+
+    cursor.execute("""
+        SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount,
+               g.used_at, m.menu_name
+        FROM settlement_details sd
+        JOIN gifticon g ON sd.gifticon_id = g.id
+        LEFT JOIN menu m ON g.menu_id = m.id
+        WHERE sd.settlement_id IS NULL
+          AND g.store_id = %s
+          AND g.used_at >= %s
+          AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+        ORDER BY g.used_at ASC
+    """, (store_id, period_start_str, period_end_str))
+    rows = cursor.fetchall()
+    if not rows:
+        return None
+
+    total_sales = sum(int(r['sales_amount'] or 0) for r in rows)
+
+    fee_info = promotion_crud.get_fee_info_for_settlement(store_id, payout_date)
+    base_fee_rate = fee_info['base_fee_rate']
+    applied_fee_rate = fee_info['applied_fee_rate']
+    applied_promo_id = fee_info['applied_promo_id']
+    applied_promo_title = fee_info['applied_promo_title']
+
+    original_supply = math.floor(total_sales * base_fee_rate / 100)
+    original_vat = round(original_supply * 0.1)
+    original_fee = original_supply + original_vat
+
+    if applied_promo_id is not None:
+        promo_supply = math.floor(total_sales * applied_fee_rate / 100)
+        promo_vat = round(promo_supply * 0.1)
+        promo_fee = promo_supply + promo_vat
+        total_fee = promo_fee
+    else:
+        promo_supply = promo_vat = promo_fee = None
+        total_fee = original_fee
+
+    net = total_sales - total_fee
+
+    return {
+        'rows': rows,
+        'period_start_str': period_start_str,
+        'period_end_str': period_end_str,
+        'payout_date_str': payout_date.isoformat() if payout_date and hasattr(payout_date, 'isoformat') else (str(payout_date) if payout_date else None),
+        'total_sales': total_sales,
+        'total_fee': total_fee,
+        'net': net,
+        'base_fee_rate': base_fee_rate,
+        'applied_fee_rate': applied_fee_rate,
+        'applied_promo_id': applied_promo_id,
+        'applied_promo_title': applied_promo_title,
+        'original_fee_supply': original_supply,
+        'original_fee_vat': original_vat,
+        'original_fee_amount': original_fee,
+        'promo_fee_supply': promo_supply,
+        'promo_fee_vat': promo_vat,
+        'promo_fee_amount': promo_fee,
+    }
+
+
+def _build_preview_summary(cursor, store_id: int, cycle: Dict) -> Optional[Dict]:
+    """정산 목록에 넣을 요약 preview 항목 (list API용)"""
+    p = _compute_preview_totals(cursor, store_id, cycle)
+    if not p:
+        return None
+    return {
+        'settlement_id': None,
+        'cycle_id': cycle['cycle_id'],
+        'period_start': p['period_start_str'],
+        'period_end': p['period_end_str'],
+        'total_sales_amount': p['total_sales'],
+        'base_fee_rate': p['base_fee_rate'],
+        'applied_fee_rate': p['applied_fee_rate'],
+        'applied_promo_id': p['applied_promo_id'],
+        'applied_promo_title': p['applied_promo_title'],
+        'original_fee_supply': p['original_fee_supply'],
+        'original_fee_vat': p['original_fee_vat'],
+        'original_fee_amount': p['original_fee_amount'],
+        'promo_fee_supply': p['promo_fee_supply'],
+        'promo_fee_vat': p['promo_fee_vat'],
+        'promo_fee_amount': p['promo_fee_amount'],
+        'total_fee_amount': p['total_fee'],
+        'net_payout_amount': p['net'],
+        'expected_amount': float(p['net']),
+        'fee_amount': float(p['total_fee']),
+        'expected_payout_date': p['payout_date_str'],
+        'status': 'PENDING',
+        'payout_date': None,
+        'failure_reason': None,
+    }
+
+
 def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
-    """현재 진행 중인 정산 주기의 미리보기 상세.
-    settlement_id가 null인 PENDING 항목의 상세 조회용.
+    """현재 진행 중인 정산 주기의 미리보기 상세 (GNB-142).
+    payout_date 기준 활성 프로모션 조회 후 총액 기반 예상 수수료 계산.
     진행 중인 주기가 없거나 매출이 없으면 None 반환."""
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        today = datetime.now(tz=KST).date()
-        cursor.execute("""
-            SELECT cycle_id, period_start_date, period_end_date, payout_date
-            FROM settlement_cycles
-            WHERE period_start_date <= %s AND period_end_date >= %s
-            LIMIT 1
-        """, (today, today))
-        cycle = cursor.fetchone()
+        cycle = _fetch_current_cycle(cursor)
         if not cycle:
             return None
 
-        cycle_id = cycle['cycle_id']
-        period_start = cycle['period_start_date']
-        period_end = cycle['period_end_date']
-        payout_date = cycle['payout_date']
-
-        if hasattr(period_start, 'date'):
-            period_start = period_start.date()
-        if hasattr(period_end, 'date'):
-            period_end = period_end.date()
-
-        period_start_str = period_start.isoformat()
-        period_end_str = period_end.isoformat()
-        payout_date_str = payout_date.isoformat() if payout_date else None
-
-        # 기본 수수료율
-        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
-        config = cursor.fetchone()
-        base_fee_rate = float(config['base_fee_rate']) if config else 3.0
-
-        # 프로모션 수수료율
-        cursor.execute("""
-            SELECT fp.promo_fee_rate
-            FROM fee_promotions fp
-            JOIN fee_promotion_stores fps ON fp.promo_id = fps.promo_id
-            WHERE fps.store_id = %s
-              AND fp.is_active = TRUE
-              AND fp.start_date <= %s
-              AND fp.end_date >= %s
-            ORDER BY fp.start_date ASC
-            LIMIT 1
-        """, (store_id, period_start_str, period_start_str))
-        promo = cursor.fetchone()
-        applied_fee_rate = float(promo['promo_fee_rate']) if promo else base_fee_rate
-        promo_fee_rate = float(promo['promo_fee_rate']) if promo else None
-
-        # 건별 내역 조회: settlement_details에 선생성됐지만 미정산(settlement_id IS NULL)인 건
-        cursor.execute("""
-            SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount, sd.fee_amount,
-                   sd.settlement_amount, sd.base_fee_rate, sd.applied_fee_rate,
-                   sd.fee_supply, sd.fee_vat,
-                   g.used_at, m.menu_name
-            FROM settlement_details sd
-            JOIN gifticon g ON sd.gifticon_id = g.id
-            LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE sd.settlement_id IS NULL
-              AND g.store_id = %s
-              AND g.used_at >= %s
-              AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
-            ORDER BY g.used_at ASC
-        """, (store_id, period_start_str, period_end_str))
-        rows = cursor.fetchall()
-
-        if not rows:
+        p = _compute_preview_totals(cursor, store_id, cycle)
+        if not p:
             return None
 
-        total_sales = 0
-        total_fee = 0
-        supply = 0
-        vat = 0
         details = []
-        for r in rows:
-            sales = int(r['sales_amount'] or 0)
-            fee = int(r['fee_amount'] or 0)
-            settlement_amt = int(r['settlement_amount'] or 0)
-            total_sales += sales
-            total_fee += fee
-            supply += int(r['fee_supply'] or 0)
-            vat += int(r['fee_vat'] or 0)
-
+        for r in p['rows']:
             used_at = r.get('used_at')
             if used_at and hasattr(used_at, 'strftime'):
                 used_at_str = used_at.strftime('%Y-%m-%d %H:%M')
             else:
                 used_at_str = str(used_at) if used_at else None
-
             details.append({
                 'id': r['detail_id'],
                 'gifticon_id': r['gifticon_id'],
                 'menu_name': r.get('menu_name'),
                 'used_at': used_at_str,
-                'amount': sales,
-                'fee_amount': fee,
-                'settlement_amount': settlement_amt,
-                'status': 'PENDING',
+                'amount': int(r['sales_amount'] or 0),
             })
-
-        net = total_sales - total_fee
-
-        if promo:
-            _, _, base_fee_total = calc_fee_supply_and_vat(total_sales, base_fee_rate)
-            promo_discount_amount = base_fee_total - total_fee
-        else:
-            promo_discount_amount = None
 
         return {
             'settlement': {
                 'settlement_id': None,
                 'store_id': store_id,
-                'cycle_id': cycle_id,
-                'period_start': period_start_str,
-                'period_end': period_end_str,
-                'total_sales_amount': total_sales,
-                'total_fee_amount': total_fee,
-                'net_payout_amount': net,
-                'status': None,
+                'cycle_id': cycle['cycle_id'],
+                'period_start': p['period_start_str'],
+                'period_end': p['period_end_str'],
+                'total_sales_amount': p['total_sales'],
+                'base_fee_rate': p['base_fee_rate'],
+                'applied_fee_rate': p['applied_fee_rate'],
+                'applied_promo_id': p['applied_promo_id'],
+                'applied_promo_title': p['applied_promo_title'],
+                'original_fee_supply': p['original_fee_supply'],
+                'original_fee_vat': p['original_fee_vat'],
+                'original_fee_amount': p['original_fee_amount'],
+                'promo_fee_supply': p['promo_fee_supply'],
+                'promo_fee_vat': p['promo_fee_vat'],
+                'promo_fee_amount': p['promo_fee_amount'],
+                'total_fee_amount': p['total_fee'],
+                'net_payout_amount': p['net'],
+                'status': 'PENDING',
                 'payout_date': None,
+                'expected_payout_date': p['payout_date_str'],
                 'failure_reason': None,
-                'base_fee_rate': base_fee_rate,
-                'promo_fee_rate': promo_fee_rate,
-                'promo_discount_amount': promo_discount_amount,
-                'supply_amount': supply,
-                'vat_amount': vat,
-                'expected_payout_date': payout_date_str,
             },
             'details': details,
         }
@@ -773,6 +771,15 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 s.total_sales_amount,
                 s.total_fee_amount,
                 s.net_payout_amount,
+                s.base_fee_rate,
+                s.applied_promo_id,
+                s.applied_fee_rate,
+                s.original_fee_supply,
+                s.original_fee_vat,
+                s.original_fee_amount,
+                s.promo_fee_supply,
+                s.promo_fee_vat,
+                s.promo_fee_amount,
                 s.status,
                 s.failure_reason,
                 s.tax_invoice_issued,
@@ -780,10 +787,12 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 s.bank_name,
                 a.bank AS account_bank,
                 s.account_number,
-                a.name AS account_holder
+                a.name AS account_holder,
+                fp.title AS applied_promo_title
             FROM settlement s
             LEFT JOIN store st ON s.store_id = st.id
             LEFT JOIN account a ON s.store_id = a.store_id
+            LEFT JOIN fee_promotions fp ON s.applied_promo_id = fp.promo_id
             WHERE s.settlement_id = %s
         """, (settlement_id,))
         settlement = cursor.fetchone()
@@ -800,13 +809,7 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 sd.gifticon_id,
                 g.used_at,
                 m.menu_name,
-                sd.sales_amount,
-                sd.fee_amount,
-                sd.settlement_amount,
-                sd.base_fee_rate,
-                sd.applied_fee_rate,
-                sd.fee_supply,
-                sd.fee_vat
+                sd.sales_amount
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -824,6 +827,16 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
             'period_start': settlement['period_start'].isoformat() if settlement['period_start'] else None,
             'period_end': settlement['period_end'].isoformat() if settlement['period_end'] else None,
             'total_sales_amount': int(settlement['total_sales_amount'] or 0),
+            'base_fee_rate': float(settlement['base_fee_rate']) if settlement.get('base_fee_rate') is not None else None,
+            'applied_fee_rate': float(settlement['applied_fee_rate']) if settlement.get('applied_fee_rate') is not None else None,
+            'applied_promo_id': settlement.get('applied_promo_id'),
+            'applied_promo_title': settlement.get('applied_promo_title'),
+            'original_fee_supply': int(settlement['original_fee_supply']) if settlement.get('original_fee_supply') is not None else None,
+            'original_fee_vat': int(settlement['original_fee_vat']) if settlement.get('original_fee_vat') is not None else None,
+            'original_fee_amount': int(settlement['original_fee_amount']) if settlement.get('original_fee_amount') is not None else None,
+            'promo_fee_supply': int(settlement['promo_fee_supply']) if settlement.get('promo_fee_supply') is not None else None,
+            'promo_fee_vat': int(settlement['promo_fee_vat']) if settlement.get('promo_fee_vat') is not None else None,
+            'promo_fee_amount': int(settlement['promo_fee_amount']) if settlement.get('promo_fee_amount') is not None else None,
             'total_fee_amount': int(settlement['total_fee_amount'] or 0),
             'net_payout_amount': int(settlement['net_payout_amount'] or 0),
             'status': settlement['status'],
@@ -838,21 +851,13 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
         for i, d in enumerate(details, 1):
             used_at = d.get('used_at')
             used_at_str = used_at.strftime('%Y-%m-%d %H:%M') if used_at and hasattr(used_at, 'strftime') else (str(used_at) if used_at else '-')
-            sales = int(d.get('sales_amount') or 0)
-            fee = int(d.get('fee_amount') or 0)
             items.append({
                 'index': i,
                 'id': d.get('id'),
                 'gifticon_id': d.get('gifticon_id'),
                 'menu_name': d.get('menu_name') or '-',
                 'used_at': used_at_str,
-                'sales_amount': sales,
-                'fee_amount': fee,
-                'settlement_amount': int(d.get('settlement_amount') or 0),
-                'base_fee_rate': float(d['base_fee_rate']) if d.get('base_fee_rate') is not None else None,
-                'applied_fee_rate': float(d['applied_fee_rate']) if d.get('applied_fee_rate') is not None else None,
-                'fee_supply': int(d.get('fee_supply') or 0),
-                'fee_vat': int(d.get('fee_vat') or 0),
+                'sales_amount': int(d.get('sales_amount') or 0),
             })
         import math as _math
         return {
