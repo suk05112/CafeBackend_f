@@ -42,21 +42,17 @@ class Settings(BaseSettings):
     # Manager API Key
     manager_api_key: str = Field(default="", description="Manager 대시보드 API Key")
 
-    # 드림시큐리티 본인확인
-    mok_key_file_path: str = Field(default="/etc/secrets/mok_keyInfo.dat", description="mok_keyInfo.dat 경로")
-    mok_key_password: str = Field(default="", description="mok_keyInfo.dat 비밀번호")
-    mok_return_url: str = Field(default="", description="본인확인 결과 수신 URL (https://... /user/mok/return)")
-
     # 알리고 카카오 알림톡 설정
     aligo_api_key: str = Field(default="", description="알리고 API Key")
     aligo_user_id: str = Field(default="", description="알리고 사용자 ID")
     aligo_sender_key: str = Field(default="", description="알림톡 발신프로필 키")
     aligo_sender: str = Field(default="", description="발신자 전화번호")
 
-    # 드림시큐리티 mobileOK 설정
+    # 드림시큐리티 mobileOK 본인확인 설정
     mok_keyinfo_path: str = Field(default="docs/mobileOK/mok_keyInfo_dev.dat", description="mok_keyInfo.dat 파일 경로")
     mok_keyinfo_password: str = Field(default="", description="mok_keyInfo.dat 복호화 비밀번호")
     mok_result_url: str = Field(default="https://scert.mobile-ok.com/gui/service/v1/result/request", description="드림시큐리티 검증 서버 URL")
+    mok_return_url: str = Field(default="", description="표준창 결과 수신 URL (https://... /owner/mok/return)")
 
     def get_apple_private_key(self) -> str:
         """

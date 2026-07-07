@@ -1072,6 +1072,7 @@ def mok_client_info():
     return {
         "MOKReqClientInfo": encrypted,
         "clientTxId": client_tx_id,
+        "returnUrl": settings.mok_return_url,
     }
 
 
@@ -1144,25 +1145,20 @@ async def mok_return(request: Request, owner_id: int = Query(...)):
         verified_name = person_info.get("userName")
         verified_phone = person_info.get("userPhone")
         verified_gender = person_info.get("userGender")  # "M" 또는 "F"
+        verified_birthdate = person_info.get("userBirthday")  # YYYYMMDD (VARCHAR(8))
 
-        raw_birthdate = person_info.get("userBirthday")  # YYYYMMDD
-        if raw_birthdate and len(raw_birthdate) == 8:
-            verified_birthdate = f"{raw_birthdate[:4]}-{raw_birthdate[4:6]}-{raw_birthdate[6:]}"
-        else:
-            verified_birthdate = None
-
-        # owner 테이블에 저장
+        # owner 테이블에 저장 (컬럼: phone, birthdate VARCHAR(8), gender CHAR(1))
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE owner SET name = %s, phone_number = %s, birthdate = %s WHERE id = %s",
-                (verified_name, verified_phone, verified_birthdate, owner_id)
+                "UPDATE owner SET name = %s, phone = %s, birthdate = %s, gender = %s WHERE id = %s",
+                (verified_name, verified_phone, verified_birthdate, verified_gender, owner_id)
             )
         connection.commit()
 
         return {
             "success": True,
             "name": verified_name,
-            "phone_number": verified_phone,
+            "phone": verified_phone,
             "birthdate": verified_birthdate,
             "gender": verified_gender,
         }
