@@ -15,14 +15,20 @@ from Crypto.Util.Padding import unpad
 def _load_keyinfo(dat_path: str, password: str) -> dict:
     """
     mok_keyInfo.dat(AES-256-CBC 암호화) 복호화 → dict 반환
-    키: SHA-256(password), IV: 앞 16바이트
+    키 파생 (드림시큐리티 가이드):
+      Hash1 = SHA-256(password)
+      Hash2 = SHA-256(Hash1)
+      AES_Key = Hash1[:16] + Hash2[16:]   (32바이트)
+      AES_IV  = Hash2[:16]                (16바이트)
+    파일 전체가 ciphertext (앞에 IV 없음)
     """
     with open(dat_path, "rb") as f:
-        raw = f.read()
+        ciphertext = f.read()
 
-    key = hashlib.sha256(password.encode("utf-8")).digest()
-    iv = raw[:16]
-    ciphertext = raw[16:]
+    hash1 = hashlib.sha256(password.encode("utf-8")).digest()
+    hash2 = hashlib.sha256(hash1).digest()
+    key = hash1[:16] + hash2[16:]
+    iv = hash2[:16]
 
     cipher = AES.new(key, AES.MODE_CBC, iv)
     plaintext = unpad(cipher.decrypt(ciphertext), AES.block_size)

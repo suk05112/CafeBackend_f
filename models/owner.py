@@ -2,11 +2,10 @@ from pydantic import BaseModel
 from typing import List
 
 class Owner(BaseModel):
-    name: str
     login_id: str
     email: str
-    phone_number: str
     uid: str
+    client_tx_id: str  # mobileOK 본인확인 거래 ID (name/phone/birthdate/gender는 mok_client_tx에서 조회)
 
 class OwnerFind(BaseModel):
     name: str

@@ -85,20 +85,60 @@ async def check_duplicate(
 
 @router.post("/register")
 async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
-    connection = get_db_connection()  # 환경에 맞는 DB 연결           
-    cursor = connection.cursor()
-    
+    """사장님 회원가입.
+
+    앱은 사전에 /mok/client-info + mobileOK 표준창을 통해 본인확인을 완료한 뒤
+    client_tx_id를 전달한다. 서버는 mok_client_tx에서 검증된 name/phone/birthdate/gender를
+    조회하여 owner 테이블에 저장한다. 앱이 별도로 이 값들을 보내지 않는다.
+    """
+    connection = get_db_connection()
+
     try:
-        cursor.execute(
-            "INSERT INTO owner (name, login_id, email, uid, phone) VALUES (%s, %s, %s, %s, %s)",
-            (owner.name, owner.login_id, owner.email, owner.uid, owner.phone_number)
-        )
+        with connection.cursor() as cursor:
+            # 본인확인 결과 조회 (FOR UPDATE로 재사용 방지)
+            cursor.execute(
+                """
+                SELECT verified_name, verified_phone, verified_birthdate, verified_gender,
+                       verified_at, consumed_at
+                FROM mok_client_tx
+                WHERE client_tx_id = %s
+                FOR UPDATE
+                """,
+                (owner.client_tx_id,)
+            )
+            tx = cursor.fetchone()
+            if not tx:
+                raise HTTPException(status_code=400, detail="유효하지 않은 clientTxId")
+            if tx["verified_at"] is None:
+                raise HTTPException(status_code=400, detail="본인확인이 완료되지 않았습니다.")
+            if tx["consumed_at"] is not None:
+                raise HTTPException(status_code=400, detail="이미 사용된 본인확인입니다.")
+
+            cursor.execute(
+                "INSERT INTO owner (name, login_id, email, uid, phone, birthdate, gender) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    tx["verified_name"],
+                    owner.login_id,
+                    owner.email,
+                    owner.uid,
+                    tx["verified_phone"],
+                    tx["verified_birthdate"],
+                    tx["verified_gender"],
+                )
+            )
+            owner_id = cursor.lastrowid
+
+            cursor.execute(
+                "UPDATE mok_client_tx SET consumed_at = NOW() WHERE client_tx_id = %s",
+                (owner.client_tx_id,)
+            )
         connection.commit()
-        
-        owner_id = cursor.lastrowid
-        
+
         print("owner_id", owner_id)
         return {'owner_id': owner_id}
+    except HTTPException:
+        raise
     except pymysql.err.IntegrityError as e:
         logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
@@ -1077,8 +1117,13 @@ def mok_client_info():
 
 
 @router.post("/mok/return")
-async def mok_return(request: Request, owner_id: int = Query(...)):
-    """드림시큐리티 표준창 결과 수신 및 사장님 정보 저장 (returnUrl)"""
+async def mok_return(request: Request):
+    """드림시큐리티 표준창 결과 수신 및 mok_client_tx에 임시 저장 (returnUrl)
+
+    회원가입 시 앱은 이 응답값을 UI에 노출하고, 이후 /register 호출 시
+    clientTxId를 전달하여 서버가 검증된 값(name/phone/birthdate/gender)을
+    owner 테이블에 저장한다.
+    """
     form = await request.form()
     data_raw = form.get("data")
     if not data_raw:
@@ -1147,11 +1192,19 @@ async def mok_return(request: Request, owner_id: int = Query(...)):
         verified_gender = person_info.get("userGender")  # "M" 또는 "F"
         verified_birthdate = person_info.get("userBirthday")  # YYYYMMDD (VARCHAR(8))
 
-        # owner 테이블에 저장 (컬럼: phone, birthdate VARCHAR(8), gender CHAR(1))
+        # mok_client_tx에 검증 결과 저장 (register 시점에 owner로 복사)
         with connection.cursor() as cursor:
             cursor.execute(
-                "UPDATE owner SET name = %s, phone = %s, birthdate = %s, gender = %s WHERE id = %s",
-                (verified_name, verified_phone, verified_birthdate, verified_gender, owner_id)
+                """
+                UPDATE mok_client_tx
+                SET verified_name = %s,
+                    verified_phone = %s,
+                    verified_birthdate = %s,
+                    verified_gender = %s,
+                    verified_at = NOW()
+                WHERE client_tx_id = %s
+                """,
+                (verified_name, verified_phone, verified_birthdate, verified_gender, client_tx_id)
             )
         connection.commit()
 
