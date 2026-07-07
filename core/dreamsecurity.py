@@ -48,8 +48,14 @@ def get_keyinfo(dat_path: str, password: str) -> dict:
 def encrypt_client_info(json_data: str, server_public_key_pem: str) -> str:
     """
     JSONData를 RSA-OAEP(SHA-256, MGF1-SHA-256)로 암호화 후 Base64 반환
+    server_public_key_pem: PEM 문자열 또는 Base64 DER 문자열 모두 허용
     """
-    pub_key = RSA.import_key(server_public_key_pem)
+    import base64 as _b64
+    key_str = server_public_key_pem.strip()
+    if key_str.startswith("-----"):
+        pub_key = RSA.import_key(key_str)
+    else:
+        pub_key = RSA.import_key(_b64.b64decode(key_str))
     cipher = PKCS1_OAEP.new(pub_key, hashAlgo=SHA256, mgfunc=lambda x, y: PKCS1_OAEP.MGF1(x, y, SHA256))
     encrypted = cipher.encrypt(json_data.encode("utf-8"))
     return base64.b64encode(encrypted).decode("utf-8")
@@ -70,8 +76,9 @@ def decrypt_mok_result(encrypt_mok_result: str, client_private_key_pem: str) -> 
 
     encrypt_key_iv_hash_b64, encrypt_result_b64 = parts
 
-    # RSA 복호화
-    priv_key = RSA.import_key(client_private_key_pem)
+    # RSA 복호화 (PEM 또는 Base64 DER 모두 허용)
+    key_str = client_private_key_pem.strip()
+    priv_key = RSA.import_key(key_str if key_str.startswith("-----") else base64.b64decode(key_str))
     rsa_cipher = PKCS1_OAEP.new(priv_key, hashAlgo=SHA256, mgfunc=lambda x, y: PKCS1_OAEP.MGF1(x, y, SHA256))
     key_iv_hash = rsa_cipher.decrypt(base64.b64decode(encrypt_key_iv_hash_b64))
 
