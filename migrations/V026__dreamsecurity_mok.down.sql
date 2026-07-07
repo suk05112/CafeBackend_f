@@ -1,0 +1,4 @@
+-- GNB-131: V026 롤백
+
+ALTER TABLE owner DROP COLUMN IF EXISTS birthdate;
+DROP TABLE IF EXISTS mok_client_tx;

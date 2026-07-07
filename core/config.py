@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     aligo_sender_key: str = Field(default="", description="알림톡 발신프로필 키")
     aligo_sender: str = Field(default="", description="발신자 전화번호")
 
+    # 드림시큐리티 mobileOK 설정
+    mok_keyinfo_path: str = Field(default="docs/mobileOK/mok_keyInfo_dev.dat", description="mok_keyInfo.dat 파일 경로")
+    mok_keyinfo_password: str = Field(default="", description="mok_keyInfo.dat 복호화 비밀번호")
+    mok_result_url: str = Field(default="https://scert.mobile-ok.com/gui/service/v1/result/request", description="드림시큐리티 검증 서버 URL")
+
     def get_apple_private_key(self) -> str:
         """
         .env 파일에서 여러 줄로 나눠진 Private Key를 합쳐서 반환

@@ -54,6 +54,7 @@ from core.config import settings
 from core.s3_config import S3_CLIENT, TERMS_BUCKET_NAME
 from core.exceptions import InternalError
 from crud import terms as terms_crud
+import core.dreamsecurity as dreamsecurity
 
 router = APIRouter()
 
@@ -1700,4 +1701,159 @@ async def mok_return(request: Request):
     finally:
         cursor.close()
         close_db_connection(connection)
+        close_db_connection(connection)
+
+
+# ── mobileOK 본인확인 (드림시큐리티 표준창) ──────────────────────────────────
+
+import uuid
+from datetime import datetime, timezone
+
+@router.post("/mok/client-info")
+def mok_client_info():
+    """
+    ① 드림시큐리티 표준창 거래 요청 정보 생성
+    - clientTxId 생성 및 DB 저장
+    - JSONData RSA-OAEP 암호화 후 MOKReqClientInfo 반환
+    """
+    keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
+    service_id = keyinfo["ServiceId"]
+    server_public_key = keyinfo["ServerPublicKey"]
+
+    client_tx_id = f"{service_id[:8]}{uuid.uuid4().hex}"[:40]
+    request_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    json_data = json.dumps({
+        "version": "1.0",
+        "clientTxId": client_tx_id,
+        "requestTime": request_time,
+    }, separators=(",", ":"))
+
+    encrypted = dreamsecurity.encrypt_client_info(json_data, server_public_key)
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO mok_client_tx (client_tx_id, used) VALUES (%s, 0)",
+                (client_tx_id,)
+            )
+        connection.commit()
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "mok_client_info DB insert")
+    finally:
+        close_db_connection(connection)
+
+    return {
+        "MOKReqClientInfo": encrypted,
+        "clientTxId": client_tx_id,
+    }
+
+
+@router.post("/mok/return")
+async def mok_return(
+    request: Request,
+    owner_id: int = Query(...),
+):
+    """
+    ② 드림시큐리티 표준창 결과 수신 (returnUrl)
+    - encryptMOKKeyToken 추출 → clientTxId 검증 → 드림시큐리티 서버 검증 → 복호화 → owner DB 저장
+    """
+    form = await request.form()
+    data_raw = form.get("data")
+    if not data_raw:
+        raise HTTPException(status_code=400, detail="data 파라미터 없음")
+
+    try:
+        mok_data = json.loads(data_raw)
+    except Exception:
+        raise HTTPException(status_code=400, detail="data JSON 파싱 실패")
+
+    encrypt_mok_key_token = mok_data.get("encryptMOKKeyToken")
+    client_tx_id = mok_data.get("clientTxId")
+    request_time_str = mok_data.get("requestTime", "")
+
+    if not encrypt_mok_key_token or not client_tx_id:
+        raise HTTPException(status_code=400, detail="필수 파라미터 누락")
+
+    # requestTime 5초 TTL 검증
+    try:
+        req_dt = datetime.strptime(request_time_str, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
+        elapsed = (datetime.now(timezone.utc) - req_dt).total_seconds()
+        if elapsed > 5:
+            raise HTTPException(status_code=400, detail="requestTime TTL 초과")
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=400, detail="requestTime 형식 오류")
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            # clientTxId 조회 및 사용 여부 확인
+            cursor.execute(
+                "SELECT used FROM mok_client_tx WHERE client_tx_id = %s FOR UPDATE",
+                (client_tx_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=400, detail="유효하지 않은 clientTxId")
+            if row["used"]:
+                raise HTTPException(status_code=400, detail="이미 사용된 clientTxId")
+
+            # 즉시 used 처리 (재사용 방지)
+            cursor.execute(
+                "UPDATE mok_client_tx SET used = 1 WHERE client_tx_id = %s",
+                (client_tx_id,)
+            )
+        connection.commit()
+
+        # 드림시큐리티 검증 서버에 토큰 전달
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                settings.mok_result_url,
+                json={"encryptMOKKeyToken": encrypt_mok_key_token},
+            )
+            resp.raise_for_status()
+            verify_result = resp.json()
+
+        encrypt_mok_result = verify_result.get("encryptMOKResult")
+        if not encrypt_mok_result:
+            raise HTTPException(status_code=502, detail="드림시큐리티 검증 서버 응답 오류")
+
+        # encryptMOKResult 복호화
+        keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
+        person_info = dreamsecurity.decrypt_mok_result(encrypt_mok_result, keyinfo["ClientPrivateKey"])
+
+        verified_name = person_info.get("userName")
+        verified_phone = person_info.get("userPhone")
+        verified_birthdate = person_info.get("userBirthday")  # YYYYMMDD
+
+        if verified_birthdate and len(verified_birthdate) == 8:
+            verified_birthdate = f"{verified_birthdate[:4]}-{verified_birthdate[4:6]}-{verified_birthdate[6:]}"
+        else:
+            verified_birthdate = None
+
+        # DB 저장
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE owner SET name = %s, phone_number = %s, birthdate = %s WHERE id = %s",
+                (verified_name, verified_phone, verified_birthdate, owner_id)
+            )
+        connection.commit()
+
+        return {
+            "success": True,
+            "name": verified_name,
+            "phone_number": verified_phone,
+            "birthdate": verified_birthdate,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "mok_return")
+    finally:
         close_db_connection(connection)
