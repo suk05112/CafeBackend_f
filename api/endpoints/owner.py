@@ -1079,7 +1079,11 @@ def get_owner_notice_detail(notice_id: int):
 
 @router.post("/mok/client-info")
 def mok_client_info():
-    """드림시큐리티 표준창 거래 요청 정보 생성"""
+    """드림시큐리티 표준창 거래 요청 정보 생성 (MOKReqClientInfo)
+
+    응답 body 자체가 MOBILEOK.process()에 전달될 MOKReqClientInfo JSON이다.
+    (개발가이드 표준창 V3 - 2. 거래요청정보 생성 스펙 준수)
+    """
     keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
     service_id = keyinfo["ServiceId"]
     server_public_key = keyinfo["ServerPublicKey"]
@@ -1088,12 +1092,12 @@ def mok_client_info():
     request_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
 
     json_data = json.dumps({
-        "version": "1.0",
+        "version": "V2",
         "clientTxId": client_tx_id,
         "requestTime": request_time,
     }, separators=(",", ":"))
 
-    encrypted = dreamsecurity.encrypt_client_info(json_data, server_public_key)
+    encrypt_req_client_info = dreamsecurity.encrypt_client_info(json_data, server_public_key)
 
     connection = get_db_connection()
     try:
@@ -1110,9 +1114,14 @@ def mok_client_info():
         close_db_connection(connection)
 
     return {
-        "MOKReqClientInfo": encrypted,
-        "clientTxId": client_tx_id,
+        "serviceId": service_id,
+        "encryptReqClientInfo": encrypt_req_client_info,
+        "serviceType": "telcoAuth",
+        "usageCode": "01001",
+        "retTransferType": "MOKToken",
         "returnUrl": settings.mok_return_url,
+        "encryptVersion": "V2",
+        "clientTxId": client_tx_id,
     }
 
 
