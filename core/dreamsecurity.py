@@ -82,17 +82,26 @@ def decrypt_mok_result(encrypt_mok_result: str, client_private_key_pem: str) -> 
     rsa_cipher = PKCS1_OAEP.new(priv_key, hashAlgo=SHA256, mgfunc=lambda x, y: PKCS1_OAEP.MGF1(x, y, SHA256))
     key_iv_hash = rsa_cipher.decrypt(base64.b64decode(encrypt_key_iv_hash_b64))
 
-    aes_key = key_iv_hash[:32]
-    aes_iv = key_iv_hash[32:48]
-    expected_hash = key_iv_hash[48:80]
+    # key_iv_hash는 UTF-8 문자열 "base64KeyIv|hashData" 형식
+    key_iv_hash_str = key_iv_hash.decode("utf-8")
+    kiv_parts = key_iv_hash_str.split("|")
+    if len(kiv_parts) != 2:
+        raise ValueError(f"keyIvHashData 형식 오류: {key_iv_hash_str[:100]}")
+    base64_key_iv, hash_data_b64 = kiv_parts
+
+    key_iv = base64.b64decode(base64_key_iv)
+    if len(key_iv) != 48:
+        raise ValueError(f"keyIv 길이 오류: {len(key_iv)}")
+    aes_key = key_iv[:32]
+    aes_iv = key_iv[32:48]
 
     # AES-256-CBC 복호화
     aes_cipher = AES.new(aes_key, AES.MODE_CBC, aes_iv)
     result_bytes = unpad(aes_cipher.decrypt(base64.b64decode(encrypt_result_b64)), AES.block_size)
 
-    # SHA-256 무결성 검증
-    actual_hash = hashlib.sha256(result_bytes).digest()
-    if actual_hash != expected_hash:
+    # SHA-256 무결성 검증 (Base64 비교)
+    actual_hash_b64 = base64.b64encode(hashlib.sha256(result_bytes).digest()).decode("utf-8")
+    if actual_hash_b64 != hash_data_b64:
         raise ValueError("encryptMOKResult 무결성 검증 실패")
 
     return json.loads(result_bytes.decode("utf-8"))

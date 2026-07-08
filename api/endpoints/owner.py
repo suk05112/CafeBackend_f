@@ -1236,9 +1236,11 @@ async def mok_return(request: Request, clientTxId: Optional[str] = Query(None)):
             resp.raise_for_status()
             verify_result = resp.json()
 
+        logger.info(f"[mok_return] verify_result keys: {list(verify_result.keys())}")
+        logger.info(f"[mok_return] verify_result: {json.dumps(verify_result, ensure_ascii=False)[:500]}")
         encrypt_mok_result = verify_result.get("encryptMOKResult")
         if not encrypt_mok_result:
-            raise HTTPException(status_code=502, detail="드림시큐리티 검증 서버 응답 오류")
+            raise HTTPException(status_code=502, detail=f"드림시큐리티 검증 서버 응답 오류: {verify_result}")
 
         # encryptMOKResult 복호화
         keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
