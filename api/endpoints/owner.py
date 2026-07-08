@@ -1155,7 +1155,8 @@ def mok_start(request: Request):
 
 
 @router.post("/mok/client-info")
-def mok_client_info():
+@limiter.limit("30/minute")
+def mok_client_info(request: Request):
     """드림시큐리티 표준창 거래 요청 정보 생성 (MOKReqClientInfo)
 
     응답 body 자체가 MOBILEOK.process()에 전달될 MOKReqClientInfo JSON이다.
