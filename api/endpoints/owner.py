@@ -1078,8 +1078,15 @@ def get_owner_notice_detail(notice_id: int):
 
 # ── mobileOK 본인확인 (드림시큐리티 표준창) ──────────────────────────────────
 
-def _mok_redirect():
-    """ptb_mokauth.html로 302 리다이렉트하는 공통 로직."""
+@router.get("/mok/start")
+def mok_start(request: Request):
+    """앱 전용 mobileOK 본인확인 진입점.
+
+    X-App-Client: GifnutOwner 헤더 필수. 웹 브라우저 접근 시 403.
+    """
+    if request.headers.get("X-App-Client") != "GifnutOwner":
+        raise HTTPException(status_code=403, detail="앱에서만 접근 가능합니다.")
+
     is_dev = "scert" in settings.mok_result_url
     base_url = "https://scert.mobile-ok.com" if is_dev else "https://cert.mobile-ok.com"
 
@@ -1107,12 +1114,11 @@ def _mok_redirect():
         connection.commit()
     except Exception as e:
         traceback.print_exc()
-        raise InternalError(e, "mok_test_page DB insert")
+        raise InternalError(e, "mok_start DB insert")
     finally:
         close_db_connection(connection)
 
     from urllib.parse import urlencode
-    # returnUrl에 clientTxId 포함 → 드림시큐리티가 콜백 시 그대로 전달
     return_url_with_tx = f"{settings.mok_return_url}?clientTxId={client_tx_id}"
     params = urlencode({
         "usageCode": "01001",
@@ -1127,31 +1133,6 @@ def _mok_redirect():
     })
     redirect_url = f"{base_url}/ptb_mokauth.html?{params}"
     return RedirectResponse(url=redirect_url, status_code=302)
-
-
-@router.get("/mok/test-page")
-def mok_test_page(request: Request):
-    """[개발 전용] 웹 브라우저에서도 접근 가능한 mobileOK 테스트 진입점.
-
-    개발서버(is_dev=True)에서만 동작. 운영서버 호출 시 403.
-    10/5 개발키 만료 후 GNB-151 작업으로 삭제 예정.
-    """
-    is_dev = "scert" in settings.mok_result_url
-    if not is_dev:
-        raise HTTPException(status_code=403, detail="개발 환경에서만 접근 가능합니다.")
-    return _mok_redirect()
-
-
-@router.get("/mok/start")
-def mok_start(request: Request):
-    """[운영] 앱 전용 mobileOK 본인확인 진입점.
-
-    X-App-Client: GifnutOwner 헤더 필수. 웹 브라우저 접근 시 403.
-    10/5 이후 개발서버에서도 이 엔드포인트만 사용.
-    """
-    if request.headers.get("X-App-Client") != "GifnutOwner":
-        raise HTTPException(status_code=403, detail="앱에서만 접근 가능합니다.")
-    return _mok_redirect()
 
 
 @router.post("/mok/client-info")
