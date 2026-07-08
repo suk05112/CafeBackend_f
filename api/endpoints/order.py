@@ -130,14 +130,23 @@ def _request_payletter_url(gifticon, user_id: int, order_no: str) -> dict:
         "callback_url": settings.payletter_callback_url,
         "cancel_url": settings.payletter_cancel_url,
     }
-    pl_conn = http.client.HTTPSConnection(settings.payletter_api_host)
-    pl_conn.request(
-        "POST", "/v1.0/payments/request",
-        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        {"Authorization": f"PLKEY {pl_api_key}", "Content-Type": "application/json; charset=utf-8"}
-    )
-    pl_res = pl_conn.getresponse()
-    pl_data = json.loads(pl_res.read().decode("utf-8"))
+    pl_conn = http.client.HTTPSConnection(settings.payletter_api_host, timeout=10)
+    try:
+        pl_conn.request(
+            "POST", "/v1.0/payments/request",
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            {"Authorization": f"PLKEY {pl_api_key}", "Content-Type": "application/json; charset=utf-8"}
+        )
+        pl_res = pl_conn.getresponse()
+        pl_data = json.loads(pl_res.read().decode("utf-8"))
+    except (TimeoutError, OSError) as e:
+        logger.error(f"Payletter request timeout/network error: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="결제 요청 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
+        )
+    finally:
+        pl_conn.close()
 
     if pl_res.status != 200 or not pl_data.get("token"):
         logger.error(f"Payletter request failed: {pl_data}")
