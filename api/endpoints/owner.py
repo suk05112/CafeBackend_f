@@ -1078,14 +1078,16 @@ def get_owner_notice_detail(notice_id: int):
 
 # ── mobileOK 본인확인 (드림시큐리티 표준창) ──────────────────────────────────
 
-@router.get("/mok/test-page")
-def mok_test_page():
-    """드림시큐리티 표준창 시작 - 서버에서 파라미터 조립 후 표준창 URL로 직접 리다이렉트.
+@router.get("/mok/start")
+def mok_test_page(request: Request):
+    """드림시큐리티 표준창 시작 - 앱 전용 엔드포인트.
 
-    JS SDK의 동기 XHR 대신 서버가 직접 MOKReqClientInfo를 만들어
-    ptb_mokauth.html에 쿼리스트링으로 전달한다.
-    앱/브라우저 모두 동일하게 동작.
+    Flutter 앱 WebView에서만 접근 가능 (X-App-Client: GifnutOwner 헤더 필수).
+    서버가 파라미터를 조립해 ptb_mokauth.html로 302 리다이렉트.
     """
+    if request.headers.get("X-App-Client") != "GifnutOwner":
+        raise HTTPException(status_code=403, detail="앱에서만 접근 가능합니다.")
+
     is_dev = "scert" in settings.mok_result_url
     base_url = "https://scert.mobile-ok.com" if is_dev else "https://cert.mobile-ok.com"
 
