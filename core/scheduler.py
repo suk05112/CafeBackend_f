@@ -1,3 +1,4 @@
+import pymysql
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, timezone, timedelta
 from loguru import logger
@@ -26,7 +27,7 @@ def expire_pending_orders():
     MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
     """
     connection = get_db_connection()
-    cursor = connection.cursor()
+    cursor = connection.cursor(pymysql.cursors.Cursor)
     lock_acquired = False
 
     try:
@@ -66,7 +67,7 @@ def delete_old_records():
     MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
     """
     connection = get_db_connection()
-    cursor = connection.cursor()
+    cursor = connection.cursor(pymysql.cursors.Cursor)
     lock_acquired = False
 
     try:
