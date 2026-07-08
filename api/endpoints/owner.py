@@ -33,6 +33,12 @@ from crud import admin as admin_crud
 
 from models.user import User
 from schemas.settlement import AccountUpdateRequest
+import httpx
+import json
+from datetime import datetime, timezone
+from core.config import settings
+import core.dreamsecurity as dreamsecurity
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
@@ -80,20 +86,60 @@ async def check_duplicate(
 
 @router.post("/register")
 async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
-    connection = get_db_connection()  # 환경에 맞는 DB 연결           
-    cursor = connection.cursor()
-    
+    """사장님 회원가입.
+
+    앱은 사전에 /mok/client-info + mobileOK 표준창을 통해 본인확인을 완료한 뒤
+    client_tx_id를 전달한다. 서버는 mok_client_tx에서 검증된 name/phone/birthdate/gender를
+    조회하여 owner 테이블에 저장한다. 앱이 별도로 이 값들을 보내지 않는다.
+    """
+    connection = get_db_connection()
+
     try:
-        cursor.execute(
-            "INSERT INTO owner (name, login_id, email, uid, phone) VALUES (%s, %s, %s, %s, %s)",
-            (owner.name, owner.login_id, owner.email, owner.uid, owner.phone_number)
-        )
+        with connection.cursor() as cursor:
+            # 본인확인 결과 조회 (FOR UPDATE로 재사용 방지)
+            cursor.execute(
+                """
+                SELECT verified_name, verified_phone, verified_birthdate, verified_gender,
+                       verified_at, consumed_at
+                FROM mok_client_tx
+                WHERE client_tx_id = %s
+                FOR UPDATE
+                """,
+                (owner.client_tx_id,)
+            )
+            tx = cursor.fetchone()
+            if not tx:
+                raise HTTPException(status_code=400, detail="유효하지 않은 clientTxId")
+            if tx["verified_at"] is None:
+                raise HTTPException(status_code=400, detail="본인확인이 완료되지 않았습니다.")
+            if tx["consumed_at"] is not None:
+                raise HTTPException(status_code=400, detail="이미 사용된 본인확인입니다.")
+
+            cursor.execute(
+                "INSERT INTO owner (name, login_id, email, uid, phone, birthdate, gender) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (
+                    tx["verified_name"],
+                    owner.login_id,
+                    owner.email,
+                    owner.uid,
+                    tx["verified_phone"],
+                    tx["verified_birthdate"],
+                    tx["verified_gender"],
+                )
+            )
+            owner_id = cursor.lastrowid
+
+            cursor.execute(
+                "UPDATE mok_client_tx SET consumed_at = NOW() WHERE client_tx_id = %s",
+                (owner.client_tx_id,)
+            )
         connection.commit()
-        
-        owner_id = cursor.lastrowid
-        
+
         print("owner_id", owner_id)
         return {'owner_id': owner_id}
+    except HTTPException:
+        raise
     except pymysql.err.IntegrityError as e:
         logger.error(f"서버 오류 발생: {str(e)}")
         raise HTTPException(
@@ -1046,6 +1092,213 @@ def get_owner_popups(owner_id: Optional[int] = Query(None)):
         close_db_connection(connection)
 
 
+# ── mobileOK 본인확인 (드림시큐리티 표준창) ──────────────────────────────────
+
+@router.get("/mok/start")
+def mok_start(request: Request):
+    """앱 전용 mobileOK 본인확인 진입점.
+
+    X-App-Client: GifnutOwner 헤더 필수. 웹 브라우저 접근 시 403.
+    """
+    if request.headers.get("X-App-Client") != "GifnutOwner":
+        raise HTTPException(status_code=403, detail="앱에서만 접근 가능합니다.")
+
+    is_dev = "scert" in settings.mok_result_url
+    base_url = "https://scert.mobile-ok.com" if is_dev else "https://cert.mobile-ok.com"
+
+    keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
+    service_id = keyinfo["ServiceId"]
+    server_public_key = keyinfo["ServerPublicKey"]
+
+    client_tx_id = f"GFN-{uuid.uuid4().hex[:32]}"
+    request_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    json_data = json.dumps({
+        "version": "V2",
+        "clientTxId": client_tx_id,
+        "requestTime": request_time,
+    }, separators=(",", ":"))
+    encrypt_req_client_info = dreamsecurity.encrypt_client_info(json_data, server_public_key)
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO mok_client_tx (client_tx_id, used) VALUES (%s, 0)",
+                (client_tx_id,)
+            )
+        connection.commit()
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "mok_start DB insert")
+    finally:
+        close_db_connection(connection)
+
+    from urllib.parse import urlencode
+    return_url_with_tx = f"{settings.mok_return_url}?clientTxId={client_tx_id}"
+    params = urlencode({
+        "usageCode": "01001",
+        "serviceId": service_id,
+        "returnUrl": return_url_with_tx,
+        "encryptVersion": "V2",
+        "encryptReqClientInfo": encrypt_req_client_info,
+        "serviceType": "telcoAuth",
+        "retTransferType": "MOKToken",
+        "callbackFunction": "",
+        "alternative": "www.502company.com",
+    })
+    redirect_url = f"{base_url}/ptb_mokauth.html?{params}"
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
+@router.post("/mok/client-info")
+@limiter.limit("30/minute")
+def mok_client_info(request: Request):
+    """드림시큐리티 표준창 거래 요청 정보 생성 (MOKReqClientInfo)
+
+    응답 body 자체가 MOBILEOK.process()에 전달될 MOKReqClientInfo JSON이다.
+    (개발가이드 표준창 V3 - 2. 거래요청정보 생성 스펙 준수)
+    """
+    keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
+    service_id = keyinfo["ServiceId"]
+    server_public_key = keyinfo["ServerPublicKey"]
+
+    client_tx_id = f"GFN-{uuid.uuid4().hex[:32]}"  # 4 + 1 + 32 = 37자
+    request_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    json_data = json.dumps({
+        "version": "V2",
+        "clientTxId": client_tx_id,
+        "requestTime": request_time,
+    }, separators=(",", ":"))
+
+    encrypt_req_client_info = dreamsecurity.encrypt_client_info(json_data, server_public_key)
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO mok_client_tx (client_tx_id, used) VALUES (%s, 0)",
+                (client_tx_id,)
+            )
+        connection.commit()
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "mok_client_info DB insert")
+    finally:
+        close_db_connection(connection)
+
+    return {
+        "serviceId": service_id,
+        "encryptReqClientInfo": encrypt_req_client_info,
+        "serviceType": "telcoAuth",
+        "usageCode": "01001",
+        "retTransferType": "MOKToken",
+        "returnUrl": settings.mok_return_url,
+        "encryptVersion": "V2",
+        "clientTxId": client_tx_id,
+    }
+
+
+@router.post("/mok/return")
+async def mok_return(request: Request, clientTxId: Optional[str] = Query(None)):
+    """드림시큐리티 표준창 결과 수신.
+
+    clientTxId는 returnUrl 쿼리스트링으로 전달됨 (?clientTxId=...).
+    encryptMOKKeyToken은 form data의 data 필드(URL-encoded JSON)에 포함됨.
+    """
+    from urllib.parse import unquote
+    form = await request.form()
+    data_raw = form.get("data")
+    if not data_raw:
+        raise HTTPException(status_code=400, detail="data 파라미터 없음")
+
+    try:
+        mok_data = json.loads(unquote(str(data_raw)))
+    except Exception:
+        raise HTTPException(status_code=400, detail="data JSON 파싱 실패")
+
+    encrypt_mok_key_token = mok_data.get("encryptMOKKeyToken")
+    client_tx_id = clientTxId  # returnUrl 쿼리스트링에서 읽음
+
+    if not encrypt_mok_key_token or not client_tx_id:
+        raise HTTPException(status_code=400, detail="필수 파라미터 누락")
+
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT used FROM mok_client_tx WHERE client_tx_id = %s FOR UPDATE",
+                (client_tx_id,)
+            )
+            row = cursor.fetchone()
+            if not row:
+                raise HTTPException(status_code=400, detail="유효하지 않은 clientTxId")
+            if row["used"]:
+                raise HTTPException(status_code=400, detail="이미 사용된 clientTxId")
+
+            cursor.execute(
+                "UPDATE mok_client_tx SET used = 1 WHERE client_tx_id = %s",
+                (client_tx_id,)
+            )
+        connection.commit()
+
+        # 드림시큐리티 검증 서버에 토큰 전달
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.post(
+                settings.mok_result_url,
+                json={"encryptMOKKeyToken": encrypt_mok_key_token},
+            )
+            resp.raise_for_status()
+            verify_result = resp.json()
+
+        logger.info(f"[mok_return] verify_result keys: {list(verify_result.keys())}")
+        logger.info(f"[mok_return] verify_result: {json.dumps(verify_result, ensure_ascii=False)[:500]}")
+        encrypt_mok_result = verify_result.get("encryptMOKResult")
+        if not encrypt_mok_result:
+            raise HTTPException(status_code=502, detail=f"드림시큐리티 검증 서버 응답 오류: {verify_result}")
+
+        # encryptMOKResult 복호화
+        keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
+        person_info = dreamsecurity.decrypt_mok_result(encrypt_mok_result, keyinfo["ClientPrivateKey"])
+
+        verified_name = person_info.get("userName")
+        verified_phone = person_info.get("userPhone")
+        verified_gender = person_info.get("userGender")  # "M" 또는 "F"
+        verified_birthdate = person_info.get("userBirthday")  # YYYYMMDD (VARCHAR(8))
+
+        # mok_client_tx에 검증 결과 저장 (register 시점에 owner로 복사)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                UPDATE mok_client_tx
+                SET verified_name = %s,
+                    verified_phone = %s,
+                    verified_birthdate = %s,
+                    verified_gender = %s,
+                    verified_at = NOW()
+                WHERE client_tx_id = %s
+                """,
+                (verified_name, verified_phone, verified_birthdate, verified_gender, client_tx_id)
+            )
+        connection.commit()
+
+        # 앱이 NavigationDelegate로 감지할 수 있는 결과 URL로 리다이렉트
+        # 브라우저(웹 테스트)에서는 JSON 반환
+        prefix = "/dev" if "scert" in settings.mok_result_url else "/prod"
+        redirect_url = f"{prefix}/owner/mok/result?clientTxId={client_tx_id}&resultCode=2000"
+        return RedirectResponse(url=redirect_url, status_code=302)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "mok_return")
+    finally:
+        close_db_connection(connection)
+
+
 @router.post("/popups/hide")
 def hide_owner_popups(owner_id: Optional[int] = Query(None)):
     """사장님 오늘 하루 팝업 숨기기 (비로그인 시 no-op)"""
@@ -1060,3 +1313,30 @@ def hide_owner_popups(owner_id: Optional[int] = Query(None)):
         raise InternalError(e, "hide_owner_popups")
     finally:
         close_db_connection(connection)
+
+
+@router.get("/mok/result", response_class=HTMLResponse)
+def mok_result(clientTxId: str = Query(...), resultCode: str = Query(...)):
+    """본인확인 완료 결과 페이지.
+
+    앱은 NavigationDelegate에서 /mok/result URL 패턴을 감지하여
+    clientTxId와 resultCode 파라미터를 읽는다.
+    resultCode 2000 = 성공.
+    """
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>본인확인 완료</title>
+</head>
+<body>
+<p>본인확인이 완료되었습니다.</p>
+<script>
+// 앱 NavigationDelegate가 이 URL을 감지하지 못한 경우를 위한 폴백
+var params = new URLSearchParams(window.location.search);
+console.log('clientTxId:', params.get('clientTxId'));
+console.log('resultCode:', params.get('resultCode'));
+</script>
+</body>
+</html>"""

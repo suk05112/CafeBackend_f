@@ -13,6 +13,7 @@ firebase-admin
 httpx
 PyJWT
 cryptography
+pycryptodome
 slowapi
 apscheduler
 cachetools

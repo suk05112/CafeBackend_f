@@ -163,6 +163,12 @@ app.include_router(user.router, prefix=f'{prefix}/user', tags=["User"])
 app.include_router(gifticon.router, prefix=f'{prefix}/gifticon', tags=["Gifticon"])
 app.include_router(owner.router, prefix=f'{prefix}/owner', tags=["Owner"])
 app.include_router(order.router, prefix=f'{prefix}/order', tags=["Order"])
+
+# 드림시큐리티 등록 URL이 https://.../dev/ 또는 https://.../prod/ 인 경우
+# 표준창 returnUrl POST를 mok_return에 위임
+from api.endpoints.owner import mok_return as _mok_return
+app.add_api_route(f'{prefix}/', _mok_return, methods=["POST"], tags=["Owner"])
+app.add_api_route(f'{prefix}', _mok_return, methods=["POST"], tags=["Owner"])
     
 
 @app.middleware("http")
