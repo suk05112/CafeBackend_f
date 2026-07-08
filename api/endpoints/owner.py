@@ -38,6 +38,7 @@ import json
 from datetime import datetime, timezone
 from core.config import settings
 import core.dreamsecurity as dreamsecurity
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
@@ -1077,6 +1078,63 @@ def get_owner_notice_detail(notice_id: int):
 
 # ── mobileOK 본인확인 (드림시큐리티 표준창) ──────────────────────────────────
 
+@router.get("/mok/test-page")
+def mok_test_page():
+    """드림시큐리티 표준창 시작 - 서버에서 파라미터 조립 후 표준창 URL로 직접 리다이렉트.
+
+    JS SDK의 동기 XHR 대신 서버가 직접 MOKReqClientInfo를 만들어
+    ptb_mokauth.html에 쿼리스트링으로 전달한다.
+    앱/브라우저 모두 동일하게 동작.
+    """
+    is_dev = "scert" in settings.mok_result_url
+    base_url = "https://scert.mobile-ok.com" if is_dev else "https://cert.mobile-ok.com"
+
+    keyinfo = dreamsecurity.get_keyinfo(settings.mok_keyinfo_path, settings.mok_keyinfo_password)
+    service_id = keyinfo["ServiceId"]
+    server_public_key = keyinfo["ServerPublicKey"]
+
+    client_tx_id = f"GFN-{uuid.uuid4().hex[:32]}"
+    request_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+
+    json_data = json.dumps({
+        "version": "V2",
+        "clientTxId": client_tx_id,
+        "requestTime": request_time,
+    }, separators=(",", ":"))
+    encrypt_req_client_info = dreamsecurity.encrypt_client_info(json_data, server_public_key)
+
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO mok_client_tx (client_tx_id, used) VALUES (%s, 0)",
+                (client_tx_id,)
+            )
+        connection.commit()
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "mok_test_page DB insert")
+    finally:
+        close_db_connection(connection)
+
+    from urllib.parse import urlencode
+    # returnUrl에 clientTxId 포함 → 드림시큐리티가 콜백 시 그대로 전달
+    return_url_with_tx = f"{settings.mok_return_url}?clientTxId={client_tx_id}"
+    params = urlencode({
+        "usageCode": "01001",
+        "serviceId": service_id,
+        "returnUrl": return_url_with_tx,
+        "encryptVersion": "V2",
+        "encryptReqClientInfo": encrypt_req_client_info,
+        "serviceType": "telcoAuth",
+        "retTransferType": "MOKToken",
+        "callbackFunction": "",
+        "alternative": "www.502company.com",
+    })
+    redirect_url = f"{base_url}/ptb_mokauth.html?{params}"
+    return RedirectResponse(url=redirect_url, status_code=302)
+
+
 @router.post("/mok/client-info")
 def mok_client_info():
     """드림시큐리티 표준창 거래 요청 정보 생성 (MOKReqClientInfo)
@@ -1126,39 +1184,29 @@ def mok_client_info():
 
 
 @router.post("/mok/return")
-async def mok_return(request: Request):
-    """드림시큐리티 표준창 결과 수신 및 mok_client_tx에 임시 저장 (returnUrl)
+async def mok_return(request: Request, clientTxId: Optional[str] = Query(None)):
+    """드림시큐리티 표준창 결과 수신.
 
-    회원가입 시 앱은 이 응답값을 UI에 노출하고, 이후 /register 호출 시
-    clientTxId를 전달하여 서버가 검증된 값(name/phone/birthdate/gender)을
-    owner 테이블에 저장한다.
+    clientTxId는 returnUrl 쿼리스트링으로 전달됨 (?clientTxId=...).
+    encryptMOKKeyToken은 form data의 data 필드(URL-encoded JSON)에 포함됨.
     """
+    from urllib.parse import unquote
     form = await request.form()
     data_raw = form.get("data")
     if not data_raw:
         raise HTTPException(status_code=400, detail="data 파라미터 없음")
 
     try:
-        mok_data = json.loads(data_raw)
+        mok_data = json.loads(unquote(str(data_raw)))
     except Exception:
         raise HTTPException(status_code=400, detail="data JSON 파싱 실패")
 
     encrypt_mok_key_token = mok_data.get("encryptMOKKeyToken")
-    client_tx_id = mok_data.get("clientTxId")
-    request_time_str = mok_data.get("requestTime", "")
+    client_tx_id = clientTxId  # returnUrl 쿼리스트링에서 읽음
 
     if not encrypt_mok_key_token or not client_tx_id:
         raise HTTPException(status_code=400, detail="필수 파라미터 누락")
 
-    # requestTime 5초 TTL 검증
-    try:
-        req_dt = datetime.strptime(request_time_str, "%Y%m%d%H%M%S").replace(tzinfo=timezone.utc)
-        if (datetime.now(timezone.utc) - req_dt).total_seconds() > 5:
-            raise HTTPException(status_code=400, detail="본인확인 요청이 만료되었습니다.")
-    except HTTPException:
-        raise
-    except Exception:
-        raise HTTPException(status_code=400, detail="requestTime 형식 오류")
 
     connection = get_db_connection()
     try:
@@ -1217,13 +1265,11 @@ async def mok_return(request: Request):
             )
         connection.commit()
 
-        return {
-            "success": True,
-            "name": verified_name,
-            "phone": verified_phone,
-            "birthdate": verified_birthdate,
-            "gender": verified_gender,
-        }
+        # 앱이 NavigationDelegate로 감지할 수 있는 결과 URL로 리다이렉트
+        # 브라우저(웹 테스트)에서는 JSON 반환
+        prefix = "/dev" if "scert" in settings.mok_result_url else "/prod"
+        redirect_url = f"{prefix}/owner/mok/result?clientTxId={client_tx_id}&resultCode=2000"
+        return RedirectResponse(url=redirect_url, status_code=302)
 
     except HTTPException:
         raise
@@ -1232,3 +1278,30 @@ async def mok_return(request: Request):
         raise InternalError(e, "mok_return")
     finally:
         close_db_connection(connection)
+
+
+@router.get("/mok/result", response_class=HTMLResponse)
+def mok_result(clientTxId: str = Query(...), resultCode: str = Query(...)):
+    """본인확인 완료 결과 페이지.
+
+    앱은 NavigationDelegate에서 /mok/result URL 패턴을 감지하여
+    clientTxId와 resultCode 파라미터를 읽는다.
+    resultCode 2000 = 성공.
+    """
+    return f"""<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>본인확인 완료</title>
+</head>
+<body>
+<p>본인확인이 완료되었습니다.</p>
+<script>
+// 앱 NavigationDelegate가 이 URL을 감지하지 못한 경우를 위한 폴백
+var params = new URLSearchParams(window.location.search);
+console.log('clientTxId:', params.get('clientTxId'));
+console.log('resultCode:', params.get('resultCode'));
+</script>
+</body>
+</html>"""
