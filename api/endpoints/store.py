@@ -782,6 +782,10 @@ def updateStore(store_id: int, store: StoreCreate):
     try:
         cursor = connection.cursor(pymysql.cursors.DictCursor)
 
+        cursor.execute("SELECT inspection_status FROM store WHERE id = %s", (store_id,))
+        current = cursor.fetchone()
+        current_status = current['inspection_status'] if current else None
+
         query = "UPDATE store SET "
         values = []
 
@@ -802,8 +806,9 @@ def updateStore(store_id: int, store: StoreCreate):
         query += "store_logo_key = %s, bankbook_key = %s, business_registration_key = %s, "
         values.extend([logo_key, bankbook_key, business_key])
 
-        query += "inspection_status = %s, "
-        values.append('PENDING')
+        if current_status == 'REJECTED':
+            query += "inspection_status = %s, "
+            values.append('PENDING')
 
         query = query[:-2]
         query += " WHERE id = %s"
