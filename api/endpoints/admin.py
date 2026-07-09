@@ -66,6 +66,68 @@ def get_dashboard_statistics(user=Depends(verify_firebase_token)):
         close_db_connection(connection)
 
 
+# ── 플랫폼 대시보드 API (GNB-164 / GNB-165 / GNB-166) ───────────────────────
+
+@router.get("/dashboard/summary")
+def get_dashboard_summary(user=Depends(verify_firebase_token)):
+    """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
+
+    - issued_balance: 미사용 기프티콘 menu.price 합계 (REFUNDED/CANCELED 제외)
+    - current_cycle: settlement_details 미연결 건 기준 실시간 예상값
+    - cumulative: stats_daily_platform 전체 SUM (매일 00:10 배치 갱신)
+    """
+    try:
+        from crud import stats as stats_crud
+        return stats_crud.get_dashboard_summary()
+    except Exception as e:
+        print(f"Error in get_dashboard_summary: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dashboard/stats")
+def get_dashboard_stats(
+    period: str = Query('monthly', description="집계 단위: daily | weekly | monthly | yearly | all"),
+    user=Depends(verify_firebase_token),
+):
+    """기간별 운영 통계 (stats_daily_platform 기반)
+
+    - 발행 수/금액: gifticon.created_at 기준, PENDING/REFUNDED/CANCELED 제외, 금액은 menu.price
+    - 사용 수/금액: gifticon.used_at 기준 USED, 금액은 settlement_details.sales_amount 스냅샷
+    - 결제 금액: orders COMPLETED - 당일 환불액
+    - 수수료: 사용액 × platform_config.base_fee_rate (원미만 절사)
+    - 증감률: 프론트에서 전기 대비 동적 계산 (백엔드는 값만 제공)
+    """
+    try:
+        from crud import stats as stats_crud
+        return stats_crud.get_dashboard_stats(period)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        print(f"Error in get_dashboard_stats: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/dashboard/settlement-cycles")
+def get_dashboard_settlement_cycles(
+    page: int = Query(1, ge=1, description="페이지 번호"),
+    size: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    user=Depends(verify_firebase_token),
+):
+    """정산 주기별 플랫폼 매출 이력
+
+    - settlement 테이블 GROUP BY cycle_id로 집계 (별도 요약 테이블 없음)
+    - total_settlement_amount: COMPLETED/PENDING 매장 net_payout 합계
+    - platform_fee_amount/vat: original_fee 기준 (프로모션 적용 전 수수료)
+    - unused_amount: 해당 주기 발행 기프티콘 중 미사용 상태 menu.price 합계
+    """
+    try:
+        from crud import stats as stats_crud
+        return stats_crud.get_dashboard_settlement_cycles(page, size)
+    except Exception as e:
+        print(f"Error in get_dashboard_settlement_cycles: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/stores/export/excel")
 def export_stores_excel(
     search: Optional[str] = Query(None),
