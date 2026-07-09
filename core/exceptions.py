@@ -15,8 +15,4 @@ class InternalError(Exception):
 async def internal_error_handler(request: Request, exc: InternalError) -> JSONResponse:
     msg = f"{exc.context}: {exc.original}" if exc.context else str(exc.original)
     logger.error(f"[InternalError] {request.method} {request.url.path} - {msg}")
-
-    from app.system_logger import log_unhandled_exception
-    log_unhandled_exception(exc.original, context=f"{request.method} {request.url.path} - {exc.context}")
-
     return JSONResponse(status_code=500, content={"detail": "Internal server error"})

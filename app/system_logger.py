@@ -64,17 +64,6 @@ def _payload(category: str, **kwargs) -> str:
     return json.dumps(data, ensure_ascii=False, default=str)
 
 
-def log_unhandled_exception(exc: BaseException, context: str = "") -> None:
-    import traceback
-    system_logger.error(_payload(
-        "UNHANDLED_EXCEPTION",
-        exception_type=type(exc).__name__,
-        message=str(exc),
-        context=context,
-        traceback=traceback.format_exc(),
-    ))
-
-
 def log_external_api_error(service: str, detail: str, exc: BaseException | None = None) -> None:
     system_logger.error(_payload(
         "EXTERNAL_API_ERROR",
