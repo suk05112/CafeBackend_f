@@ -1,3 +1,4 @@
+import os
 from fastapi import Request, Header, HTTPException, Depends
 from firebase_admin import auth, app_check
 import firebase_admin
@@ -10,10 +11,14 @@ from core.config import settings
 logger = logging.getLogger("cafe_backend")
 
 
+def _is_dev_env() -> bool:
+    return os.getenv("ENV", "dev") in ("dev", "development", "local")
+
+
 def get_firebase_app(project_type: str = "user"):
     """
     프로젝트 타입에 따라 Firebase 앱 반환
-    - "user": 사용자 앱 (기본값)
+    - "user": 사용자 앱 (기본값, dev 환경에서는 dev_app 우선)
     - "owner": 사장님 앱
     - "dev": Dev 앱 (gifnut-dev)
     - "manager": Manager 앱 (gifnutmanager)
@@ -34,6 +39,11 @@ def get_firebase_app(project_type: str = "user"):
         except ValueError:
             raise ValueError("Firebase manager_app not initialized.")
     else:
+        if _is_dev_env():
+            try:
+                return firebase_admin.get_app("dev_app")
+            except ValueError:
+                pass
         try:
             return firebase_admin.get_app("user_app")
         except ValueError:
@@ -132,7 +142,8 @@ async def verify_firebase_token_any(
             return None
 
     last_error = None
-    for project_type in ("user", "owner"):
+    project_types = ("dev", "owner") if _is_dev_env() else ("user", "owner")
+    for project_type in project_types:
         try:
             app = get_firebase_app(project_type)
             if authorization and authorization.startswith("Bearer "):

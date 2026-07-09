@@ -16,6 +16,12 @@ def get_user_firebase_app(project_type: str = "user"):
             return firebase_admin.get_app("dev_app")
         except ValueError:
             pass
+    # dev/development/local 환경에서 project_type이 기본값("user")이면 dev_app 우선 사용
+    if project_type == "user" and os.getenv("ENV", "dev") in ("dev", "development", "local"):
+        try:
+            return firebase_admin.get_app("dev_app")
+        except ValueError:
+            pass
     try:
         return firebase_admin.get_app("user_app")
     except ValueError:
