@@ -795,12 +795,18 @@ def updateStore(store_id: int, store: StoreCreate):
             query += "store_description = %s, "
             values.append(store.store_description)
 
-        logo_key = _generate_logo_key(store_id)
-        bankbook_key = _generate_bankbook_key(store_id)
-        business_key = _generate_business_key(store_id)
+        # 기존 키 조회
+        cursor.execute(
+            "SELECT store_logo_key, business_registration_key FROM store WHERE id = %s",
+            (store_id,)
+        )
+        existing = cursor.fetchone()
 
-        query += "store_logo_key = %s, bankbook_key = %s, business_registration_key = %s, "
-        values.extend([logo_key, bankbook_key, business_key])
+        logo_key = _generate_logo_key(store_id) if store.logo_changed else existing['store_logo_key']
+        business_key = _generate_business_key(store_id) if store.business_changed else existing['business_registration_key']
+
+        query += "store_logo_key = %s, business_registration_key = %s, "
+        values.extend([logo_key, business_key])
 
         query += "inspection_status = %s, "
         values.append('PENDING')
@@ -822,16 +828,13 @@ def updateStore(store_id: int, store: StoreCreate):
         store_photo_get_urls = _get_store_photo_urls(cursor, store_id)
 
         store_logo_put_url = s3.generate_presigned_url('put_object',
-            Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
-        bankBook_put_url = s3.generate_presigned_url('put_object',
-            Params={'Bucket': bucket_name, 'Key': bankbook_key}, ExpiresIn=3600)
+            Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600) if store.logo_changed else None
         business_put_url = s3.generate_presigned_url('put_object',
-            Params={'Bucket': bucket_name, 'Key': business_key}, ExpiresIn=3600)
+            Params={'Bucket': bucket_name, 'Key': business_key}, ExpiresIn=3600) if store.business_changed else None
 
         return {
             'msg': "success",
             'store_logo_put_url': store_logo_put_url,
-            'bankBook_put_url': bankBook_put_url,
             'business_put_url': business_put_url,
             'store_photos': store_photos,
             'store_photo_get_urls': store_photo_get_urls
