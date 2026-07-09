@@ -1583,6 +1583,21 @@ def find_account(request: FindAccountRequest):
         close_db_connection(connection)
 
 
+@router.post("/ping")
+async def ping_user(user_id: int = Query(...), user=Depends(verify_firebase_token)):
+    """앱 시작 시 호출 — last_login 갱신용"""
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE user SET last_login = NOW() WHERE id = %s", (user_id,))
+        connection.commit()
+        return {"message": "ok"}
+    except Exception as e:
+        raise InternalError(e, "ping_user")
+    finally:
+        close_db_connection(connection)
+
+
 # ── Popup App API (User) ───────────────────────────────────────────────────────
 
 @router.get("/popups")

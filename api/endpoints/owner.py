@@ -1331,6 +1331,21 @@ def hide_owner_popups(owner_id: Optional[int] = Query(None)):
         close_db_connection(connection)
 
 
+@router.post("/ping")
+async def ping_owner(owner_id: int = Query(...), user=Depends(verify_firebase_token)):
+    """앱 시작 시 호출 — last_login 갱신용"""
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE owner SET last_login = NOW() WHERE id = %s", (owner_id,))
+        connection.commit()
+        return {"message": "ok"}
+    except Exception as e:
+        raise InternalError(e, "ping_owner")
+    finally:
+        close_db_connection(connection)
+
+
 @router.get("/mok/result", response_class=HTMLResponse)
 def mok_result(clientTxId: str = Query(...), resultCode: str = Query(...)):
     """본인확인 완료 결과 페이지.
