@@ -14,7 +14,6 @@ from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 from models.gifticon import Gifticon, PaymentResult, VALID_PGCODES
 from models.store import StoreCreate
-from crud import promotion as promotion_crud
 
 import http.client
 import json
@@ -302,17 +301,12 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
         )
         order_id = cursor.lastrowid
 
-        # 4. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
-        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date.today())
-
-        # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
+        # 4. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
         cursor.execute(
-            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
-                base_fee_rate, applied_promo_id, applied_fee_rate, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
+            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
-             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
-             fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'])
+             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id)
         )
         gifticon_id = cursor.lastrowid
 

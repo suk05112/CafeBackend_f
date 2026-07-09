@@ -194,11 +194,8 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
-        # 유효기간·상태 사전 확인 (FOR UPDATE 없이 빠른 조회)
         cursor.execute(
-            """SELECT g.status, g.validity, g.store_id, g.order_id,
-                      g.base_fee_rate, g.applied_fee_rate, g.applied_promo_id,
-                      o.amount AS total_price
+            """SELECT g.status, g.validity, o.amount AS total_price
                FROM gifticon g
                JOIN orders o ON g.order_id = o.id
                WHERE g.id = %s""",
@@ -218,13 +215,7 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
         if validity and validity < get_kst_now().date():
             return {'result': 2}  # 유효기간 만료
 
-        import math
         sales_amount = int(gifticon['total_price'])
-        applied_fee_rate = float(gifticon['applied_fee_rate']) if gifticon['applied_fee_rate'] else 0.0
-        fee_supply = math.floor(sales_amount * applied_fee_rate / 100)
-        fee_vat = round(fee_supply * 0.1)
-        fee_amount = fee_supply + fee_vat
-        settlement_amount = sales_amount - fee_amount
 
         connection.begin()
 
@@ -237,16 +228,11 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
             connection.rollback()
             return {'result': 1}  # 동시 요청으로 이미 사용 처리됨
 
-        cursor.execute("""
-            INSERT INTO settlement_details
-                (settlement_id, gifticon_id, sales_amount, fee_amount, settlement_amount,
-                 base_fee_rate, applied_promo_id, applied_fee_rate, fee_supply, fee_vat)
-            VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-        """, (
-            gifticon_id, sales_amount, fee_amount, settlement_amount,
-            gifticon['base_fee_rate'], gifticon['applied_promo_id'],
-            gifticon['applied_fee_rate'], fee_supply, fee_vat
-        ))
+        # settlement_details: 개별 기프티콘 매출액만 기록 (수수료는 정산 배치에서 총액 기준으로 산정)
+        cursor.execute(
+            "INSERT INTO settlement_details (settlement_id, gifticon_id, sales_amount) VALUES (NULL, %s, %s)",
+            (gifticon_id, sales_amount)
+        )
 
         connection.commit()
 

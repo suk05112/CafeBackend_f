@@ -924,31 +924,45 @@ def create_fee_promotion(promotion: dict, user=Depends(verify_firebase_token)):
 
     Body:
         - title: 프로모션 제목
+        - promo_type: 'FIXED_PERIOD' | 'PER_STORE_PERIOD' (기본 FIXED_PERIOD)
         - promo_fee_rate: 프로모션 수수료율 (%)
-        - start_date: 시작일 (YYYY-MM-DD)
-        - end_date: 종료일 (YYYY-MM-DD)
-        - store_ids: 적용할 매장 ID 목록 (list[int], 선택)
+        - start_date: 시작일 (YYYY-MM-DD) — FIXED_PERIOD 필수
+        - end_date: 종료일 (YYYY-MM-DD) — FIXED_PERIOD 필수
+        - store_ids: 적용할 매장 ID 목록 (list[int], 선택, FIXED_PERIOD만 사용)
     """
     try:
         from crud import promotion as promotion_crud
         from datetime import datetime
 
         title = (promotion.get('title') or '').strip()
+        promo_type = (promotion.get('promo_type') or promotion_crud.PROMO_TYPE_FIXED).strip()
         promo_fee_rate = promotion.get('promo_fee_rate')
         start_date_str = promotion.get('start_date')
         end_date_str = promotion.get('end_date')
         store_ids = promotion.get('store_ids') or []
 
-        if not title or not promo_fee_rate or not start_date_str or not end_date_str:
-            raise HTTPException(status_code=400, detail="title, promo_fee_rate, start_date, end_date are required")
+        if not title or promo_fee_rate is None:
+            raise HTTPException(status_code=400, detail="title, promo_fee_rate are required")
 
         if not isinstance(store_ids, list):
             raise HTTPException(status_code=400, detail="store_ids must be a list")
 
-        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
-        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
+        start_date = None
+        end_date = None
+        if promo_type == promotion_crud.PROMO_TYPE_FIXED:
+            if not start_date_str or not end_date_str:
+                raise HTTPException(status_code=400, detail="FIXED_PERIOD는 start_date, end_date가 필수입니다.")
+            start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date()
+            end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date()
 
-        promo_id = promotion_crud.create_fee_promotion(store_ids, float(promo_fee_rate), start_date, end_date, title)
+        promo_id = promotion_crud.create_fee_promotion(
+            store_ids=store_ids,
+            promo_fee_rate=float(promo_fee_rate),
+            title=title,
+            promo_type=promo_type,
+            start_date=start_date,
+            end_date=end_date,
+        )
         return {'message': 'Promotion created successfully', 'promo_id': promo_id}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -991,11 +1005,11 @@ def delete_fee_promotion(promo_id: int, user=Depends(verify_firebase_token)):
 
 @router.get("/stores/{store_id}/promotions")
 def get_store_promotions(store_id: int, user=Depends(verify_firebase_token)):
-    """매장별 프로모션 리스트 조회 (하위 호환)"""
+    """매장별 프로모션 리스트 조회 (활성 + 이력 통합, 최신순)"""
     try:
         from crud import promotion as promotion_crud
-        result = promotion_crud.get_fee_promotions_by_store(store_id)
-        return result
+        promotions = promotion_crud.get_promotions_by_store(store_id)
+        return {'promotions': promotions}
     except Exception as e:
         print(f"Error in get_store_promotions: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1019,14 +1033,28 @@ def get_store_promotion_history(
 
 
 @router.post("/stores/{store_id}/promotions/{promo_id}/apply")
-def apply_promotion_to_store(store_id: int, promo_id: int, user=Depends(verify_firebase_token)):
-    """매장에 프로모션 적용"""
+def apply_promotion_to_store(store_id: int, promo_id: int, body: dict = None, user=Depends(verify_firebase_token)):
+    """매장에 프로모션 등록
+
+    Body (PER_STORE_PERIOD만 사용):
+        - start_date: 시작일 (YYYY-MM-DD)
+        - end_date: 종료일 (YYYY-MM-DD)
+    """
     try:
         from crud import promotion as promotion_crud
-        applied = promotion_crud.apply_promotion_to_store(promo_id, store_id)
-        if not applied:
-            return {'message': 'Already applied'}
+        from datetime import datetime
+
+        body = body or {}
+        start_date_str = body.get('start_date')
+        end_date_str = body.get('end_date')
+
+        start_date = datetime.strptime(start_date_str, '%Y-%m-%d').date() if start_date_str else None
+        end_date = datetime.strptime(end_date_str, '%Y-%m-%d').date() if end_date_str else None
+
+        promotion_crud.apply_promotion_to_store(promo_id, store_id, start_date=start_date, end_date=end_date)
         return {'message': 'Promotion applied successfully'}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         print(f"Error in apply_promotion_to_store: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1034,12 +1062,12 @@ def apply_promotion_to_store(store_id: int, promo_id: int, user=Depends(verify_f
 
 @router.delete("/stores/{store_id}/promotions/{promo_id}")
 def remove_promotion_from_store(store_id: int, promo_id: int, user=Depends(verify_firebase_token)):
-    """매장 프로모션 적용 해제"""
+    """매장 프로모션 등록 해제 (soft delete)"""
     try:
         from crud import promotion as promotion_crud
         removed = promotion_crud.remove_promotion_from_store(promo_id, store_id)
         if not removed:
-            raise HTTPException(status_code=404, detail="Promotion mapping not found")
+            raise HTTPException(status_code=404, detail="활성 상태인 프로모션 매핑을 찾을 수 없습니다.")
         return {'message': 'Promotion removed successfully'}
     except HTTPException:
         raise

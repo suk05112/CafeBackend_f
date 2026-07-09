@@ -6,7 +6,13 @@ migration_history 테이블을 기반으로 미적용 파일만 실행하며, ro
 import os
 import re
 import sys
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+KST = timezone(timedelta(hours=9))
+
+
+def now_kst():
+    return datetime.now(KST).replace(tzinfo=None)
 from pathlib import Path
 
 project_root = Path(__file__).parent.parent
@@ -92,7 +98,7 @@ def record_applied(connection, version, filename):
     with connection.cursor() as cursor:
         cursor.execute(
             "INSERT INTO migration_history (version, filename, applied_at, status) VALUES (%s, %s, %s, 'applied')",
-            (version, filename, datetime.now()),
+            (version, filename, now_kst()),
         )
     connection.commit()
 
@@ -101,7 +107,7 @@ def record_rolled_back(connection, version):
     with connection.cursor() as cursor:
         cursor.execute(
             "UPDATE migration_history SET rolled_back_at = %s, status = 'rolled_back' WHERE version = %s AND status = 'applied'",
-            (datetime.now(), version),
+            (now_kst(), version),
         )
     connection.commit()
 
