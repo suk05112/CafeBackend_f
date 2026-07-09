@@ -10,6 +10,250 @@ from db.session import get_db_connection, close_db_connection
 from crud import promotion as promotion_crud
 
 
+# ── 대시보드 API CRUD (GNB-164 / GNB-165 / GNB-166) ──────────────────────────
+
+def get_dashboard_summary() -> Dict:
+    """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
+
+    집계 기준:
+    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED 상태(미사용) 기프티콘의 menu.price 합계
+    - current_cycle: settlement_details.settlement_id IS NULL 건 합계 (현재 진행 중인 주기)
+    - cumulative: stats_daily_platform 전체 SUM
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        # 발행잔액: 미사용(UNUSED/PENDING/EXPIRED) 기프티콘 menu.price 합계, 환불/취소 제외
+        cursor.execute("""
+            SELECT COALESCE(SUM(m.price), 0) AS issued_balance
+            FROM gifticon g
+            JOIN menu m ON g.menu_id = m.id
+            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED')
+        """)
+        issued_balance = int(cursor.fetchone()['issued_balance'] or 0)
+
+        # 현재 진행 중인 정산 주기 조회
+        cursor.execute("""
+            SELECT cycle_id, period_start_date, period_end_date, payout_date
+            FROM settlement_cycles
+            WHERE status = 'OPEN'
+            ORDER BY period_start_date DESC
+            LIMIT 1
+        """)
+        cycle_row = cursor.fetchone()
+
+        current_cycle = None
+        if cycle_row:
+            cycle_id = cycle_row['cycle_id']
+            period_start = cycle_row['period_start_date']
+            period_end = cycle_row['period_end_date']
+            payout_date = cycle_row['payout_date']
+
+            # 이번 주기 미연결 settlement_details 집계 (정산 예정)
+            cursor.execute("""
+                SELECT
+                    COUNT(DISTINCT g.store_id) AS expected_store_count,
+                    COALESCE(SUM(sd.sales_amount), 0) AS expected_settlement_amount
+                FROM settlement_details sd
+                JOIN gifticon g ON sd.gifticon_id = g.id
+                WHERE sd.settlement_id IS NULL
+                  AND g.used_at >= %s
+                  AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            """, (period_start, period_end))
+            cycle_stats = cursor.fetchone()
+
+            # 기본 수수료율로 예상 수수료 계산
+            cursor.execute("SELECT base_fee_rate FROM platform_config ORDER BY config_id DESC LIMIT 1")
+            fee_row = cursor.fetchone()
+            base_fee_rate = float(fee_row['base_fee_rate']) if fee_row else 0.0
+            expected_amount = int(cycle_stats['expected_settlement_amount'] or 0)
+            expected_fee = math.floor(expected_amount * base_fee_rate / 100)
+
+            current_cycle = {
+                'cycle_id': cycle_id,
+                'period_start': period_start.isoformat() if period_start else None,
+                'period_end': period_end.isoformat() if period_end else None,
+                'payout_date': payout_date.isoformat() if payout_date else None,
+                'expected_settlement_amount': expected_amount,
+                'expected_store_count': int(cycle_stats['expected_store_count'] or 0),
+                'expected_platform_fee': expected_fee,
+            }
+
+        # 누적 지표: stats_daily_platform 전체 SUM
+        cursor.execute("""
+            SELECT
+                COALESCE(SUM(total_used_count), 0) AS cumulative_used_count,
+                COALESCE(SUM(total_sales_amount), 0) AS cumulative_used_amount
+            FROM stats_daily_platform
+        """)
+        cum = cursor.fetchone()
+
+        return {
+            'issued_balance': issued_balance,
+            'current_cycle': current_cycle,
+            'cumulative': {
+                'used_gifticon_count': int(cum['cumulative_used_count'] or 0),
+                'used_gifticon_amount': int(cum['cumulative_used_amount'] or 0),
+            },
+        }
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
+def get_dashboard_stats(period: str) -> Dict:
+    """기간별 운영 통계: stats_daily_platform을 period 단위로 GROUP BY 집계
+
+    period: daily | weekly | monthly | yearly | all
+
+    집계 기준:
+    - 발행 수/금액: gifticon.created_at 기준, PENDING/REFUNDED/CANCELED 제외, 발행금액은 menu.price
+    - 사용 수/금액: gifticon.used_at 기준 USED, 금액은 settlement_details.sales_amount 스냅샷
+    - 결제 금액: orders COMPLETED 합계 - 환불액 (당일 차감)
+    - 수수료: 당일 사용액 × platform_config.base_fee_rate (원미만 절사)
+    - 증감률: 프론트에서 동적 계산 (백엔드는 값만 제공)
+    """
+    VALID_PERIODS = ('daily', 'weekly', 'monthly', 'yearly', 'all')
+    if period not in VALID_PERIODS:
+        raise ValueError(f"period must be one of {VALID_PERIODS}")
+
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        if period == 'daily':
+            group_expr = "DATE_FORMAT(target_date, '%Y-%m-%d')"
+        elif period == 'weekly':
+            # ISO 주 기준 (월요일 시작)
+            group_expr = "DATE_FORMAT(DATE_SUB(target_date, INTERVAL WEEKDAY(target_date) DAY), '%Y-%m-%d')"
+        elif period == 'monthly':
+            group_expr = "DATE_FORMAT(target_date, '%Y-%m')"
+        elif period == 'yearly':
+            group_expr = "DATE_FORMAT(target_date, '%Y')"
+        else:  # all
+            group_expr = "'전체'"
+
+        cursor.execute(f"""
+            SELECT
+                {group_expr} AS label,
+                SUM(new_store_count)        AS new_store_count,
+                SUM(total_issued_count)     AS issued_gifticon_count,
+                SUM(total_issued_amount)    AS issued_gifticon_amount,
+                SUM(total_used_count)       AS used_gifticon_count,
+                SUM(total_sales_amount)     AS used_gifticon_amount,
+                SUM(total_payment_amount)   AS total_payment_amount,
+                SUM(total_fee_revenue)      AS platform_fee_revenue
+            FROM stats_daily_platform
+            GROUP BY label
+            ORDER BY label
+        """)
+        rows = cursor.fetchall()
+
+        series = [
+            {
+                'label': r['label'],
+                'new_store_count': int(r['new_store_count'] or 0),
+                'issued_gifticon_count': int(r['issued_gifticon_count'] or 0),
+                'issued_gifticon_amount': int(r['issued_gifticon_amount'] or 0),
+                'used_gifticon_count': int(r['used_gifticon_count'] or 0),
+                'used_gifticon_amount': int(r['used_gifticon_amount'] or 0),
+                'total_payment_amount': int(r['total_payment_amount'] or 0),
+                'platform_fee_revenue': int(r['platform_fee_revenue'] or 0),
+            }
+            for r in rows
+        ]
+
+        return {'period': period, 'series': series}
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
+def get_dashboard_settlement_cycles(page: int = 1, size: int = 20) -> Dict:
+    """정산 주기별 플랫폼 매출 이력
+
+    settlement 테이블 GROUP BY cycle_id로 집계. 별도 요약 테이블 없음.
+
+    집계 기준:
+    - total_settlement_amount: 매장 지급 총액 (net_payout_amount 합계, COMPLETED/PENDING)
+    - settled_store_count: 정산 건수 (매장 수, FAILED 제외)
+    - platform_fee_amount: 플랫폼 수수료 공급가 합계
+    - platform_vat_amount: 플랫폼 부가세 합계
+    - unused_amount: 해당 주기 발행 기프티콘 중 미사용(UNUSED/PENDING/EXPIRED) 금액
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        offset = (page - 1) * size
+
+        cursor.execute("""
+            SELECT COUNT(DISTINCT s.cycle_id) AS total
+            FROM settlement s
+            JOIN settlement_cycles sc ON s.cycle_id = sc.cycle_id
+        """)
+        total = int(cursor.fetchone()['total'] or 0)
+
+        cursor.execute("""
+            SELECT
+                sc.cycle_id,
+                sc.period_start_date,
+                sc.period_end_date,
+                sc.payout_date,
+                COALESCE(SUM(CASE WHEN s.status IN ('COMPLETED','PENDING') THEN s.net_payout_amount ELSE 0 END), 0)
+                    AS total_settlement_amount,
+                COUNT(CASE WHEN s.status NOT IN ('FAILED') THEN 1 END)
+                    AS settled_store_count,
+                COALESCE(SUM(CASE WHEN s.status IN ('COMPLETED','PENDING') THEN s.original_fee_supply ELSE 0 END), 0)
+                    AS platform_fee_amount,
+                COALESCE(SUM(CASE WHEN s.status IN ('COMPLETED','PENDING') THEN s.original_fee_vat ELSE 0 END), 0)
+                    AS platform_vat_amount
+            FROM settlement_cycles sc
+            LEFT JOIN settlement s ON sc.cycle_id = s.cycle_id
+            GROUP BY sc.cycle_id, sc.period_start_date, sc.period_end_date, sc.payout_date
+            ORDER BY sc.period_start_date DESC
+            LIMIT %s OFFSET %s
+        """, (size, offset))
+        rows = cursor.fetchall()
+
+        items = []
+        for r in rows:
+            period_start = r['period_start_date']
+            period_end = r['period_end_date']
+
+            # 해당 주기 미사용 금액: 기간 내 발행된 기프티콘 중 미사용 상태 menu.price 합계
+            cursor.execute("""
+                SELECT COALESCE(SUM(m.price), 0) AS unused_amount
+                FROM gifticon g
+                JOIN menu m ON g.menu_id = m.id
+                WHERE g.created_at >= %s
+                  AND g.created_at < DATE_ADD(%s, INTERVAL 1 DAY)
+                  AND g.status IN ('UNUSED', 'PENDING', 'EXPIRED')
+            """, (period_start, period_end))
+            unused = int(cursor.fetchone()['unused_amount'] or 0)
+
+            items.append({
+                'cycle_id': r['cycle_id'],
+                'period_start': period_start.isoformat() if period_start else None,
+                'period_end': period_end.isoformat() if period_end else None,
+                'payout_date': r['payout_date'].isoformat() if r['payout_date'] else None,
+                'total_settlement_amount': int(r['total_settlement_amount'] or 0),
+                'settled_store_count': int(r['settled_store_count'] or 0),
+                'platform_fee_amount': int(r['platform_fee_amount'] or 0),
+                'platform_vat_amount': int(r['platform_vat_amount'] or 0),
+                'unused_amount': unused,
+            })
+
+        return {
+            'items': items,
+            'total': total,
+            'page': page,
+            'size': size,
+            'total_pages': math.ceil(total / size) if total else 0,
+        }
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
 def _calc_fee(sales_amount: int, fee_rate_pct: float) -> tuple[int, int, int]:
     """수수료 공급가/VAT/총액 계산 (원미만 절사, VAT 반올림)"""
     supply = math.floor(sales_amount * fee_rate_pct / 100)
