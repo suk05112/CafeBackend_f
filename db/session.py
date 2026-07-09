@@ -3,6 +3,7 @@ from pymysql.cursors import DictCursor
 from queue import Queue
 import threading
 from core.config import settings
+from app.system_logger import log_db_error
 
 class ConnectionPool:
     def __init__(self, max_connections=20):
@@ -36,7 +37,8 @@ class ConnectionPool:
             try:
                 conn.ping(reconnect=True)
                 return conn
-            except Exception:
+            except Exception as e:
+                log_db_error("DB ping/reconnect 실패", e)
                 try:
                     conn.close()
                 except Exception:
@@ -54,15 +56,18 @@ class ConnectionPool:
         if create_new:
             try:
                 return self._create_connection()
-            except Exception:
+            except Exception as e:
+                log_db_error("DB 신규 연결 생성 실패", e)
                 with self._lock:
                     if self._created > 0:
                         self._created -= 1
                 raise
         try:
             return self._pool.get(timeout=5)
-        except Exception:
-            raise Exception("DB 연결 풀 초과: 잠시 후 다시 시도해주세요")
+        except Exception as e:
+            err = Exception("DB 연결 풀 초과: 잠시 후 다시 시도해주세요")
+            log_db_error("DB 연결 풀 초과", err)
+            raise err
 
     def return_connection(self, conn):
         rollback_ok = True

@@ -4,6 +4,7 @@ from datetime import datetime, timezone, timedelta
 from loguru import logger
 
 from db.session import get_db_connection, close_db_connection
+from app.system_logger import log_scheduler_error
 
 KST = timezone(timedelta(hours=9))
 
@@ -54,6 +55,7 @@ def expire_pending_orders():
     except Exception as e:
         connection.rollback()
         logger.error(f"[scheduler] expire_pending_orders 오류: {e}")
+        log_scheduler_error("expire_pending_orders", e)
     finally:
         if lock_acquired:
             _release_lock(cursor, "expire_pending_orders")
@@ -101,6 +103,7 @@ def delete_old_records():
     except Exception as e:
         connection.rollback()
         logger.error(f"[scheduler] delete_old_records 오류: {e}")
+        log_scheduler_error("delete_old_records", e)
     finally:
         if lock_acquired:
             _release_lock(cursor, "delete_old_records")

@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from typing import Optional
 from loguru import logger
 from core.config import settings
+from app.system_logger import log_external_api_error
 
 ALIGO_SEND_URL = "https://kakaoapi.aligo.in/akv10/alimtalk/send/"
 
@@ -88,9 +89,11 @@ def _send(
                 logger.info(f"[알림톡] {tpl_code} 발송 성공 | mid={result['info']['mid']} scnt={result['info']['scnt']}")
             else:
                 logger.error(f"[알림톡] {tpl_code} 발송 실패 | {result.get('message')}")
+                log_external_api_error("Aligo", f"tpl_code={tpl_code} 발송 실패: {result.get('message')}")
             return result
     except Exception as e:
         logger.error(f"[알림톡] {tpl_code} 발송 오류: {e}")
+        log_external_api_error("Aligo", f"tpl_code={tpl_code} 발송 오류", e)
         return {"code": -1, "message": str(e)}
 
 

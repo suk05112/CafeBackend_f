@@ -27,6 +27,12 @@ from core.config import settings
 from core.exceptions import InternalError, internal_error_handler
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from core.scheduler import create_scheduler
+from app.system_logger import (
+    log_process_event,
+    log_app_startup_snapshot,
+    log_rate_limit,
+    log_unhandled_exception,
+)
 
 # 모든 엔드포인트는 api/endpoints로 통합됨
 from api.endpoints import store, menu, settlement, common, admin, user, gifticon, owner, order
@@ -119,16 +125,26 @@ async def lifespan(app: FastAPI):
     if not settings.payletter_api_host:
         raise RuntimeError("PAYLETTER_API_HOST 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
 
+    # 앱 시작 환경 스냅샷 로깅 (민감정보 제외)
+    log_app_startup_snapshot({
+        "env": env,
+        "db_host": settings.db_host,
+        "db_name": settings.db_name,
+        "s3_bucket": bucket_name,
+    })
+
     # 스케줄러 시작 (15분마다 PENDING 만료, 매일 03:00 오래된 레코드 삭제)
     scheduler = create_scheduler()
     scheduler.start()
     print("스케줄러 시작 완료")
+    log_process_event("STARTUP", f"env={env}, scheduler started")
 
     yield  # 서버가 실행 중일 때
 
     # 서버 종료 시 스케줄러 정리
     scheduler.shutdown(wait=False)
     print("스케줄러 종료 완료")
+    log_process_event("SHUTDOWN", f"env={env}, scheduler stopped")
 
 # Rate Limiter 설정
 limiter = Limiter(key_func=get_remote_address)
@@ -136,7 +152,14 @@ limiter = Limiter(key_func=get_remote_address)
 # FastAPI 앱 생성
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    log_rate_limit(
+        client_ip=request.client.host if request.client else "unknown",
+        path=request.url.path,
+    )
+    return await _rate_limit_exceeded_handler(request, exc)
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 app.add_exception_handler(InternalError, internal_error_handler)
 # app = FastAPI(redirect_slashes=False)
 # app.include_router(router)
@@ -170,6 +193,15 @@ from api.endpoints.owner import mok_return as _mok_return
 app.add_api_route(f'{prefix}/', _mok_return, methods=["POST"], tags=["Owner"])
 app.add_api_route(f'{prefix}', _mok_return, methods=["POST"], tags=["Owner"])
     
+
+@app.middleware("http")
+async def catch_unhandled_exceptions(request: Request, call_next):
+    try:
+        return await call_next(request)
+    except Exception as exc:
+        log_unhandled_exception(exc, context=f"{request.method} {request.url.path}")
+        raise
+
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):

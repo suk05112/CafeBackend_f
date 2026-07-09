@@ -6,6 +6,7 @@ import traceback
 from typing import Union, Optional
 from pydantic import BaseModel
 from loguru import logger
+from app.system_logger import log_external_api_error
 
 import pymysql
 from db.session import get_db_connection, close_db_connection
@@ -140,6 +141,7 @@ def _request_payletter_url(gifticon, user_id: int, order_no: str) -> dict:
         pl_data = json.loads(pl_res.read().decode("utf-8"))
     except (TimeoutError, OSError) as e:
         logger.error(f"Payletter request timeout/network error: {e}")
+        log_external_api_error("Payletter", "결제 URL 요청 타임아웃/네트워크 오류", e)
         raise HTTPException(
             status_code=status.HTTP_504_GATEWAY_TIMEOUT,
             detail="결제 요청 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
@@ -149,6 +151,7 @@ def _request_payletter_url(gifticon, user_id: int, order_no: str) -> dict:
 
     if pl_res.status != 200 or not pl_data.get("token"):
         logger.error(f"Payletter request failed: {pl_data}")
+        log_external_api_error("Payletter", f"결제 URL 발급 실패: {pl_data.get('message', '')}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"결제 요청 실패: {pl_data.get('message', '페이레터 오류')}"
