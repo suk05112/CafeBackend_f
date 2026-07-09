@@ -977,12 +977,13 @@ def get_user_terms_status(user_id: int):
 
 
 @router.post("/terms/agree")
-def post_terms_agree(body: TermsAgreeRequest):
+def post_terms_agree(body: TermsAgreeRequest, request: Request):
     """약관 동의 저장 (회원가입/재동의 시). 필수 약관은 반드시 agreed=True."""
     connection = get_db_connection()
     try:
+        agreed_ip = request.headers.get("X-Forwarded-For", request.client.host)
         agreements = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in body.agreements]
-        success, err_msg, agreed_count = terms_crud.save_user_agreements(connection, body.user_id, agreements)
+        success, err_msg, agreed_count = terms_crud.save_user_agreements(connection, body.user_id, agreements, agreed_ip)
         if not success:
             raise HTTPException(status_code=400, detail=err_msg)
         return {"success": True, "message": "약관 동의가 저장되었습니다.", "agreed_count": agreed_count}

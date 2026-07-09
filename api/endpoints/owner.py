@@ -85,7 +85,7 @@ async def check_duplicate(
 
 
 @router.post("/register")
-async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
+async def registerOwner(owner: Owner, request: Request, user=Depends(verify_firebase_token)):
     """사장님 회원가입.
 
     앱은 사전에 /mok/client-info + mobileOK 표준창을 통해 본인확인을 완료한 뒤
@@ -95,6 +95,13 @@ async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
     connection = get_db_connection()
 
     try:
+        # 약관 동의 사전 검증
+        if owner.agreements:
+            agreements_list = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in owner.agreements]
+            valid, err_msg = terms_crud.validate_owner_agreements(connection, agreements_list)
+            if not valid:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err_msg)
+
         with connection.cursor() as cursor:
             # 본인확인 결과 조회 (FOR UPDATE로 재사용 방지)
             cursor.execute(
@@ -135,6 +142,14 @@ async def registerOwner(owner: Owner, user=Depends(verify_firebase_token)):
                 (owner.client_tx_id,)
             )
         connection.commit()
+
+        # 약관 동의 저장
+        if owner.agreements:
+            agreed_ip = request.headers.get("X-Forwarded-For", request.client.host)
+            agreements_list = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in owner.agreements]
+            success, err_msg, _ = terms_crud.save_owner_agreements(connection, owner_id, agreements_list, agreed_ip)
+            if not success:
+                logger.warning(f"registerOwner 약관 저장 실패 owner_id={owner_id}: {err_msg}")
 
         print("owner_id", owner_id)
         return {'owner_id': owner_id}
@@ -320,12 +335,13 @@ def get_owner_terms_status(owner_id: int):
 
 
 @router.post("/terms/agree")
-def post_owner_terms_agree(body: OwnerTermsAgreeRequest):
+def post_owner_terms_agree(body: OwnerTermsAgreeRequest, request: Request):
     """약관 동의 저장 (회원가입/재동의 시). 필수 약관은 반드시 agreed=True."""
     connection = get_db_connection()
     try:
+        agreed_ip = request.headers.get("X-Forwarded-For", request.client.host)
         agreements = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in body.agreements]
-        success, err_msg, agreed_count = terms_crud.save_owner_agreements(connection, body.owner_id, agreements)
+        success, err_msg, agreed_count = terms_crud.save_owner_agreements(connection, body.owner_id, agreements, agreed_ip)
         if not success:
             raise HTTPException(status_code=400, detail=err_msg)
         return {"success": True, "message": "약관 동의가 저장되었습니다.", "agreed_count": agreed_count}

@@ -178,8 +178,38 @@ def validate_user_agreements(conn, agreements: List[Dict]) -> Tuple[bool, Option
         cursor.close()
 
 
+def validate_owner_agreements(conn, agreements: List[Dict]) -> Tuple[bool, Optional[str]]:
+    """약관 동의 검증만 수행 (저장 없음). 필수 약관(required)은 agreed=True 여야 함."""
+    cursor = conn.cursor(pymysql.cursors.DictCursor)
+    try:
+        today = date.today()
+        cursor.execute("""
+            SELECT t.id AS term_id, t.required, tv.id AS term_version_id
+            FROM terms t
+            INNER JOIN terms_version tv ON tv.term_id = t.id
+            INNER JOIN (
+                SELECT term_id, MAX(id) AS max_id FROM terms_version
+                WHERE effective_date <= %s
+                GROUP BY term_id
+            ) latest ON latest.term_id = t.id AND latest.max_id = tv.id
+            WHERE tv.effective_date <= %s AND t.target = 'owner'
+        """, (today, today))
+        current_map = {r["term_id"]: r for r in cursor.fetchall()}
+        req_term_ids = {tid for tid, r in current_map.items() if r["required"]}
+        by_term = {a["term_id"]: a for a in agreements}
+        for term_id in req_term_ids:
+            if term_id not in by_term or not by_term[term_id].get("agreed"):
+                cursor.execute("SELECT title FROM terms WHERE id = %s", (term_id,))
+                row = cursor.fetchone()
+                title = row["title"] if row else "필수 약관"
+                return False, f"필수 약관({title})에 동의해 주세요."
+        return True, None
+    finally:
+        cursor.close()
+
+
 def save_user_agreements(
-    conn, user_id: int, agreements: List[Dict]
+    conn, user_id: int, agreements: List[Dict], agreed_ip: Optional[str] = None
 ) -> Tuple[bool, Optional[str], int]:
     """
     agreements: [{"term_id": int, "term_version_id": int, "agreed": bool}, ...]
@@ -222,10 +252,10 @@ def save_user_agreements(
             if not agreed:
                 continue
             cursor.execute("""
-                INSERT INTO user_terms_agreement (user_id, term_version_id, agreed_at)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at)
-            """, (user_id, term_version_id, datetime.now()))
+                INSERT INTO user_terms_agreement (user_id, term_version_id, agreed_at, agreed_ip)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at), agreed_ip = VALUES(agreed_ip)
+            """, (user_id, term_version_id, datetime.now(), agreed_ip))
             agreed_count += 1
         conn.commit()
         return True, None, agreed_count
@@ -326,7 +356,7 @@ def get_owner_terms_status(conn, owner_id: int) -> Dict:
 
 
 def save_owner_agreements(
-    conn, owner_id: int, agreements: List[Dict]
+    conn, owner_id: int, agreements: List[Dict], agreed_ip: Optional[str] = None
 ) -> Tuple[bool, Optional[str], int]:
     """사장님 약관 동의 저장. 필수 약관은 agreed=True 여야 함."""
     cursor = conn.cursor(pymysql.cursors.DictCursor)
@@ -364,10 +394,10 @@ def save_owner_agreements(
             if not agreed:
                 continue
             cursor.execute("""
-                INSERT INTO owner_terms_agreement (owner_id, term_version_id, agreed_at)
-                VALUES (%s, %s, %s)
-                ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at)
-            """, (owner_id, term_version_id, datetime.now()))
+                INSERT INTO owner_terms_agreement (owner_id, term_version_id, agreed_at, agreed_ip)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE agreed_at = VALUES(agreed_at), agreed_ip = VALUES(agreed_ip)
+            """, (owner_id, term_version_id, datetime.now(), agreed_ip))
             agreed_count += 1
         conn.commit()
         return True, None, agreed_count
