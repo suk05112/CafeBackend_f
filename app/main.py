@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from contextlib import asynccontextmanager
 from starlette.concurrency import iterate_in_threadpool
 from app import firebase_init  
@@ -146,8 +147,8 @@ async def lifespan(app: FastAPI):
     print("스케줄러 종료 완료")
     log_process_event("SHUTDOWN", f"env={env}, scheduler stopped")
 
-# Rate Limiter 설정
-limiter = Limiter(key_func=get_remote_address)
+# Rate Limiter 설정 (전역 기본값: IP당 60req/min)
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 # FastAPI 앱 생성
 app = FastAPI(lifespan=lifespan)
@@ -161,6 +162,7 @@ async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
 
 app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 app.add_exception_handler(InternalError, internal_error_handler)
+app.add_middleware(SlowAPIMiddleware)
 # app = FastAPI(redirect_slashes=False)
 # app.include_router(router)
 
