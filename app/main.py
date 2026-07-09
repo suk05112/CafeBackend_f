@@ -31,7 +31,6 @@ from app.system_logger import (
     log_process_event,
     log_app_startup_snapshot,
     log_rate_limit,
-    log_unhandled_exception,
 )
 
 # 모든 엔드포인트는 api/endpoints로 통합됨
@@ -193,15 +192,6 @@ from api.endpoints.owner import mok_return as _mok_return
 app.add_api_route(f'{prefix}/', _mok_return, methods=["POST"], tags=["Owner"])
 app.add_api_route(f'{prefix}', _mok_return, methods=["POST"], tags=["Owner"])
     
-
-@app.middleware("http")
-async def catch_unhandled_exceptions(request: Request, call_next):
-    try:
-        return await call_next(request)
-    except Exception as exc:
-        log_unhandled_exception(exc, context=f"{request.method} {request.url.path}")
-        raise
-
 
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
