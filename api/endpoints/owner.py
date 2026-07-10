@@ -24,6 +24,7 @@ from models.owner import OwnerFindPw
 from models.owner import OwnerInquiry
 from models.owner import OwnerInquiryResponse
 from models.owner import OwnerTermsAgreeRequest
+from models.owner import OwnerResetPassword
 from models.push_token import PushTokenCreate, PushTokenUpdate
 from app.fcm_service import send_fcm_notification_to_owner
 from app.auth.auth_dependency import verify_firebase_token, verify_firebase_token_any
@@ -39,9 +40,19 @@ from datetime import datetime, timezone
 from core.config import settings
 import core.dreamsecurity as dreamsecurity
 from fastapi.responses import HTMLResponse, RedirectResponse
+from firebase_admin import auth as firebase_auth
+from app.firebase_init import owner_app
+import core.crypto as crypto
 
 router = APIRouter()
 limiter = Limiter(key_func=get_remote_address)
+
+
+def _normalize_phone(phone: str) -> str:
+    phone = re.sub(r'[\s\-()]', '', phone)
+    if phone.startswith('+82'):
+        phone = '0' + phone[3:]
+    return phone
 
 
 @router.get("/check-duplicate")
@@ -360,7 +371,7 @@ async def findOwnerId(owner: OwnerFind):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        cursor.execute('''SELECT * FROM owner WHERE name=%s AND phone=%s;''', (owner.name, owner.phone_number))
+        cursor.execute('''SELECT * FROM owner WHERE name=%s AND phone=%s;''', (owner.name, _normalize_phone(owner.phone_number)))
         user = cursor.fetchone()  # 한 행만 가져옴
         
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
@@ -369,7 +380,7 @@ async def findOwnerId(owner: OwnerFind):
             return {
                 'owner_id': user['id'],
                 'created_time': user['created_at'],
-                'email': user['email'],
+                'login_id': user['login_id'],
             }
         else:
             return {'msg': "unregistered user"}
@@ -387,7 +398,7 @@ async def findOwnerPW(owner: OwnerFindPw):
     try:
         cursor.execute(
             "SELECT * FROM owner WHERE login_id = %s AND phone = %s",
-            (owner.login_id, owner.phone_number)
+            (owner.login_id, _normalize_phone(owner.phone_number))
         )
         user = cursor.fetchone()  # 한 행만 가져옴
         
@@ -1371,3 +1382,39 @@ console.log('resultCode:', params.get('resultCode'));
 </script>
 </body>
 </html>"""
+
+
+@router.get("/reset-password/public-key")
+async def get_reset_password_public_key():
+    return {"public_key": crypto.get_public_key_pem()}
+
+
+@router.post("/reset-password")
+async def reset_password(body: OwnerResetPassword):
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT uid FROM owner WHERE login_id = %s AND phone = %s",
+                (body.login_id, _normalize_phone(body.phone_number)),
+            )
+            row = cursor.fetchone()
+
+        if not row:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="일치하는 계정이 없습니다.")
+
+        try:
+            new_password = crypto.decrypt_password(body.encrypted_password)
+        except ValueError:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="비밀번호 복호화에 실패했습니다.")
+
+        firebase_auth.update_user(row["uid"], password=new_password, app=owner_app)
+
+        return {"msg": "success"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise InternalError(e, "reset_password")
+    finally:
+        close_db_connection(connection)

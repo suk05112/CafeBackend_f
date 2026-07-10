@@ -23,6 +23,11 @@ class OwnerFindPw(BaseModel):
     login_id: str
     phone_number: str
     
+class OwnerResetPassword(BaseModel):
+    login_id: str
+    phone_number: str
+    encrypted_password: str
+
 class OwnerInquiry(BaseModel):
     title: str
     content: str
