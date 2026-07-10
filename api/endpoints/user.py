@@ -1145,7 +1145,17 @@ async def registerPushToken(
                 existing['id']
             ))
         else:
-            # 새로 저장
+            # 최초 등록 시 마케팅 약관 동의 이력 조회 (레코드 존재 = 동의)
+            cursor.execute('''
+                SELECT 1
+                FROM user_terms_agreement uta
+                JOIN terms_version tv ON uta.term_version_id = tv.id
+                JOIN terms t ON tv.term_id = t.id
+                WHERE uta.user_id = %s AND t.term_type = 'MARKETING'
+                LIMIT 1
+            ''', (user_id,))
+            allow_marketing = cursor.fetchone() is not None
+
             cursor.execute('''
                 INSERT INTO user_push_tokens (
                     user_id, fcm_token, device_type,
@@ -1157,7 +1167,7 @@ async def registerPushToken(
                 push_token.fcm_token,
                 push_token.device_type.value,
                 1 if push_token.allow_service_push else 0,
-                1 if push_token.allow_marketing_push else 0,
+                1 if allow_marketing else 0,
                 app_version,
                 os_version
             ))
