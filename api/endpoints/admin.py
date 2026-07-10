@@ -87,19 +87,21 @@ def get_dashboard_summary(user=Depends(verify_firebase_token)):
 @router.get("/dashboard/stats")
 def get_dashboard_stats(
     period: str = Query('monthly', description="집계 단위: daily | weekly | monthly | yearly | all"),
+    page: int = Query(1, ge=1, description="페이지 번호 (daily/weekly/monthly에서만 적용)"),
+    size: int = Query(30, ge=1, le=100, description="페이지당 항목 수"),
     user=Depends(verify_firebase_token),
 ):
     """기간별 운영 통계 (stats_daily_platform 기반)
 
-    - 발행 수/금액: gifticon.created_at 기준, PENDING/REFUNDED/CANCELED 제외, 금액은 menu.price
-    - 사용 수/금액: gifticon.used_at 기준 USED, 금액은 settlement_details.sales_amount 스냅샷
-    - 결제 금액: orders COMPLETED - 당일 환불액
-    - 수수료: 사용액 × platform_config.base_fee_rate (원미만 절사)
-    - 증감률: 프론트에서 전기 대비 동적 계산 (백엔드는 값만 제공)
+    GNB-169:
+    - daily/weekly/monthly: 최신순 30개 페이지네이션, total_row(전체 합계) 항상 포함
+    - yearly/all: 페이지네이션 없음
+    - 수수료: PG 수수료 차감 후 순수수료 (배치 집계값)
+    - weekly 라벨: 2026-01-01~2026-01-07 형식
     """
     try:
         from crud import stats as stats_crud
-        return stats_crud.get_dashboard_stats(period)
+        return stats_crud.get_dashboard_stats(period, page=page, size=size)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:

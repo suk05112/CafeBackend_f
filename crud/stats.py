@@ -101,17 +101,17 @@ def get_dashboard_summary() -> Dict:
         close_db_connection(connection)
 
 
-def get_dashboard_stats(period: str) -> Dict:
+def get_dashboard_stats(period: str, page: int = 1, size: int = 30) -> Dict:
     """기간별 운영 통계: stats_daily_platform을 period 단위로 GROUP BY 집계
 
     period: daily | weekly | monthly | yearly | all
+    - daily/weekly/monthly: 최신순 30개 페이지네이션, 전체 합계 행 별도 반환
+    - yearly/all: 페이지네이션 없음
 
-    집계 기준:
-    - 발행 수/금액: gifticon.created_at 기준, PENDING/REFUNDED/CANCELED 제외, 발행금액은 menu.price
-    - 사용 수/금액: gifticon.used_at 기준 USED, 금액은 settlement_details.sales_amount 스냅샷
-    - 결제 금액: orders COMPLETED 합계 - 환불액 (당일 차감)
-    - 수수료: 당일 사용액 × platform_config.base_fee_rate (원미만 절사)
-    - 증감률: 프론트에서 동적 계산 (백엔드는 값만 제공)
+    GNB-169:
+    - weekly 라벨: 주 시작~종료 범위 표시 (예: 2026-01-01~2026-01-07)
+    - total_row: 전 기간 합계 항상 포함
+    - 수수료: PG 수수료 차감 후 순수수료 (배치 집계값 사용)
     """
     VALID_PERIODS = ('daily', 'weekly', 'monthly', 'yearly', 'all')
     if period not in VALID_PERIODS:
@@ -120,21 +120,9 @@ def get_dashboard_stats(period: str) -> Dict:
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        if period == 'daily':
-            group_expr = "DATE_FORMAT(target_date, '%Y-%m-%d')"
-        elif period == 'weekly':
-            # ISO 주 기준 (월요일 시작)
-            group_expr = "DATE_FORMAT(DATE_SUB(target_date, INTERVAL WEEKDAY(target_date) DAY), '%Y-%m-%d')"
-        elif period == 'monthly':
-            group_expr = "DATE_FORMAT(target_date, '%Y-%m')"
-        elif period == 'yearly':
-            group_expr = "DATE_FORMAT(target_date, '%Y')"
-        else:  # all
-            group_expr = "'전체'"
-
-        cursor.execute(f"""
+        # 전체 합계 행 (항상 계산)
+        cursor.execute("""
             SELECT
-                {group_expr} AS label,
                 SUM(new_store_count)        AS new_store_count,
                 SUM(total_issued_count)     AS issued_gifticon_count,
                 SUM(total_issued_amount)    AS issued_gifticon_amount,
@@ -143,14 +131,97 @@ def get_dashboard_stats(period: str) -> Dict:
                 SUM(total_payment_amount)   AS total_payment_amount,
                 SUM(total_fee_revenue)      AS platform_fee_revenue
             FROM stats_daily_platform
-            GROUP BY label
-            ORDER BY label
         """)
-        rows = cursor.fetchall()
+        tot = cursor.fetchone()
+        total_row = {
+            'label': '전체',
+            'is_total': True,
+            'new_store_count': int(tot['new_store_count'] or 0),
+            'issued_gifticon_count': int(tot['issued_gifticon_count'] or 0),
+            'issued_gifticon_amount': int(tot['issued_gifticon_amount'] or 0),
+            'used_gifticon_count': int(tot['used_gifticon_count'] or 0),
+            'used_gifticon_amount': int(tot['used_gifticon_amount'] or 0),
+            'total_payment_amount': int(tot['total_payment_amount'] or 0),
+            'platform_fee_revenue': int(tot['platform_fee_revenue'] or 0),
+        }
 
+        if period == 'all':
+            return {'period': period, 'series': [total_row], 'total_row': total_row,
+                    'total_count': 1, 'page': 1, 'size': 1, 'total_pages': 1}
+
+        if period == 'daily':
+            group_expr = "DATE_FORMAT(target_date, '%Y-%m-%d')"
+            label_expr = group_expr
+        elif period == 'weekly':
+            # 주 시작(월요일) 기준 label: "YYYY-MM-DD~YYYY-MM-DD"
+            group_expr = "DATE_FORMAT(DATE_SUB(target_date, INTERVAL WEEKDAY(target_date) DAY), '%Y-%m-%d')"
+            label_expr = (
+                "CONCAT("
+                "DATE_FORMAT(DATE_SUB(target_date, INTERVAL WEEKDAY(target_date) DAY), '%Y-%m-%d'),"
+                "'~',"
+                "DATE_FORMAT(DATE_ADD(DATE_SUB(target_date, INTERVAL WEEKDAY(target_date) DAY), INTERVAL 6 DAY), '%Y-%m-%d')"
+                ")"
+            )
+        elif period == 'monthly':
+            group_expr = "DATE_FORMAT(target_date, '%Y-%m')"
+            label_expr = group_expr
+        else:  # yearly
+            group_expr = "DATE_FORMAT(target_date, '%Y')"
+            label_expr = group_expr
+
+        # pymysql replaces % in SQL when params are given; escape % in MySQL format strings for param queries
+        def _esc(s: str) -> str:
+            return s.replace('%', '%%')
+
+        if period in ('daily', 'weekly', 'monthly'):
+            # 전체 건수 조회 (no params → plain %, MySQL receives %Y etc. correctly)
+            cursor.execute(f"""
+                SELECT COUNT(DISTINCT {group_expr}) AS cnt
+                FROM stats_daily_platform
+            """)
+            total_count = int(cursor.fetchone()['cnt'] or 0)
+            total_pages = math.ceil(total_count / size) if total_count else 1
+            offset = (page - 1) * size
+
+            cursor.execute(f"""
+                SELECT
+                    {_esc(label_expr)} AS label,
+                    {_esc(group_expr)} AS sort_key,
+                    SUM(new_store_count)        AS new_store_count,
+                    SUM(total_issued_count)     AS issued_gifticon_count,
+                    SUM(total_issued_amount)    AS issued_gifticon_amount,
+                    SUM(total_used_count)       AS used_gifticon_count,
+                    SUM(total_sales_amount)     AS used_gifticon_amount,
+                    SUM(total_payment_amount)   AS total_payment_amount,
+                    SUM(total_fee_revenue)      AS platform_fee_revenue
+                FROM stats_daily_platform
+                GROUP BY sort_key, label
+                ORDER BY sort_key DESC
+                LIMIT %s OFFSET %s
+            """, (size, offset))
+        else:  # yearly (no params)
+            total_count = None
+            total_pages = 1
+            cursor.execute(f"""
+                SELECT
+                    {label_expr} AS label,
+                    SUM(new_store_count)        AS new_store_count,
+                    SUM(total_issued_count)     AS issued_gifticon_count,
+                    SUM(total_issued_amount)    AS issued_gifticon_amount,
+                    SUM(total_used_count)       AS used_gifticon_count,
+                    SUM(total_sales_amount)     AS used_gifticon_amount,
+                    SUM(total_payment_amount)   AS total_payment_amount,
+                    SUM(total_fee_revenue)      AS platform_fee_revenue
+                FROM stats_daily_platform
+                GROUP BY label
+                ORDER BY label DESC
+            """)
+
+        rows = cursor.fetchall()
         series = [
             {
                 'label': r['label'],
+                'is_total': False,
                 'new_store_count': int(r['new_store_count'] or 0),
                 'issued_gifticon_count': int(r['issued_gifticon_count'] or 0),
                 'issued_gifticon_amount': int(r['issued_gifticon_amount'] or 0),
@@ -162,16 +233,24 @@ def get_dashboard_stats(period: str) -> Dict:
             for r in rows
         ]
 
-        return {'period': period, 'series': series}
+        return {
+            'period': period,
+            'series': series,
+            'total_row': total_row,
+            'total_count': total_count,
+            'page': page,
+            'size': size,
+            'total_pages': total_pages,
+        }
     finally:
         cursor.close()
         close_db_connection(connection)
 
 
-def get_dashboard_settlement_cycles(page: int = 1, size: int = 20) -> Dict:
+def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
     """정산 주기별 플랫폼 매출 이력
 
-    settlement 테이블 GROUP BY cycle_id로 집계. 별도 요약 테이블 없음.
+    GNB-169: 현재 날짜 이전 주기만 표시 (period_end_date <= today), 10개씩 페이지네이션
 
     집계 기준:
     - total_settlement_amount: 매장 지급 총액 (net_payout_amount 합계, COMPLETED/PENDING)
@@ -184,12 +263,13 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 20) -> Dict:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         offset = (page - 1) * size
+        today = date.today()
 
         cursor.execute("""
-            SELECT COUNT(DISTINCT s.cycle_id) AS total
-            FROM settlement s
-            JOIN settlement_cycles sc ON s.cycle_id = sc.cycle_id
-        """)
+            SELECT COUNT(DISTINCT sc.cycle_id) AS total
+            FROM settlement_cycles sc
+            WHERE sc.period_end_date <= %s
+        """, (today,))
         total = int(cursor.fetchone()['total'] or 0)
 
         cursor.execute("""
@@ -208,10 +288,11 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 20) -> Dict:
                     AS platform_vat_amount
             FROM settlement_cycles sc
             LEFT JOIN settlement s ON sc.cycle_id = s.cycle_id
+            WHERE sc.period_end_date <= %s
             GROUP BY sc.cycle_id, sc.period_start_date, sc.period_end_date, sc.payout_date
             ORDER BY sc.period_start_date DESC
             LIMIT %s OFFSET %s
-        """, (size, offset))
+        """, (today, size, offset))
         rows = cursor.fetchall()
 
         items = []

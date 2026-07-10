@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-플랫폼 일별 통계 집계 배치 스크립트 (GNB-163)
+플랫폼 일별 통계 집계 배치 스크립트 (GNB-163 / GNB-169)
 
 집계 기준:
   - new_store_count      : store.created_at 기준 당일 신규 입점 매장 수
@@ -10,7 +10,9 @@
   - total_used_count     : gifticon.used_at 기준 USED 상태, REFUNDED 제외
   - total_sales_amount   : 위 기프티콘의 settlement_details.sales_amount 합계 (스냅샷)
   - total_payment_amount : orders.created_at 기준 COMPLETED 결제액, 당일 환불액 차감
-  - total_fee_revenue    : 당일 사용 기프티콘의 sales_amount × base_fee_rate (platform_config)
+  - total_fee_revenue    : GNB-169: (fee_rate - pg_rate) × sales_amount
+                           fee_rate = 프로모션 적용 매장은 applied_fee_rate, 일반은 base_fee_rate
+                           pgcode별 pg_rate 매핑 적용, 음수 허용
 
 실행:
   ENV=dev  python3 scripts/aggregate_daily_platform_stats.py
@@ -30,6 +32,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pymysql
 from core.config import settings
+
+# GNB-169: pgcode별 PG 수수료율 (%)
+PG_FEE_RATE_MAP = {
+    "creditcard":    2.7,
+    "naverpay":      2.8,
+    "kakaopay":      2.8,
+    "applepay":      2.9,
+    "samsungpay":    2.9,
+    "banktransfer":  2.0,
+    "voucher":       0.0,
+    # 나머지는 신용카드 기본값 적용
+}
+PG_FEE_RATE_DEFAULT = 2.7
 
 
 def get_connection(db_name: str):
@@ -107,8 +122,39 @@ def aggregate_one_day(cursor, target: date, base_fee_rate: float) -> dict:
 
     total_payment_amount = payment_gross - refund_amount
 
-    # 플랫폼 수수료 (당일 사용 기프티콘 sales_amount × base_fee_rate, 원미만 절사)
-    total_fee_revenue = math.floor(total_sales_amount * base_fee_rate / 100)
+    # GNB-169: 플랫폼 순수수료 계산
+    # gifticon별 (fee_rate - pg_rate) × sales_amount 합산
+    # fee_rate: 프로모션 적용 매장 applied_fee_rate, 일반 base_fee_rate
+    # pg_rate: gifticon→order의 pgcode 기준
+    cursor.execute("""
+        SELECT
+            sd.sales_amount,
+            o.pgcode,
+            s.applied_fee_rate,
+            s.base_fee_rate AS promo_base_fee_rate
+        FROM gifticon g
+        JOIN settlement_details sd ON sd.gifticon_id = g.id
+        LEFT JOIN orders o ON g.order_id = o.id
+        LEFT JOIN settlement s ON sd.settlement_id = s.settlement_id
+        WHERE DATE(g.used_at) = %s
+          AND g.status = 'USED'
+    """, (d,))
+    fee_rows = cursor.fetchall()
+
+    total_fee_revenue = 0
+    for row in fee_rows:
+        sales_amount = int(row[0] or 0)
+        pgcode = (row[1] or '').lower()
+        applied_fee_rate = row[2]  # None이면 프로모션 미적용
+        pg_rate = PG_FEE_RATE_MAP.get(pgcode, PG_FEE_RATE_DEFAULT)
+
+        if applied_fee_rate is not None:
+            fee_rate = float(applied_fee_rate)
+        else:
+            fee_rate = base_fee_rate
+
+        net_rate = fee_rate - pg_rate
+        total_fee_revenue += math.floor(sales_amount * net_rate / 100)
 
     return {
         'target_date': d,
@@ -165,7 +211,7 @@ def run(db_name: str, dates: list[date]):
                 conn.commit()
                 print(f"  ✓ {d}  발행:{stats['total_issued_count']}건/{stats['total_issued_amount']:,}원  "
                       f"사용:{stats['total_used_count']}건/{stats['total_sales_amount']:,}원  "
-                      f"결제:{stats['total_payment_amount']:,}원  수수료:{stats['total_fee_revenue']:,}원  "
+                      f"결제:{stats['total_payment_amount']:,}원  순수수료:{stats['total_fee_revenue']:,}원  "
                       f"신규매장:{stats['new_store_count']}")
                 success += 1
             except Exception as e:
