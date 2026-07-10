@@ -139,7 +139,7 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
                 o.name as owner_name,
                 o.email as owner_email,
                 o.phone as owner_phone,
-                o.business_number as owner_business_number
+                s.business_number as owner_business_number
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
             {where}
