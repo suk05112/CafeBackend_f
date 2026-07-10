@@ -1,3 +1,6 @@
+import http.client
+import json
+import os
 import pymysql
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import timedelta
@@ -7,9 +10,7 @@ from core import clock
 from core.config import settings
 from db.session import get_db_connection, close_db_connection
 from app.system_logger import log_scheduler_error
-
-import http.client
-import json
+from app.aligo_service import send_gift_auto_refund_to_sender
 
 
 def _acquire_lock(cursor, lock_name: str) -> bool:
@@ -156,7 +157,6 @@ def expire_gifticons():
     3. 페이레터 결제 취소 API 호출 (90% 환불)
     4. 성공: refund 레코드 COMPLETED, gifticon.status = 'REFUNDED'
     5. 실패: refund 레코드 FAILED (다음 배치에서 재시도)
-    6. 알림톡 발송 (구매자에게 만료/환불 안내)
 
     MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
     """
@@ -214,8 +214,6 @@ def expire_gifticons():
             user_id = g["user_id"]
             original_amount = int(g["amount"] or 0)
             refund_amount = int(original_amount * 0.9)
-            menu_name = g["menu_name"] or "기프티콘"
-            user_phone = g["user_phone"]
 
             try:
                 # 2. EXPIRED로 상태 변경
@@ -279,16 +277,153 @@ def expire_gifticons():
         close_db_connection(connection)
 
 
+def auto_refund_unregistered_gifts():
+    """
+    선물 타입(type=2) 기프티콘 중 주문일 기준 7일(당일 불포함)이 지나도
+    수신자가 등록하지 않은(receiver_id IS NULL) 건을 자동 환불 처리.
+    실패 건(refund.status='FAILED')도 재시도.
+    MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
+    """
+    connection = get_db_connection()
+    lock_cursor = connection.cursor(pymysql.cursors.Cursor)
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    lock_acquired = False
+
+    try:
+        lock_acquired = _acquire_lock(lock_cursor, "auto_refund_unregistered_gifts")
+        if not lock_acquired:
+            return
+
+        cutoff = clock.now() - timedelta(days=7)
+
+        # 대상: 미등록 선물 기프티콘 (UNUSED + receiver_id NULL + 7일 초과)
+        # FAILED 환불 건도 포함하여 재시도
+        cursor.execute("""
+            SELECT
+                o.id AS order_id,
+                o.payment_key,
+                o.amount,
+                o.pgcode,
+                o.user_id,
+                g.id AS gifticon_id,
+                g.menu_id,
+                g.receiver_phone,
+                m.menu_name,
+                u.phone AS sender_phone,
+                r.id AS failed_refund_id
+            FROM orders o
+            JOIN gifticon g ON g.order_id = o.id
+            JOIN menu m ON m.id = g.menu_id
+            LEFT JOIN user u ON u.id = o.user_id
+            LEFT JOIN refund r ON r.order_id = o.id AND r.status = 'FAILED'
+            WHERE o.status = 'COMPLETED'
+              AND o.created_at < %s
+              AND g.type = 2
+              AND g.receiver_id IS NULL
+              AND g.status = 'UNUSED'
+        """, (cutoff,))
+        targets = cursor.fetchall()
+
+        if not targets:
+            return
+
+        logger.info(f"[scheduler] auto_refund_unregistered_gifts: {len(targets)}건 대상")
+
+        for row in targets:
+            order_id = row["order_id"]
+            payment_key = row["payment_key"]
+            amount = int(row["amount"] or 0)
+            pgcode = row["pgcode"] or "creditcard"
+            gifticon_id = row["gifticon_id"]
+            sender_phone = row["sender_phone"]
+            menu_name = row["menu_name"]
+            failed_refund_id = row["failed_refund_id"]
+
+            try:
+                # 이미 COMPLETED 환불 존재하면 스킵
+                cursor.execute(
+                    "SELECT id FROM refund WHERE order_id=%s AND status='COMPLETED' LIMIT 1",
+                    (order_id,)
+                )
+                if cursor.fetchone():
+                    continue
+
+                now = clock.now()
+
+                # FAILED 재시도면 기존 레코드 재사용, 신규면 PROCESSING 선삽입
+                if failed_refund_id:
+                    cursor.execute(
+                        "UPDATE refund SET status='PROCESSING', refunded_at=%s WHERE id=%s",
+                        (now, failed_refund_id)
+                    )
+                    refund_id = failed_refund_id
+                else:
+                    cursor.execute(
+                        """INSERT INTO refund (order_id, refund_type, amount, status, refunded_at)
+                           VALUES (%s, 'PURCHASER', %s, 'PROCESSING', %s)""",
+                        (order_id, amount, now)
+                    )
+                    refund_id = cursor.lastrowid
+                connection.commit()
+
+                # 페이레터 결제 취소
+                success = _payletter_cancel(payment_key, row["user_id"], amount, pgcode)
+
+                if success:
+                    cursor.execute("UPDATE orders SET status='REFUNDED' WHERE id=%s", (order_id,))
+                    cursor.execute("UPDATE gifticon SET status='CANCELED' WHERE id=%s", (gifticon_id,))
+                    cursor.execute(
+                        "UPDATE refund SET status='COMPLETED', refunded_at=%s WHERE id=%s",
+                        (now, refund_id)
+                    )
+                    connection.commit()
+                    logger.info(f"[scheduler] auto_refund order_id={order_id} 환불 완료")
+                else:
+                    cursor.execute(
+                        "UPDATE refund SET status='FAILED' WHERE id=%s",
+                        (refund_id,)
+                    )
+                    connection.commit()
+                    logger.warning(f"[scheduler] auto_refund order_id={order_id} 환불 실패 → FAILED 기록")
+
+                # 발신자 알림톡 발송 (실패해도 환불은 유지)
+                if success and sender_phone:
+                    try:
+                        send_gift_auto_refund_to_sender(
+                            receiver=sender_phone,
+                            menu=menu_name,
+                        )
+                    except Exception as e:
+                        logger.error(f"[scheduler] 알림톡 발송 실패 order_id={order_id}: {e}")
+
+            except Exception as e:
+                connection.rollback()
+                logger.error(f"[scheduler] auto_refund order_id={order_id} 실패: {e}")
+                log_scheduler_error("auto_refund_unregistered_gifts", e)
+
+    except Exception as e:
+        connection.rollback()
+        logger.error(f"[scheduler] auto_refund_unregistered_gifts 오류: {e}")
+        log_scheduler_error("auto_refund_unregistered_gifts", e)
+    finally:
+        if lock_acquired:
+            _release_lock(lock_cursor, "auto_refund_unregistered_gifts")
+        lock_cursor.close()
+        cursor.close()
+        close_db_connection(connection)
+
+
 def create_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="Asia/Seoul")
     scheduler.add_job(expire_pending_orders, "interval", minutes=15, id="expire_pending_orders")
     scheduler.add_job(delete_old_records, "cron", hour=3, minute=0, id="delete_old_records")
 
     # 테스트/로컬 환경에서는 1분마다, 프로덕션에서는 매일 03:20
-    import os
     if os.getenv("ENV", "dev") in ("test", "local"):
         scheduler.add_job(expire_gifticons, "interval", minutes=1, id="expire_gifticons")
+        scheduler.add_job(auto_refund_unregistered_gifts, "interval", minutes=1, id="auto_refund_unregistered_gifts")
     else:
         scheduler.add_job(expire_gifticons, "cron", hour=3, minute=20, id="expire_gifticons")
+        scheduler.add_job(auto_refund_unregistered_gifts, "cron", hour=3, minute=10, id="auto_refund_unregistered_gifts")
 
     return scheduler
