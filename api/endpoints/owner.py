@@ -84,7 +84,7 @@ async def check_duplicate(
             email_exists = cursor.fetchone()["cnt"] > 0
 
         if phone_number is not None:
-            cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE phone = %s", (phone_number,))
+            cursor.execute("SELECT COUNT(*) as cnt FROM owner WHERE phone = %s", (_normalize_phone(phone_number),))
             phone_exists = cursor.fetchone()["cnt"] > 0
 
         return {"email_exists": email_exists, "phone_exists": phone_exists}
@@ -133,6 +133,11 @@ async def registerOwner(owner: Owner, request: Request, user=Depends(verify_fire
             if tx["consumed_at"] is not None:
                 raise HTTPException(status_code=400, detail="이미 사용된 본인확인입니다.")
 
+            normalized_phone = _normalize_phone(tx["verified_phone"])
+            cursor.execute("SELECT id FROM owner WHERE phone = %s LIMIT 1", (normalized_phone,))
+            if cursor.fetchone():
+                raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 가입된 전화번호입니다.")
+
             cursor.execute(
                 "INSERT INTO owner (name, login_id, email, uid, phone, birthdate, gender) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s)",
@@ -141,7 +146,7 @@ async def registerOwner(owner: Owner, request: Request, user=Depends(verify_fire
                     owner.login_id,
                     owner.email,
                     owner.uid,
-                    tx["verified_phone"],
+                    normalized_phone,
                     tx["verified_birthdate"],
                     tx["verified_gender"],
                 )

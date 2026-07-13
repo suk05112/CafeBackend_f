@@ -9,6 +9,13 @@ from app.auth.auth_dependency import verify_firebase_token
 import firebase_admin
 from firebase_admin import auth, credentials
 
+def _normalize_phone(phone: str) -> str:
+    phone = re.sub(r'[\s\-()]', '', phone)
+    if phone.startswith('+82'):
+        phone = '0' + phone[3:]
+    return phone
+
+
 def get_user_firebase_app(project_type: str = "user"):
     """사용자 앱 Firebase 앱 반환"""
     if project_type == "dev":
@@ -304,8 +311,8 @@ def signUp(user: User, firebase_project: Optional[str] = None):
     uid = user.uid
     email = user.email  # request에서 받은 email
     provider = user.provider  # request에서 받은 provider
-    phone_number = user.phone_number  # request에서 받은 phone
-    
+    phone_number = _normalize_phone(user.phone_number or '')  # request에서 받은 phone
+
     if not email or not provider or not phone_number:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
