@@ -173,19 +173,23 @@ def get_store_detail(connection, store_id: int) -> Dict:
     
     try:
         cursor.execute('''
-            SELECT 
+            SELECT
                 s.*,
                 o.name as owner_name,
-                o.phone as owner_phone
+                o.phone as owner_phone,
+                a.name as account_holder,
+                a.bank as account_bank,
+                a.account as account_number
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
+            LEFT JOIN account a ON s.id = a.store_id
             WHERE s.id = %s
         ''', (store_id,))
         store = cursor.fetchone()
-        
+
         if not store:
             return None
-        
+
         # 로고 URL
         logo_key = f'store_logo/store_logo_{store_id}.png'
         store['logo'] = None
@@ -195,7 +199,29 @@ def get_store_detail(connection, store_id: int) -> Dict:
                 Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
         except ClientError:
             pass
-        
+
+        # 통장사본 URL
+        store['bankbook_url'] = None
+        bk = store.get('bankbook_key')
+        if bk:
+            try:
+                s3.head_object(Bucket=bucket_name, Key=bk)
+                store['bankbook_url'] = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': bk}, ExpiresIn=3600)
+            except ClientError:
+                pass
+
+        # 사업자등록증 URL
+        store['business_registration_url'] = None
+        brk = store.get('business_registration_key')
+        if brk:
+            try:
+                s3.head_object(Bucket=bucket_name, Key=brk)
+                store['business_registration_url'] = s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': brk}, ExpiresIn=3600)
+            except ClientError:
+                pass
+
         cursor.execute(
             "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
             (store_id,)
@@ -205,13 +231,13 @@ def get_store_detail(connection, store_id: int) -> Dict:
                 Params={'Bucket': bucket_name, 'Key': r['image_key']}, ExpiresIn=3600)
             for r in cursor.fetchall()
         ]
-        
+
         # 날짜 형식 변환
         if store.get('created_at'):
             store['created_at'] = store['created_at'].isoformat()
         if store.get('updated_at'):
             store['updated_at'] = store['updated_at'].isoformat()
-        
+
         return store
     finally:
         cursor.close()
