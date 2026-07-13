@@ -914,7 +914,10 @@ def update_account(store_id: int, account: AccountUpdateRequest):
         conn2 = get_db_connection()
         try:
             cur2 = conn2.cursor()
-            cur2.execute("UPDATE store SET bankbook_key = %s WHERE id = %s", (bankbook_key, store_id))
+            cur2.execute(
+                "UPDATE store SET bankbook_key = %s, inspection_status = CASE WHEN inspection_status IN ('REJECTED', 'PENDING') THEN 'PENDING' ELSE inspection_status END WHERE id = %s",
+                (bankbook_key, store_id)
+            )
             conn2.commit()
         finally:
             close_db_connection(conn2)
