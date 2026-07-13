@@ -170,3 +170,5 @@ def send_store_review_result(
         emtitle="입점 심사 결과 안내",
     )
     return _send("UH_9772", [recipient], button=CHANNEL_ADD_BUTTON)
+
+

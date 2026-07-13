@@ -48,6 +48,9 @@ class Settings(BaseSettings):
     aligo_sender_key: str = Field(default="", description="알림톡 발신프로필 키")
     aligo_sender: str = Field(default="", description="발신자 전화번호")
 
+    # 기프티콘 만료 설정
+    gifticon_expiry_days: int = Field(default=365, description="기프티콘 유효기간 (일)")
+
     # 드림시큐리티 mobileOK 본인확인 설정
     mok_keyinfo_path: str = Field(default="docs/mobileOK/mok_keyInfo_dev.dat", description="mok_keyInfo.dat 파일 경로")
     mok_keyinfo_password: str = Field(default="", description="mok_keyInfo.dat 복호화 비밀번호")
