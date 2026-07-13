@@ -98,8 +98,8 @@ class ConnectionPool:
                 if self._created > 0:
                     self._created -= 1
 
-# 전역 연결 풀 (최대 20개 연결)
-_pool = ConnectionPool(max_connections=20)
+# 전역 연결 풀 (최대 100개 연결)
+_pool = ConnectionPool(max_connections=100)
 
 def get_db_connection():
     """연결 풀에서 연결 가져오기"""
