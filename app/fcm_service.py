@@ -6,6 +6,7 @@ from app.firebase_init import user_app, owner_app
 from db.session import get_db_connection, close_db_connection
 import pymysql
 from loguru import logger
+from app.system_logger import log_external_api_error
 
 def send_fcm_notification_to_user(user_id: int, title: str, body: str):
     """
@@ -47,6 +48,7 @@ def send_fcm_notification_to_user(user_id: int, title: str, body: str):
 
     except Exception as e:
         logger.error(f"Error sending FCM notification to user {user_id}: {str(e)}")
+        log_external_api_error("FCM", f"user_id={user_id} 푸시 전송 실패", e)
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
@@ -92,6 +94,7 @@ def send_fcm_notification_to_owner(owner_id: int, title: str, body: str):
 
     except Exception as e:
         logger.error(f"Error sending FCM notification to owner {owner_id}: {str(e)}")
+        log_external_api_error("FCM", f"owner_id={owner_id} 푸시 전송 실패", e)
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
@@ -144,6 +147,7 @@ def send_fcm_notification_to_all_users(title: str, body: str, use_marketing: boo
 
     except Exception as e:
         logger.error(f"Error sending FCM notification to all users: {str(e)}")
+        log_external_api_error("FCM", "전체 유저 푸시 전송 실패", e)
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()
@@ -196,6 +200,7 @@ def send_fcm_notification_to_all_owners(title: str, body: str, use_marketing: bo
 
     except Exception as e:
         logger.error(f"Error sending FCM notification to all owners: {str(e)}")
+        log_external_api_error("FCM", "전체 오너 푸시 전송 실패", e)
         return {"sent": 0, "error": str(e)}
     finally:
         cursor.close()

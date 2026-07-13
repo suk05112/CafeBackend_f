@@ -89,7 +89,7 @@ fi
 
 # 이미지 빌드
 echo -e "${YELLOW}이미지 빌드 중...${NC}"
-sudo docker-compose -f "$COMPOSE_FILE" build --no-cache "$NEW_ENV"
+sudo docker-compose -f "$COMPOSE_FILE" build "$NEW_ENV"
 
 # 컨테이너 시작
 echo -e "${YELLOW}컨테이너 시작 중...${NC}"

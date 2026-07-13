@@ -1,6 +1,7 @@
 """
 Menu CRUD 로직
 """
+import math
 import uuid
 import pymysql
 from typing import List, Dict, Optional
@@ -196,6 +197,16 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
             except (ValueError, IndexError):
                 pass
 
+        # lat/lng bounding box prefilter (인덱스 range scan 가능하도록)
+        # 위도 1도 ≈ 111km, 경도 1도 ≈ 111 * cos(lat) km
+        lat_delta = radius / 111.0
+        cos_lat = math.cos(math.radians(lat))
+        lng_delta = radius / (111.0 * cos_lat) if cos_lat > 1e-6 else 180.0
+        min_lat = lat - lat_delta
+        max_lat = lat + lat_delta
+        min_lng = lng - lng_delta
+        max_lng = lng + lng_delta
+
         base_select = """
             SELECT
                 s.id AS store_id,
@@ -211,8 +222,8 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
                     SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) AS distance
             FROM store s
             INNER JOIN menu m ON s.id = m.store_id
-            WHERE s.store_lat IS NOT NULL
-              AND s.store_lng IS NOT NULL
+            WHERE s.store_lat BETWEEN %s AND %s
+              AND s.store_lng BETWEEN %s AND %s
               AND s.inspection_status = 'APPROVED'
               AND s.contract_completed = 'COMPLETED'
               AND m.status = 'ACTIVE'
@@ -229,14 +240,15 @@ def get_recommended_menus_by_location(lat: float, lng: float, radius: float, lim
             ORDER BY distance ASC, m.id ASC
             LIMIT %s
             """
-            params = (lat, lng, lat, radius, cursor_distance, cursor_distance, cursor_menu_id, limit)
+            params = (lat, lng, lat, min_lat, max_lat, min_lng, max_lng,
+                      radius, cursor_distance, cursor_distance, cursor_menu_id, limit)
         else:
             query = base_select + f"""
             {having_distance}
             ORDER BY distance ASC, m.id ASC
             LIMIT %s
             """
-            params = (lat, lng, lat, radius, limit)
+            params = (lat, lng, lat, min_lat, max_lat, min_lng, max_lng, radius, limit)
 
         db_cursor.execute(query, params)
         rows = db_cursor.fetchall()

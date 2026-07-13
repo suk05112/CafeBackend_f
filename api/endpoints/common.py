@@ -60,8 +60,8 @@ def health_check():
     try:
         # DB 연결 확인
         connection = get_db_connection()
-        connection.ping(reconnect=False)
-        
+        connection.ping(reconnect=True)
+
         return {"status": "healthy", "message": "Service is running"}
     except Exception as e:
         # Health check 실패 시에만 CloudWatch에 로깅

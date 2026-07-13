@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 from contextlib import asynccontextmanager
 from starlette.concurrency import iterate_in_threadpool
 from app import firebase_init  
@@ -27,6 +28,11 @@ from core.config import settings
 from core.exceptions import InternalError, internal_error_handler
 from core.s3_config import S3_CLIENT, BUCKET_NAME
 from core.scheduler import create_scheduler
+from app.system_logger import (
+    log_process_event,
+    log_app_startup_snapshot,
+    log_rate_limit,
+)
 
 # 모든 엔드포인트는 api/endpoints로 통합됨
 from api.endpoints import store, menu, settlement, common, admin, user, gifticon, owner, order
@@ -119,25 +125,43 @@ async def lifespan(app: FastAPI):
     if not settings.payletter_api_host:
         raise RuntimeError("PAYLETTER_API_HOST 환경변수가 설정되지 않았습니다. .env 파일을 확인하세요.")
 
+    # 앱 시작 환경 스냅샷 로깅 (민감정보 제외)
+    log_app_startup_snapshot({
+        "env": env,
+        "db_host": settings.db_host,
+        "db_name": settings.db_name,
+        "s3_bucket": bucket_name,
+    })
+
     # 스케줄러 시작 (15분마다 PENDING 만료, 매일 03:00 오래된 레코드 삭제)
     scheduler = create_scheduler()
     scheduler.start()
     print("스케줄러 시작 완료")
+    log_process_event("STARTUP", f"env={env}, scheduler started")
 
     yield  # 서버가 실행 중일 때
 
     # 서버 종료 시 스케줄러 정리
     scheduler.shutdown(wait=False)
     print("스케줄러 종료 완료")
+    log_process_event("SHUTDOWN", f"env={env}, scheduler stopped")
 
-# Rate Limiter 설정
-limiter = Limiter(key_func=get_remote_address)
+# Rate Limiter 설정 (전역 기본값: IP당 60req/min)
+limiter = Limiter(key_func=get_remote_address, default_limits=["60/minute"])
 
 # FastAPI 앱 생성
 app = FastAPI(lifespan=lifespan)
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+async def _rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    log_rate_limit(
+        client_ip=request.client.host if request.client else "unknown",
+        path=request.url.path,
+    )
+    return await _rate_limit_exceeded_handler(request, exc)
+
+app.add_exception_handler(RateLimitExceeded, _rate_limit_handler)
 app.add_exception_handler(InternalError, internal_error_handler)
+app.add_middleware(SlowAPIMiddleware)
 # app = FastAPI(redirect_slashes=False)
 # app.include_router(router)
 
@@ -163,6 +187,12 @@ app.include_router(user.router, prefix=f'{prefix}/user', tags=["User"])
 app.include_router(gifticon.router, prefix=f'{prefix}/gifticon', tags=["Gifticon"])
 app.include_router(owner.router, prefix=f'{prefix}/owner', tags=["Owner"])
 app.include_router(order.router, prefix=f'{prefix}/order', tags=["Order"])
+
+# 드림시큐리티 등록 URL이 https://.../dev/ 또는 https://.../prod/ 인 경우
+# 표준창 returnUrl POST를 mok_return에 위임
+from api.endpoints.owner import mok_return as _mok_return
+app.add_api_route(f'{prefix}/', _mok_return, methods=["POST"], tags=["Owner"])
+app.add_api_route(f'{prefix}', _mok_return, methods=["POST"], tags=["Owner"])
     
 
 @app.middleware("http")

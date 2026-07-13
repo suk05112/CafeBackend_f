@@ -85,9 +85,15 @@ if sudo docker ps -a --filter "name=$NEW_ENV" --format "{{.Names}}" | grep -q "^
     sudo docker rm -f "$NEW_ENV" 2>/dev/null || true
 fi
 
-# 이미지 빌드
-echo -e "${YELLOW}이미지 빌드 중...${NC}"
-sudo docker-compose -f "$COMPOSE_FILE" build --no-cache "$NEW_ENV"
+# 이미지 준비 (DEPLOY_IMAGE 지정 시 레지스트리에서 풀 — 서버 빌드 없음)
+if [ -n "$DEPLOY_IMAGE" ]; then
+    echo -e "${YELLOW}레지스트리 이미지 풀 중: ${DEPLOY_IMAGE}${NC}"
+    sudo docker pull "$DEPLOY_IMAGE"
+    sudo docker tag "$DEPLOY_IMAGE" "cafebackend_${NEW_ENV}:latest"
+else
+    echo -e "${YELLOW}이미지 빌드 중...${NC}"
+    sudo docker-compose -f "$COMPOSE_FILE" build "$NEW_ENV"
+fi
 
 # 컨테이너 시작
 echo -e "${YELLOW}컨테이너 시작 중...${NC}"

@@ -718,9 +718,9 @@ async def registerStore(store: StoreCreate):
         query = """
             INSERT INTO store (
                 owner_id, store_name, store_telephone, store_description, store_address,
-                store_lat, store_lng, region_code, district_code
+                store_lat, store_lng, region_code, district_code, business_number
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             );
         """
         cursor.execute(query, (
@@ -732,7 +732,8 @@ async def registerStore(store: StoreCreate):
             store.store_lat,
             store.store_lng,
             region_code,
-            district_code
+            district_code,
+            store.business_number
         ))
             
         connection.commit()
@@ -782,6 +783,10 @@ def updateStore(store_id: int, store: StoreCreate):
     try:
         cursor = connection.cursor(pymysql.cursors.DictCursor)
 
+        cursor.execute("SELECT inspection_status FROM store WHERE id = %s", (store_id,))
+        current = cursor.fetchone()
+        current_status = current['inspection_status'] if current else None
+
         query = "UPDATE store SET "
         values = []
 
@@ -794,16 +799,26 @@ def updateStore(store_id: int, store: StoreCreate):
         if store.store_description:
             query += "store_description = %s, "
             values.append(store.store_description)
+        if store.business_number is not None:
+            query += "business_number = %s, "
+            values.append(store.business_number)
 
-        logo_key = _generate_logo_key(store_id)
-        bankbook_key = _generate_bankbook_key(store_id)
-        business_key = _generate_business_key(store_id)
+        # 기존 키 조회
+        cursor.execute(
+            "SELECT store_logo_key, business_registration_key FROM store WHERE id = %s",
+            (store_id,)
+        )
+        existing = cursor.fetchone()
 
-        query += "store_logo_key = %s, bankbook_key = %s, business_registration_key = %s, "
-        values.extend([logo_key, bankbook_key, business_key])
+        logo_key = _generate_logo_key(store_id) if store.logo_changed else existing['store_logo_key']
+        business_key = _generate_business_key(store_id) if store.business_changed else existing['business_registration_key']
 
-        query += "inspection_status = %s, "
-        values.append('PENDING')
+        query += "store_logo_key = %s, business_registration_key = %s, "
+        values.extend([logo_key, business_key])
+
+        if current_status == 'REJECTED':
+            query += "inspection_status = %s, "
+            values.append('PENDING')
 
         query = query[:-2]
         query += " WHERE id = %s"
@@ -822,16 +837,13 @@ def updateStore(store_id: int, store: StoreCreate):
         store_photo_get_urls = _get_store_photo_urls(cursor, store_id)
 
         store_logo_put_url = s3.generate_presigned_url('put_object',
-            Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
-        bankBook_put_url = s3.generate_presigned_url('put_object',
-            Params={'Bucket': bucket_name, 'Key': bankbook_key}, ExpiresIn=3600)
+            Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600) if store.logo_changed else None
         business_put_url = s3.generate_presigned_url('put_object',
-            Params={'Bucket': bucket_name, 'Key': business_key}, ExpiresIn=3600)
+            Params={'Bucket': bucket_name, 'Key': business_key}, ExpiresIn=3600) if store.business_changed else None
 
         return {
             'msg': "success",
             'store_logo_put_url': store_logo_put_url,
-            'bankBook_put_url': bankBook_put_url,
             'business_put_url': business_put_url,
             'store_photos': store_photos,
             'store_photo_get_urls': store_photo_get_urls

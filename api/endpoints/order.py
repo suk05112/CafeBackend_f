@@ -6,6 +6,7 @@ import traceback
 from typing import Union, Optional
 from pydantic import BaseModel
 from loguru import logger
+from app.system_logger import log_external_api_error
 
 import pymysql
 from db.session import get_db_connection, close_db_connection
@@ -14,7 +15,6 @@ from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 
 from models.gifticon import Gifticon, PaymentResult, VALID_PGCODES
 from models.store import StoreCreate
-from crud import promotion as promotion_crud
 
 import http.client
 import json
@@ -130,17 +130,28 @@ def _request_payletter_url(gifticon, user_id: int, order_no: str) -> dict:
         "callback_url": settings.payletter_callback_url,
         "cancel_url": settings.payletter_cancel_url,
     }
-    pl_conn = http.client.HTTPSConnection(settings.payletter_api_host)
-    pl_conn.request(
-        "POST", "/v1.0/payments/request",
-        json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        {"Authorization": f"PLKEY {pl_api_key}", "Content-Type": "application/json; charset=utf-8"}
-    )
-    pl_res = pl_conn.getresponse()
-    pl_data = json.loads(pl_res.read().decode("utf-8"))
+    pl_conn = http.client.HTTPSConnection(settings.payletter_api_host, timeout=10)
+    try:
+        pl_conn.request(
+            "POST", "/v1.0/payments/request",
+            json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+            {"Authorization": f"PLKEY {pl_api_key}", "Content-Type": "application/json; charset=utf-8"}
+        )
+        pl_res = pl_conn.getresponse()
+        pl_data = json.loads(pl_res.read().decode("utf-8"))
+    except (TimeoutError, OSError) as e:
+        logger.error(f"Payletter request timeout/network error: {e}")
+        log_external_api_error("Payletter", "결제 URL 요청 타임아웃/네트워크 오류", e)
+        raise HTTPException(
+            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
+            detail="결제 요청 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
+        )
+    finally:
+        pl_conn.close()
 
     if pl_res.status != 200 or not pl_data.get("token"):
         logger.error(f"Payletter request failed: {pl_data}")
+        log_external_api_error("Payletter", f"결제 URL 발급 실패: {pl_data.get('message', '')}")
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"결제 요청 실패: {pl_data.get('message', '페이레터 오류')}"
@@ -293,17 +304,12 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
         )
         order_id = cursor.lastrowid
 
-        # 4. 구매 시점 수수료율 확정 (기본 수수료율 + 프로모션 적용)
-        fee_info = promotion_crud.get_fee_info_for_order(gifticon.store_id, date.today())
-
-        # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
+        # 4. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
         cursor.execute(
-            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id,
-                base_fee_rate, applied_promo_id, applied_fee_rate, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
+            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
-             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
-             fee_info['base_fee_rate'], fee_info['applied_promo_id'], fee_info['applied_fee_rate'])
+             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id)
         )
         gifticon_id = cursor.lastrowid
 

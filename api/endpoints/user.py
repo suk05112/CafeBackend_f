@@ -9,9 +9,22 @@ from app.auth.auth_dependency import verify_firebase_token
 import firebase_admin
 from firebase_admin import auth, credentials
 
+def _normalize_phone(phone: str) -> str:
+    phone = re.sub(r'[\s\-()]', '', phone)
+    if phone.startswith('+82'):
+        phone = '0' + phone[3:]
+    return phone
+
+
 def get_user_firebase_app(project_type: str = "user"):
     """사용자 앱 Firebase 앱 반환"""
     if project_type == "dev":
+        try:
+            return firebase_admin.get_app("dev_app")
+        except ValueError:
+            pass
+    # dev/development/local 환경에서 project_type이 기본값("user")이면 dev_app 우선 사용
+    if project_type == "user" and os.getenv("ENV", "dev") in ("dev", "development", "local"):
         try:
             return firebase_admin.get_app("dev_app")
         except ValueError:
@@ -298,8 +311,8 @@ def signUp(user: User, firebase_project: Optional[str] = None):
     uid = user.uid
     email = user.email  # request에서 받은 email
     provider = user.provider  # request에서 받은 provider
-    phone_number = user.phone_number  # request에서 받은 phone
-    
+    phone_number = _normalize_phone(user.phone_number or '')  # request에서 받은 phone
+
     if not email or not provider or not phone_number:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -977,12 +990,13 @@ def get_user_terms_status(user_id: int):
 
 
 @router.post("/terms/agree")
-def post_terms_agree(body: TermsAgreeRequest):
+def post_terms_agree(body: TermsAgreeRequest, request: Request):
     """약관 동의 저장 (회원가입/재동의 시). 필수 약관은 반드시 agreed=True."""
     connection = get_db_connection()
     try:
+        agreed_ip = request.headers.get("X-Forwarded-For", request.client.host)
         agreements = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in body.agreements]
-        success, err_msg, agreed_count = terms_crud.save_user_agreements(connection, body.user_id, agreements)
+        success, err_msg, agreed_count = terms_crud.save_user_agreements(connection, body.user_id, agreements, agreed_ip)
         if not success:
             raise HTTPException(status_code=400, detail=err_msg)
         return {"success": True, "message": "약관 동의가 저장되었습니다.", "agreed_count": agreed_count}
@@ -1138,7 +1152,17 @@ async def registerPushToken(
                 existing['id']
             ))
         else:
-            # 새로 저장
+            # 최초 등록 시 마케팅 약관 동의 이력 조회 (레코드 존재 = 동의)
+            cursor.execute('''
+                SELECT 1
+                FROM user_terms_agreement uta
+                JOIN terms_version tv ON uta.term_version_id = tv.id
+                JOIN terms t ON tv.term_id = t.id
+                WHERE uta.user_id = %s AND t.term_type = 'MARKETING'
+                LIMIT 1
+            ''', (user_id,))
+            allow_marketing = cursor.fetchone() is not None
+
             cursor.execute('''
                 INSERT INTO user_push_tokens (
                     user_id, fcm_token, device_type,
@@ -1150,7 +1174,7 @@ async def registerPushToken(
                 push_token.fcm_token,
                 push_token.device_type.value,
                 1 if push_token.allow_service_push else 0,
-                1 if push_token.allow_marketing_push else 0,
+                1 if allow_marketing else 0,
                 app_version,
                 os_version
             ))
@@ -1579,6 +1603,21 @@ def find_account(request: FindAccountRequest):
         raise InternalError(e, "find_account")
     finally:
         cursor.close()
+        close_db_connection(connection)
+
+
+@router.post("/ping")
+async def ping_user(user_id: int = Query(...), user=Depends(verify_firebase_token)):
+    """앱 시작 시 호출 — last_login 갱신용"""
+    connection = get_db_connection()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("UPDATE user SET last_login = NOW() WHERE id = %s", (user_id,))
+        connection.commit()
+        return {"message": "ok"}
+    except Exception as e:
+        raise InternalError(e, "ping_user")
+    finally:
         close_db_connection(connection)
 
 

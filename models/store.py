@@ -11,6 +11,9 @@ class StoreCreate(BaseModel):
     store_lng: float
     image_count: Optional[int] = None
     district_code: Optional[str] = None  # 군/구 코드 (예: "23" = 강남구)
+    logo_changed: bool = False
+    business_changed: bool = False
+    business_number: Optional[str] = None
 
 
 class InspectionStatusUpdate(BaseModel):
