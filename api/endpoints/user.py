@@ -690,6 +690,7 @@ async def idRegisteredUser(
 
         # phone + provider로 조회
         if phone:
+            phone = _normalize_phone(phone)
             cursor.execute("""
                 SELECT up.*
                 FROM user_provider up
@@ -726,6 +727,7 @@ async def idRegisteredUserByPhone(
     cursor = connection.cursor()
 
     try:
+        phoneNumber = _normalize_phone(phoneNumber)
         cursor.execute('''SELECT * FROM user WHERE phone=%s;''', (phoneNumber,))
 
         # 결과 확인 (1개 이상의 행이 반환되면 폰번호가 존재)
@@ -746,6 +748,7 @@ async def idRegisteredAppleUser(phoneNumber: str, _=Depends(verify_firebase_toke
     cursor = connection.cursor()
 
     try:
+        phoneNumber = _normalize_phone(phoneNumber)
         cursor.execute('''SELECT * FROM user WHERE phone=%s;''', (phoneNumber,))
 
         # 결과 확인 (1개 이상의 행이 반환되면 이메일이 존재)
@@ -1517,11 +1520,12 @@ def find_account(request: FindAccountRequest):
     
     try:
         # 1. DB에서 이름과 전화번호로 유저 조회
+        normalized_phone = _normalize_phone(request.phone_number)
         cursor.execute('''
             SELECT id, name, email, phone, uid
             FROM user
             WHERE name = %s AND phone = %s
-        ''', (request.name, request.phone_number))
+        ''', (request.name, normalized_phone))
         
         user = cursor.fetchone()
         
