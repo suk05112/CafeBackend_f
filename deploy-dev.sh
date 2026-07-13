@@ -25,11 +25,21 @@ if [ ! -f "$ENV_FILE" ]; then
     exit 1
 fi
 
-# 1. 이미지 빌드 (기존 컨테이너 유지한 채로 먼저 빌드)
-echo -e "${YELLOW}[1/4] 이미지 빌드 중...${NC}"
-if ! sudo docker-compose -f "$COMPOSE_FILE" build --no-cache app-dev; then
-    echo -e "${RED}❌ 이미지 빌드 실패! 기존 서버는 유지됩니다.${NC}"
-    exit 1
+# 1. 이미지 준비 (기존 컨테이너 유지한 채로 먼저 준비)
+# DEPLOY_IMAGE가 지정되면 레지스트리에서 풀(서버 빌드 없음), 아니면 로컬 빌드
+if [ -n "$DEPLOY_IMAGE" ]; then
+    echo -e "${YELLOW}[1/4] 레지스트리 이미지 풀 중: ${DEPLOY_IMAGE}${NC}"
+    if ! sudo docker pull "$DEPLOY_IMAGE"; then
+        echo -e "${RED}❌ 이미지 풀 실패! 기존 서버는 유지됩니다.${NC}"
+        exit 1
+    fi
+    sudo docker tag "$DEPLOY_IMAGE" dev:latest
+else
+    echo -e "${YELLOW}[1/4] 이미지 빌드 중...${NC}"
+    if ! sudo docker-compose -f "$COMPOSE_FILE" build app-dev; then
+        echo -e "${RED}❌ 이미지 빌드 실패! 기존 서버는 유지됩니다.${NC}"
+        exit 1
+    fi
 fi
 
 # 2. 기존 컨테이너 제거
