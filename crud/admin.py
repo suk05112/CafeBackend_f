@@ -190,37 +190,23 @@ def get_store_detail(connection, store_id: int) -> Dict:
         if not store:
             return None
 
-        # 로고 URL
-        logo_key = f'store_logo/store_logo_{store_id}.png'
-        store['logo'] = None
-        try:
-            s3.head_object(Bucket=bucket_name, Key=logo_key)
-            store['logo'] = s3.generate_presigned_url('get_object',
-                Params={'Bucket': bucket_name, 'Key': logo_key}, ExpiresIn=3600)
-        except ClientError:
-            pass
-
-        # 통장사본 URL
-        store['bankbook_url'] = None
-        bk = store.get('bankbook_key')
-        if bk:
+        def _presigned(key):
+            if not key:
+                return None
             try:
-                s3.head_object(Bucket=bucket_name, Key=bk)
-                store['bankbook_url'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': bk}, ExpiresIn=3600)
+                s3.head_object(Bucket=bucket_name, Key=key)
+                return s3.generate_presigned_url('get_object',
+                    Params={'Bucket': bucket_name, 'Key': key}, ExpiresIn=3600)
             except ClientError:
-                pass
+                return None
 
-        # 사업자등록증 URL
-        store['business_registration_url'] = None
-        brk = store.get('business_registration_key')
-        if brk:
-            try:
-                s3.head_object(Bucket=bucket_name, Key=brk)
-                store['business_registration_url'] = s3.generate_presigned_url('get_object',
-                    Params={'Bucket': bucket_name, 'Key': brk}, ExpiresIn=3600)
-            except ClientError:
-                pass
+        # 로고: DB 컬럼 우선, 없으면 고정 경로 시도
+        store['logo'] = (
+            _presigned(store.get('store_logo_key')) or
+            _presigned(f'store_logo/store_logo_{store_id}.png')
+        )
+        store['bankbook_url'] = _presigned(store.get('bankbook_key'))
+        store['business_registration_url'] = _presigned(store.get('business_registration_key'))
 
         cursor.execute(
             "SELECT image_key FROM store_images WHERE store_id = %s ORDER BY `order` ASC",
