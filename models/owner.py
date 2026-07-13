@@ -13,6 +13,7 @@ class Owner(BaseModel):
     email: str
     uid: str
     client_tx_id: str  # mobileOK 본인확인 거래 ID (name/phone/birthdate/gender는 mok_client_tx에서 조회)
+    business_number: Optional[str] = None
     agreements: Optional[List[OwnerTermsAgreeItem]] = None
 
 class OwnerFind(BaseModel):
