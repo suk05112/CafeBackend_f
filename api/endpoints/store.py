@@ -718,9 +718,9 @@ async def registerStore(store: StoreCreate):
         query = """
             INSERT INTO store (
                 owner_id, store_name, store_telephone, store_description, store_address,
-                store_lat, store_lng, region_code, district_code
+                store_lat, store_lng, region_code, district_code, business_number
             ) VALUES (
-              %s, %s, %s, %s, %s, %s, %s, %s, %s
+              %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
             );
         """
         cursor.execute(query, (
@@ -732,7 +732,8 @@ async def registerStore(store: StoreCreate):
             store.store_lat,
             store.store_lng,
             region_code,
-            district_code
+            district_code,
+            store.business_number
         ))
             
         connection.commit()
@@ -798,6 +799,9 @@ def updateStore(store_id: int, store: StoreCreate):
         if store.store_description:
             query += "store_description = %s, "
             values.append(store.store_description)
+        if store.business_number is not None:
+            query += "business_number = %s, "
+            values.append(store.business_number)
 
         # 기존 키 조회
         cursor.execute(
