@@ -19,6 +19,16 @@ s3 = S3_CLIENT
 bucket_name = BUCKET_NAME
 
 
+def _generate_presigned_url(key: Optional[str], expires: int = 3600) -> Optional[str]:
+    if not key:
+        return None
+    try:
+        return s3.generate_presigned_url('get_object',
+            Params={'Bucket': bucket_name, 'Key': key}, ExpiresIn=expires)
+    except Exception:
+        return None
+
+
 def create_account(store_id: int, account: Account) -> bool:
     """계좌 정보 등록"""
     connection = get_db_connection()
@@ -765,6 +775,8 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 s.settlement_id,
                 s.store_id,
                 st.store_name,
+                st.store_logo_key,
+                st.bankbook_key,
                 s.cycle_id,
                 s.period_start,
                 s.period_end,
@@ -846,6 +858,8 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
             'bank_name': settlement.get('bank_name') or settlement.get('account_bank'),
             'account_number': settlement.get('account_number'),
             'account_holder': settlement.get('account_holder'),
+            'store_logo_url': _generate_presigned_url(settlement.get('store_logo_key')),
+            'bankbook_url': _generate_presigned_url(settlement.get('bankbook_key')),
         }
         items = []
         for i, d in enumerate(details, 1):
