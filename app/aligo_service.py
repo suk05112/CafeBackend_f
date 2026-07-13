@@ -2,9 +2,45 @@
 알리고 카카오 알림톡 발송 서비스
 
 템플릿 목록:
-  - UH_9771: 정산 완료 안내    변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
-  - UH_9772: 입점 심사 결과 안내  변수: #{심사결과}, #{상세사유}
-  - UJ_1609: 선물 결제 취소 안내  변수: #{sender}, #{menu}
+  - UH_9771: 정산 완료 안내          변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
+  - UH_9772: 입점 심사 결과 안내      변수: #{심사결과}, #{상세사유}
+  - UJ_1609: 선물 결제 취소 안내      변수: #{sender}, #{menu}
+  - UJ_4468: 미등록 상품권 발신자 환불안내  변수: #{메뉴}
+             수신자: 발신자(구매자)
+             제목: 자동 환불 안내
+             내용:
+               선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.
+
+               ▶상품명: #{메뉴}
+
+               환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
+               환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
+             발송 시점: 스케줄러 자동 환불 완료 후
+
+알림톡 전송 API 명세 (POST https://kakaoapi.aligo.in/akv10/alimtalk/send/):
+  필수 파라미터:
+    - apikey      : 인증용 API Key
+    - userid      : 사용자 ID
+    - senderkey   : 발신프로파일 키
+    - tpl_code    : 템플릿 코드
+    - sender      : 발신자 연락처
+    - receiver_N  : 수신자 연락처 (N: 1~500)
+    - subject_N   : 알림톡 제목
+    - message_N   : 알림톡 내용 (템플릿 서식과 정확히 일치해야 함)
+  선택 파라미터:
+    - senddate    : 예약일 (datetime)
+    - recvname_N  : 수신자 이름
+    - emtitle_N   : 강조표기형 타이틀
+    - button_N    : 버튼 정보 (JSON)
+    - failover    : 실패 시 대체문자 전송 (Y or N)
+    - fsubject_N  : 실패 시 대체문자 제목
+    - fmessage_N  : 실패 시 대체문자 내용
+    - testMode    : 테스트 모드 (Y or N, 기본 N)
+  응답:
+    - code 0      : 성공
+    - code -99 외 : 실패 (message 필드에 사유)
+    - info.scnt   : 정상 요청된 연락처 수
+    - info.fcnt   : 잘못 요청된 연락처 수
 """
 import json
 import urllib.request
@@ -146,6 +182,26 @@ def send_gift_cancel_to_receiver(
         emtext="상품권 주문이 취소되었습니다.",
     )
     return _send("UJ_1609", [recipient])
+
+
+def send_gift_auto_refund_to_sender(
+    receiver: str,
+    menu: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_4468: 미등록 상품권 발신자 환불안내 (발신자/구매자에게 발송)"""
+    message = (
+        f"선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.\n\n"
+        f"▶상품명: {menu}\n\n"
+        f"환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라 환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다."
+    )
+    recipient = AlimtalkRecipient(
+        receiver=receiver,
+        subject="자동 환불 안내",
+        message=message,
+        recvname=recvname,
+    )
+    return _send("UJ_4468", [recipient])
 
 
 def send_store_review_result(
