@@ -299,7 +299,7 @@ async def revoke_apple_token(refresh_token: str):
         return False
 
 @router.post("/register")
-def signUp(user: User, firebase_project: Optional[str] = None):
+def signUp(user: User, request: Request, firebase_project: Optional[str] = None):
     """
     회원가입/링크 로직:
     - provider가 email이면 user 테이블의 fb_email 컬럼에 request의 email 저장
@@ -407,7 +407,8 @@ def signUp(user: User, firebase_project: Optional[str] = None):
         # 신규 가입 시 약관 동의 정보 저장
         if not existing_user and user.agreements is not None and len(user.agreements) > 0:
             agreements_list = [{"term_id": a.term_id, "term_version_id": a.term_version_id, "agreed": a.agreed} for a in user.agreements]
-            success, err_msg, _ = terms_crud.save_user_agreements(connection, user_id, agreements_list)
+            agreed_ip = request.headers.get("X-Forwarded-For", request.client.host)
+            success, err_msg, _ = terms_crud.save_user_agreements(connection, user_id, agreements_list, agreed_ip)
             if not success:
                 # 이미 유저는 생성됨; 로그만 남기고 응답은 성공 (동의는 나중에 /terms/agree로 보완 가능)
                 logger.warning(f"signUp 약관 저장 실패 user_id={user_id}: {err_msg}")
