@@ -1539,22 +1539,35 @@ def find_account(request: FindAccountRequest):
         try:
             user_app = get_user_firebase_app()
             user_record = auth.get_user(user['uid'], app=user_app)
-            
-            # Firebase 이메일 가입 유저인지 확인
-            if not user_record.email:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="이메일로 가입한 계정만 조회할 수 있습니다."
-                )
-            
+
             # 이메일 가입 방식인지 확인 (provider가 password인지 확인)
             providers = [provider.provider_id for provider in user_record.provider_data]
-            if 'password' not in providers:
+            if not user_record.email or 'password' not in providers:
+                sns_provider_names = {
+                    'oidc.kakao': '카카오',
+                    'apple.com': '애플',
+                    'apple.priavate': '애플',
+                    'google.com': '구글',
+                }
+                sns_names = []
+                for p in providers:
+                    name = sns_provider_names.get(p)
+                    if name and name not in sns_names:
+                        sns_names.append(name)
+
+                if sns_names:
+                    sns_list = ', '.join(sns_names)
+                    detail = f"{sns_list}로 가입하신 계정입니다. {sns_list}로 로그인해주세요."
+                else:
+                    detail = "이메일로 가입한 계정만 조회할 수 있습니다."
+
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="이메일로 가입한 계정만 조회할 수 있습니다."
+                    detail=detail
                 )
-            
+
+        except HTTPException:
+            raise
         except firebase_admin.exceptions.NotFoundError:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
