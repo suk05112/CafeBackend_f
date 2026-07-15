@@ -41,7 +41,7 @@ from core.config import settings
 import core.dreamsecurity as dreamsecurity
 from fastapi.responses import HTMLResponse, RedirectResponse
 from firebase_admin import auth as firebase_auth
-from app.firebase_init import owner_app
+from app.firebase_init import get_active_owner_app
 import core.crypto as crypto
 
 router = APIRouter()
@@ -1432,7 +1432,7 @@ async def reset_password(body: OwnerResetPassword):
         except ValueError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="비밀번호 복호화에 실패했습니다.")
 
-        firebase_auth.update_user(row["uid"], password=new_password, app=owner_app)
+        firebase_auth.update_user(row["uid"], password=new_password, app=get_active_owner_app())
 
         return {"msg": "success"}
 
