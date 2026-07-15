@@ -1016,6 +1016,7 @@ def get_owner_store_list(owner_id: int):
                 s.district_code,
                 s.inspection_status,
                 s.inspection_msg,
+                s.contract_completed,
                 s.status,
                 s.open_yn,
                 s.created_at,
@@ -1036,6 +1037,10 @@ def get_owner_store_list(owner_id: int):
                 Params={'Bucket': bucket_name, 'Key': store_logo_key},
                 ExpiresIn=3600) if store_logo_key else None
 
+            inspection_status = store.get('inspection_status')
+            if inspection_status == 'APPROVED' and store.get('contract_completed') != 'COMPLETED':
+                inspection_status = 'PENDING'
+
             store_data = {
                 'store_id': store['id'],
                 'owner_id': store['owner_id'],
@@ -1048,7 +1053,7 @@ def get_owner_store_list(owner_id: int):
                 'store_lng': float(store['store_lng']) if store.get('store_lng') else None,
                 'region_code': store.get('region_code'),
                 'district_code': store.get('district_code'),
-                'inspection_status': store.get('inspection_status'),
+                'inspection_status': inspection_status,
                 'inspection_msg': store.get('inspection_msg'),
                 'status': store.get('status'),
                 'open_yn': store.get('open_yn'),
