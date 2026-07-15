@@ -310,6 +310,7 @@ def getOwnerStoreList(owner_id: int):
         INNER JOIN menu m ON s.id = m.store_id
         WHERE s.owner_id = %s
           AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+          AND s.contract_completed = 'COMPLETED'
         ORDER BY s.updated_at DESC
         ''', (owner_id,))
         
@@ -660,6 +661,7 @@ def getStore(owner_id: int):
         INNER JOIN menu m ON s.id = m.store_id
         WHERE s.owner_id = %s
           AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
+          AND s.contract_completed = 'COMPLETED'
         ORDER BY s.updated_at DESC''', (owner_id,))
 
         rows = cursor.fetchall()
