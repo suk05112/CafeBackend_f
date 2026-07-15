@@ -157,7 +157,7 @@ def searchStore(
               AND MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE)
               AND s.id < %s
               AND EXISTS (
-                  SELECT 1 FROM menu m WHERE m.store_id = s.id
+                  SELECT 1 FROM menu m WHERE m.store_id = s.id AND m.is_deleted = 0
               )
             ORDER BY relevance DESC, s.id DESC
             LIMIT %s
@@ -180,7 +180,7 @@ def searchStore(
               AND s.contract_completed = 'COMPLETED'
               AND MATCH(s.store_name) AGAINST(%s IN NATURAL LANGUAGE MODE)
               AND EXISTS (
-                  SELECT 1 FROM menu m WHERE m.store_id = s.id
+                  SELECT 1 FROM menu m WHERE m.store_id = s.id AND m.is_deleted = 0
               )
             ORDER BY relevance DESC, s.id DESC
             LIMIT %s
@@ -255,7 +255,7 @@ def getStoreList():
             s.store_address,
             s.store_logo_key
         FROM store s
-        INNER JOIN menu m ON s.id = m.store_id
+        INNER JOIN menu m ON s.id = m.store_id AND m.is_deleted = 0
         WHERE (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
           AND s.contract_completed = 'COMPLETED'
         ORDER BY s.updated_at DESC
@@ -307,7 +307,7 @@ def getOwnerStoreList(owner_id: int):
             s.id, 
             s.store_name
         FROM store s
-        INNER JOIN menu m ON s.id = m.store_id
+        INNER JOIN menu m ON s.id = m.store_id AND m.is_deleted = 0
         WHERE s.owner_id = %s
           AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
         ORDER BY s.updated_at DESC
@@ -354,7 +354,7 @@ def getRegionsAndDistricts(offset: Optional[int] = Query(0, description="페이�
             s.region_code,
             s.district_code
         FROM store s
-        INNER JOIN menu m ON s.id = m.store_id
+        INNER JOIN menu m ON s.id = m.store_id AND m.is_deleted = 0
         WHERE s.region_code IS NOT NULL 
           AND s.district_code IS NOT NULL
           AND s.inspection_status = 'APPROVED'
@@ -481,7 +481,7 @@ def getStoreListByDistrict(
                   s.updated_at < %s
                   OR (s.updated_at = %s AND s.id < %s)
               )
-              AND EXISTS (SELECT 1 FROM menu m WHERE m.store_id = s.id)
+              AND EXISTS (SELECT 1 FROM menu m WHERE m.store_id = s.id AND m.is_deleted = 0)
             ORDER BY s.updated_at DESC, s.id DESC
             LIMIT %s
             ''', (region_code, cursor_updated_at, cursor_updated_at, cursor_store_id, limit))
@@ -501,7 +501,7 @@ def getStoreListByDistrict(
             WHERE s.region_code = %s
               AND s.inspection_status = 'APPROVED'
               AND s.contract_completed = 'COMPLETED'
-              AND EXISTS (SELECT 1 FROM menu m WHERE m.store_id = s.id)
+              AND EXISTS (SELECT 1 FROM menu m WHERE m.store_id = s.id AND m.is_deleted = 0)
             ORDER BY s.updated_at DESC, s.id DESC
             LIMIT %s
             ''', (region_code, limit))
@@ -592,7 +592,7 @@ def getStoreListByLocation(lat: float, lng: float):
                 COS(RADIANS(s.store_lng) - RADIANS(%s)) +
                 SIN(RADIANS(%s)) * SIN(RADIANS(s.store_lat)))) AS distance
         FROM store s
-        INNER JOIN menu m ON s.id = m.store_id
+        INNER JOIN menu m ON s.id = m.store_id AND m.is_deleted = 0
         WHERE s.store_lat IS NOT NULL
           AND s.store_lng IS NOT NULL
           AND s.inspection_status = 'APPROVED'
@@ -657,7 +657,7 @@ def getStore(owner_id: int):
         s.inspection_msg,
         s.store_logo_key
         FROM store s
-        INNER JOIN menu m ON s.id = m.store_id
+        INNER JOIN menu m ON s.id = m.store_id AND m.is_deleted = 0
         WHERE s.owner_id = %s
           AND (s.inspection_status = 'APPROVED' OR s.inspection_status = 1)
           AND s.contract_completed = 'COMPLETED'
