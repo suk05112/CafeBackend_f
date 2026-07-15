@@ -46,11 +46,12 @@ def setup_test_data(validity: date) -> tuple[int, int]:
     conn = new_conn()
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
+    # 고정 id INSERT 금지: AUTO_INCREMENT 카운터가 점프해 실제 메뉴 id가 튀는 원인 (GNB-184)
     cur.execute("""
-        INSERT INTO menu (id, store_id, menu_name, price, status)
-        VALUES (99999, 99999, '테스트메뉴', 5000, 'ACTIVE')
-        ON DUPLICATE KEY UPDATE menu_name='테스트메뉴'
+        INSERT INTO menu (store_id, menu_name, price, status)
+        VALUES (99999, '테스트메뉴', 5000, 'ACTIVE')
     """)
+    menu_id = cur.lastrowid
     cur.execute("""
         INSERT INTO orders (store_id, user_id, payment_key, amount, status, order_no, payment, pgcode)
         VALUES (99999, 99999, 'TEST_FAKE_KEY', 5000, 'COMPLETED', %s, 'card', 'creditcard')
@@ -58,8 +59,8 @@ def setup_test_data(validity: date) -> tuple[int, int]:
     order_id = cur.lastrowid
     cur.execute("""
         INSERT INTO gifticon (user_id, type, sender, menu_id, store_id, order_id, status, validity, gift_code)
-        VALUES (99999, 1, '테스트발신', 99999, 99999, %s, 'UNUSED', %s, %s)
-    """, (order_id, validity, f"TEST-GIFT-{order_id}"))
+        VALUES (99999, 1, '테스트발신', %s, 99999, %s, 'UNUSED', %s, %s)
+    """, (menu_id, order_id, validity, f"TEST-GIFT-{order_id}"))
     gifticon_id = cur.lastrowid
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
     conn.commit()
@@ -73,6 +74,7 @@ def teardown_test_data(order_id: int, gifticon_id: int):
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     cur.execute("DELETE FROM refund WHERE order_id = %s AND refund_type = 'EXPIRY'", (order_id,))
     cur.execute("DELETE FROM orders_gifticon WHERE order_id = %s", (order_id,))
+    cur.execute("DELETE FROM menu WHERE id = (SELECT menu_id FROM gifticon WHERE id = %s)", (gifticon_id,))
     cur.execute("DELETE FROM gifticon WHERE id = %s", (gifticon_id,))
     cur.execute("DELETE FROM orders WHERE id = %s", (order_id,))
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
