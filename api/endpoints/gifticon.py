@@ -40,7 +40,7 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
     gifticonList = []
        
     try:
-        # gifticon 테이블을 기준으로 조회하여 모든 기프티콘을 가져옴
+        # gifticon 테이블을 기준으로 조회하여 모든 기프티콘을 가져옴 (메뉴 정보는 발급 시점 스냅샷 사용)
         cursor.execute('''
             SELECT
                 g.id as gifticon_id,
@@ -56,29 +56,28 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
                 g.menu_id,
                 g.store_id,
                 g.created_at,
-                m.menu_name,
-                m.price,
-                m.description,
-                m.image_key,
+                g.menu_name_snapshot,
+                g.price_snapshot,
+                g.description_snapshot,
+                g.image_key_snapshot,
                 s.store_name
             FROM gifticon g
-            LEFT JOIN menu m ON g.menu_id = m.id
             LEFT JOIN store s ON g.store_id = s.id
             WHERE g.receiver_id = %s AND g.status != 'UNKNOWN'
             ORDER BY g.id DESC
         ''', (user_id,))
-                    
+
         rows = cursor.fetchall()
         print("sql 실행 결과:", len(rows), "개")
 
         for row in rows:
-            image_key = row.get('image_key') or ''
+            image_key = row.get('image_key_snapshot') or ''
             menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
-                "name": row.get('menu_name') or '',
-                "price": row.get('price') or 0,
-                "description": row.get('description') or '',
+                "name": row.get('menu_name_snapshot') or '',
+                "price": row.get('price_snapshot') or 0,
+                "description": row.get('description_snapshot') or '',
                 "validity": row['validity'],
                 "sender": row['sender'],
                 "receiver": row['receiver'],
@@ -141,19 +140,7 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
                 detail="Store not found"
             )
         
-        cursor.execute('''SELECT menu_name, image_key
-        FROM menu
-        WHERE id=%s ;''', (gifticon['menu_id'],))
-
-        menu_result = cursor.fetchone()
-
-        if not menu_result:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Menu not found"
-            )
-
-        image_key = menu_result.get('image_key') or ''
+        image_key = gifticon.get('image_key_snapshot') or ''
         menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
@@ -162,7 +149,7 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             "validity": gifticon['validity'],
             "sender": gifticon['sender'],
             "type": gifticon['type'],
-            "name": menu_result.get('menu_name') or menu_result.get('name'),
+            "name": gifticon.get('menu_name_snapshot') or '',
             "status": gifticon.get('status'),
             "menu_url" : menu_url,
             "msg" : gifticon.get('msg'),

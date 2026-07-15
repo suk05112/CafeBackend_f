@@ -304,12 +304,28 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
         )
         order_id = cursor.lastrowid
 
-        # 4. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
+        # 4. 발급 시점 메뉴 정보 스냅샷 조회
         cursor.execute(
-            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
+            "SELECT menu_name, price, description, image_key FROM menu WHERE id = %s",
+            (gifticon.menu_id,)
+        )
+        menu_row = cursor.fetchone()
+        if not menu_row:
+            connection.rollback()
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Menu not found"
+            )
+        menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot = menu_row
+
+        # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
+        cursor.execute(
+            """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, status,
+                                      menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', %s, %s, %s, %s)""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
-             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id)
+             gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
+             menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot)
         )
         gifticon_id = cursor.lastrowid
 
