@@ -821,7 +821,7 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
             # 7일 경과: 구매자 환불 불가. 수신자가 /order/refund-request/{order_id}로 신청해야 함
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="환불 가능 기간(7일)이 지났습니다. 수신자 환불 신청을 이용해주세요.",
+                detail="환불 가능 기간(7일)이 지났습니다.",
             )
 
     except HTTPException:
