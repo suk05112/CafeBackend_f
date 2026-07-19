@@ -316,7 +316,10 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Menu not found"
             )
-        menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot = menu_row
+        menu_name_snapshot = menu_row['menu_name']
+        price_snapshot = menu_row['price']
+        description_snapshot = menu_row['description']
+        image_key_snapshot = menu_row['image_key']
 
         # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
         cursor.execute(
