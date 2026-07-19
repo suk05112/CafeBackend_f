@@ -839,7 +839,8 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
 @router.post("/refund-request/{order_id}")
 def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verify_firebase_token)):
     """
-    주문일(created_at) 기준 7일 경과 후, 선물을 받은 수신자가 계좌정보를 입력해 환불을 신청하는 API.
+    주문일(created_at) 기준 7일 경과 후, 기프티콘의 수신자(gifticon.user_id)가 계좌정보를 입력해
+    환불을 신청하는 API. 나에게 선물하기(자가구매)의 경우 구매자 본인이 곧 수신자이므로 동일하게 호출한다.
     신청 시점에는 관리자 승인 대기 상태(REQUESTED)로만 접수되며, 실제 계좌이체는 관리자가 수동 처리한다.
     구매자에게는 신청~완료 전 구간 동안 orders.status가 그대로 유지되어 결제완료로만 보인다.
     """
@@ -874,6 +875,8 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
             )
 
         # 3. 권한 검증: 호출자가 수신자(선물 등록을 마친 gifticon.user_id)인지 확인
+        # 나에게 선물하기(자가구매)는 구매자=수신자이므로 이 조건을 그대로 통과한다.
+        # 타인에게 선물한 경우에만 구매자(gifticon.user_id가 아닌 사람)가 걸러진다.
         cursor.execute(
             """SELECT id, user_id, status FROM gifticon WHERE id IN ({}) """.format(
                 ','.join(['%s'] * len(gifticon_ids))
@@ -889,11 +892,6 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
             db_user = cursor.fetchone()
             caller_id = db_user["id"] if db_user else None
 
-            if caller_id is not None and caller_id == order.get("user_id"):
-                raise HTTPException(
-                    status_code=403,
-                    detail="구매자는 이 API를 사용할 수 없습니다. 만 7일 이내라면 /order/refund/{order_id}를 이용해주세요.",
-                )
             if not caller_id or any(g["user_id"] != caller_id for g in gifticons):
                 raise HTTPException(status_code=403, detail="Forbidden")
 
