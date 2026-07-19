@@ -545,7 +545,6 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
                 g.sender,
                 g.receiver,
                 g.receiver_phone,
-                g.status AS gifticon_status,
                 g.validity,
                 g.created_at AS gifticon_created_at,
                 m.id AS menu_id,
@@ -580,7 +579,7 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
                 "sender": row['sender'],
                 "receiver": row['receiver'],
                 "receiver_phone": row['receiver_phone'],
-                "status": row['gifticon_status'],
+                # 구매자 응답에는 기프티콘 개별 상태(사용여부/환불진행상태)를 노출하지 않음
                 "validity": row['validity'].isoformat() if row['validity'] else None,
                 "menu_id": row['menu_id'],
                 "menu_name": row['menu_name'],
@@ -729,10 +728,10 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
             reason = (body.reason or "")[:500] if body else None
             cursor.execute(
                 """
-                INSERT INTO refund (order_id, refund_type, amount, status, refunded_at, reason)
-                VALUES (%s, 'PURCHASER', %s, 'PROCESSING', NOW(), %s)
+                INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at, reason)
+                VALUES (%s, 'PURCHASER', %s, %s, 0, 'PROCESSING', NOW(), %s)
                 """,
-                (order_id, amount, reason),
+                (order_id, amount, amount, reason),
             )
             refund_id = cursor.lastrowid
             connection.commit()
@@ -819,73 +818,11 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 "gifticons_canceled": len(gifticon_ids),
             }
         else:
-            # 7일 이후: 수신자 환불 (계좌정보 필수)
-            receiver_account = body.receiver_account if body else None
-            if not receiver_account:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="7일 이후 환불은 수신자 계좌정보(account_holder, bank_code, bank_name, account_number)가 필요합니다.",
-                )
-
-            # GNB-20: 중복 환불 차단 (수신자 환불은 PROCESSING 상태 없음, COMPLETED만 체크)
-            cursor.execute(
-                "SELECT id FROM refund WHERE order_id=%s AND status='COMPLETED' LIMIT 1",
-                (order_id,),
+            # 7일 경과: 구매자 환불 불가. 수신자가 /order/refund-request/{order_id}로 신청해야 함
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="환불 가능 기간(7일)이 지났습니다. 수신자 환불 신청을 이용해주세요.",
             )
-            if cursor.fetchone():
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="이미 환불 완료된 주문입니다.",
-                )
-
-            # 수신자 user_id (해당 주문 기프티콘 중 하나의 user_id)
-            receiver_user_id = None
-            if gifticon_ids:
-                cursor.execute(
-                    """SELECT user_id FROM gifticon WHERE id=%s LIMIT 1""",
-                    (gifticon_ids[0],),
-                )
-                row = cursor.fetchone()
-                if row:
-                    receiver_user_id = row.get("user_id")
-
-            cursor.execute(
-                """UPDATE orders SET status='REFUNDED' WHERE id=%s""",
-                (order_id,),
-            )
-            for gid in gifticon_ids:
-                cursor.execute(
-                    """UPDATE gifticon SET status='CANCELED' WHERE id=%s""",
-                    (gid,),
-                )
-
-            reason = (body.reason or "")[:500] if body else None
-            cursor.execute(
-                """
-                INSERT INTO refund (
-                    order_id, refund_type, amount, status, refunded_at,
-                    receiver_user_id, account_holder, bank_code, bank_name, account_number, reason
-                ) VALUES (%s, 'RECEIVER', %s, 'COMPLETED', NOW(), %s, %s, %s, %s, %s, %s)
-                """,
-                (
-                    order_id,
-                    amount,
-                    receiver_user_id,
-                    receiver_account.account_holder.strip(),
-                    receiver_account.bank_code.strip(),
-                    receiver_account.bank_name.strip(),
-                    receiver_account.account_number.strip(),
-                    reason,
-                ),
-            )
-            connection.commit()
-
-            return {
-                "message": "수신자 계좌로 환불 예정입니다.",
-                "order_id": order_id,
-                "refund_type": "RECEIVER",
-                "gifticons_canceled": len(gifticon_ids),
-            }
 
     except HTTPException:
         raise
@@ -893,6 +830,178 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
         connection.rollback()
         traceback.print_exc()
         raise InternalError(e, "refundGifticon")
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
+# 수신자 환불 신청 (7일 경과 후: 계좌정보 입력해 신청 접수, 관리자 수동 승인 후 완료)
+@router.post("/refund-request/{order_id}")
+def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verify_firebase_token)):
+    """
+    주문일(created_at) 기준 7일 경과 후, 선물을 받은 수신자가 계좌정보를 입력해 환불을 신청하는 API.
+    신청 시점에는 관리자 승인 대기 상태(REQUESTED)로만 접수되며, 실제 계좌이체는 관리자가 수동 처리한다.
+    구매자에게는 신청~완료 전 구간 동안 orders.status가 그대로 유지되어 결제완료로만 보인다.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute(
+            """SELECT id, user_id, amount, created_at, status FROM orders WHERE id=%s""",
+            (order_id,),
+        )
+        order = cursor.fetchone()
+
+        if not order:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order with id {order_id} not found",
+            )
+
+        # 2. 연결된 기프티콘 조회
+        cursor.execute(
+            """SELECT gifticon_id FROM orders_gifticon WHERE order_id=%s""",
+            (order_id,),
+        )
+        gifticon_rows = cursor.fetchall()
+        gifticon_ids = [r["gifticon_id"] for r in gifticon_rows]
+
+        if not gifticon_ids:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order {order_id}에 연결된 기프티콘이 없습니다.",
+            )
+
+        # 3. 권한 검증: 호출자가 수신자(선물 등록을 마친 gifticon.user_id)인지 확인
+        cursor.execute(
+            """SELECT id, user_id, status FROM gifticon WHERE id IN ({}) """.format(
+                ','.join(['%s'] * len(gifticon_ids))
+            ),
+            gifticon_ids,
+        )
+        gifticons = cursor.fetchall()
+
+        caller_id = None
+        if user is not None:
+            uid = user.get("uid")
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            db_user = cursor.fetchone()
+            caller_id = db_user["id"] if db_user else None
+
+            if caller_id is not None and caller_id == order.get("user_id"):
+                raise HTTPException(
+                    status_code=403,
+                    detail="구매자는 이 API를 사용할 수 없습니다. 만 7일 이내라면 /order/refund/{order_id}를 이용해주세요.",
+                )
+            if not caller_id or any(g["user_id"] != caller_id for g in gifticons):
+                raise HTTPException(status_code=403, detail="Forbidden")
+
+        # 4. 7일 판정 (구매자 환불과 동일 기준)
+        order_created = order["created_at"]
+        order_date = order_created.date() if hasattr(order_created, "date") else order_created
+        today = get_kst_now().date()
+        cutoff_date = order_date + timedelta(days=7)
+        within_7_days = today < cutoff_date
+        if within_7_days:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="아직 구매자 환불 가능 기간입니다. 7일이 지난 후 신청해주세요.",
+            )
+
+        # 5. 이미 사용된(USED) 기프티콘이 있으면 환불 불가
+        if any(g["status"] == "USED" for g in gifticons):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이미 사용된 기프티콘이 포함되어 있어 환불할 수 없습니다.",
+            )
+
+        # 6. 계좌정보 필수
+        receiver_account = body.receiver_account if body else None
+        if not receiver_account:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="환불 신청은 수신자 계좌정보(account_holder, bank_code, bank_name, account_number)가 필요합니다.",
+            )
+
+        # 7. 중복 신청/완료 방지. 기존 FAILED 건은 재사용(UNIQUE(order_id) 제약)
+        cursor.execute(
+            "SELECT id, status FROM refund WHERE order_id=%s LIMIT 1",
+            (order_id,),
+        )
+        existing_refund = cursor.fetchone()
+        if existing_refund and existing_refund["status"] in ("REQUESTED", "COMPLETED"):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이미 환불 신청이 접수되었거나 완료된 주문입니다.",
+            )
+
+        # 8. 금액 계산 (원금의 90% 지급, 10% 수수료 차감)
+        original_amount = int(order.get("amount") or 0)
+        refunded_amount = int(original_amount * 0.9)
+        fee_amount = original_amount - refunded_amount
+        reason = (body.reason or "")[:500] if body else None
+        receiver_user_id = caller_id
+
+        if existing_refund:
+            # FAILED 건 재신청: 기존 레코드 재사용
+            cursor.execute(
+                """
+                UPDATE refund SET
+                    refund_type='RECEIVER', original_amount=%s, refunded_amount=%s, fee_amount=%s,
+                    status='REQUESTED', refunded_at=NOW(), receiver_user_id=%s,
+                    account_holder=%s, bank_code=%s, bank_name=%s, account_number=%s, reason=%s
+                WHERE id=%s
+                """,
+                (
+                    original_amount, refunded_amount, fee_amount, receiver_user_id,
+                    receiver_account.account_holder.strip(),
+                    receiver_account.bank_code.strip(),
+                    receiver_account.bank_name.strip(),
+                    receiver_account.account_number.strip(),
+                    reason,
+                    existing_refund["id"],
+                ),
+            )
+        else:
+            cursor.execute(
+                """
+                INSERT INTO refund (
+                    order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at,
+                    receiver_user_id, account_holder, bank_code, bank_name, account_number, reason
+                ) VALUES (%s, 'RECEIVER', %s, %s, %s, 'REQUESTED', NOW(), %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    order_id, original_amount, refunded_amount, fee_amount, receiver_user_id,
+                    receiver_account.account_holder.strip(),
+                    receiver_account.bank_code.strip(),
+                    receiver_account.bank_name.strip(),
+                    receiver_account.account_number.strip(),
+                    reason,
+                ),
+            )
+
+        # orders.status는 변경하지 않는다 - 구매자에게는 계속 결제완료로 보여야 함
+        for gid in gifticon_ids:
+            cursor.execute(
+                "UPDATE gifticon SET status='REFUND_REQUESTED' WHERE id=%s",
+                (gid,),
+            )
+        connection.commit()
+
+        return {
+            "message": "환불 신청이 접수되었습니다.",
+            "order_id": order_id,
+            "refund_type": "RECEIVER",
+            "status": "REQUESTED",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        connection.rollback()
+        traceback.print_exc()
+        raise InternalError(e, "requestReceiverRefund")
     finally:
         cursor.close()
         close_db_connection(connection)

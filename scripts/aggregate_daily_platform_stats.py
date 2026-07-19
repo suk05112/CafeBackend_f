@@ -115,7 +115,7 @@ def aggregate_one_day(cursor, target: date, base_fee_rate: float) -> dict:
     payment_gross = int(cursor.fetchone()[0] or 0)
 
     cursor.execute("""
-        SELECT COALESCE(SUM(amount), 0) FROM refund
+        SELECT COALESCE(SUM(refunded_amount), 0) FROM refund
         WHERE DATE(refunded_at) = %s AND status = 'COMPLETED'
     """, (d,))
     refund_amount = int(cursor.fetchone()[0] or 0)

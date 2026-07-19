@@ -87,7 +87,7 @@ def get_state(order_id: int, gifticon_id: int) -> dict:
     cur.execute("SELECT status FROM gifticon WHERE id = %s", (gifticon_id,))
     g = cur.fetchone()
     cur.execute(
-        "SELECT status, amount FROM refund WHERE order_id = %s AND refund_type = 'EXPIRY' ORDER BY id DESC LIMIT 1",
+        "SELECT status, refunded_amount FROM refund WHERE order_id = %s AND refund_type = 'EXPIRY' ORDER BY id DESC LIMIT 1",
         (order_id,)
     )
     r = cur.fetchone()
@@ -98,7 +98,7 @@ def get_state(order_id: int, gifticon_id: int) -> dict:
         "gifticon": g["status"] if g else None,
         "order": o["status"] if o else None,
         "refund_status": r["status"] if r else None,
-        "refund_amount": r["amount"] if r else None,
+        "refund_amount": r["refunded_amount"] if r else None,
     }
 
 
@@ -167,8 +167,8 @@ def test_no_duplicate_on_completed_refund():
     # COMPLETED refund 선삽입
     conn = new_conn(); cur = conn.cursor()
     cur.execute("""
-        INSERT INTO refund (order_id, refund_type, amount, status, refunded_at, reason)
-        VALUES (%s, 'EXPIRY', 4500, 'COMPLETED', %s, '중복 테스트용')
+        INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at, reason)
+        VALUES (%s, 'EXPIRY', 5000, 4500, 500, 'COMPLETED', %s, '중복 테스트용')
     """, (order_id, clock.now()))
     conn.commit(); cur.close(); conn.close()
 

@@ -24,7 +24,9 @@ def get_refund_list(
                 r.id,
                 r.order_id,
                 r.refund_type,
-                r.amount,
+                r.original_amount,
+                r.refunded_amount,
+                r.fee_amount,
                 r.status,
                 r.refunded_at,
                 r.account_holder,
@@ -60,7 +62,9 @@ def get_refund_list(
                 "order_created_at": row["order_created_at"].isoformat() if row.get("order_created_at") else None,
                 "refunded_at": row["refunded_at"].isoformat() if row.get("refunded_at") else None,
                 "refund_type": row["refund_type"],
-                "amount": int(row["amount"] or 0),
+                "original_amount": int(row["original_amount"] or 0),
+                "refunded_amount": int(row["refunded_amount"] or 0),
+                "fee_amount": int(row["fee_amount"] or 0),
                 "status": row["status"],
                 "account_holder": row.get("account_holder"),
                 "bank_code": row.get("bank_code"),
@@ -83,7 +87,11 @@ def get_refund_list(
 
 
 def update_refund_status(refund_id: int, status: str) -> Optional[Dict]:
-    """환불 상태 변경. 허용 값: REQUESTED, COMPLETED, FAILED"""
+    """환불 상태 변경. 허용 값: REQUESTED, COMPLETED, FAILED.
+    RECEIVER(수신자) 환불이 COMPLETED/FAILED로 전이될 때는 gifticon.status를 동반 처리한다.
+    - COMPLETED: 기프티콘 최종 취소(CANCELED)
+    - FAILED: 기프티콘을 UNUSED로 복원하여 재신청 가능하도록 함
+    """
     allowed = ("REQUESTED", "COMPLETED", "FAILED")
     if status not in allowed:
         return None
@@ -91,12 +99,32 @@ def update_refund_status(refund_id: int, status: str) -> Optional[Dict]:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         cursor.execute(
+            "SELECT order_id, refund_type FROM refund WHERE id = %s",
+            (refund_id,),
+        )
+        existing = cursor.fetchone()
+        if not existing:
+            return None
+
+        cursor.execute(
             "UPDATE refund SET status = %s, updated_at = NOW() WHERE id = %s",
             (status, refund_id),
         )
+
+        if existing["refund_type"] == "RECEIVER" and status in ("COMPLETED", "FAILED"):
+            gifticon_status = "CANCELED" if status == "COMPLETED" else "UNUSED"
+            cursor.execute(
+                """
+                UPDATE gifticon g
+                JOIN orders_gifticon og ON og.gifticon_id = g.id
+                SET g.status = %s
+                WHERE og.order_id = %s AND g.status = 'REFUND_REQUESTED'
+                """,
+                (gifticon_status, existing["order_id"]),
+            )
+
         connection.commit()
-        if cursor.rowcount == 0:
-            return None
+
         cursor.execute(
             "SELECT id, order_id, refund_type, status, refunded_at FROM refund WHERE id = %s",
             (refund_id,),
@@ -111,6 +139,9 @@ def update_refund_status(refund_id: int, status: str) -> Optional[Dict]:
             "status": row["status"],
             "refunded_at": row["refunded_at"].isoformat() if row.get("refunded_at") else None,
         }
+    except Exception:
+        connection.rollback()
+        raise
     finally:
         cursor.close()
         close_db_connection(connection)
