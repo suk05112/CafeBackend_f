@@ -63,7 +63,7 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
                 s.store_name
             FROM gifticon g
             LEFT JOIN store s ON g.store_id = s.id
-            WHERE g.receiver_id = %s AND g.status != 'UNKNOWN'
+            WHERE g.receiver_id = %s AND g.status NOT IN ('PENDING', 'UNKNOWN')
             ORDER BY g.id DESC
         ''', (user_id,))
 
