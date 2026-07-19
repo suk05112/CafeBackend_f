@@ -107,4 +107,17 @@ sudo docker ps --filter "name=app-dev" --format "table {{.Names}}\t{{.Status}}\t
 echo ""
 echo -e "${YELLOW}로그 확인: sudo docker logs -f app-dev${NC}"
 
+# 5. 오래된 배포 이미지 정리 (컨테이너 사용 중 이미지 + 최근 3개 보존)
+echo -e "${YELLOW}오래된 배포 이미지 정리 중...${NC}"
+DEPLOY_REPO="ghcr.io/suk05112/cafebackend"
+KEEP_IDS=$(sudo docker images "$DEPLOY_REPO" --format '{{.ID}}' | awk '!seen[$0]++' | head -3)
+IN_USE_IDS=$(sudo docker ps -a --format '{{.Image}}' | sort -u | xargs -r -n1 sudo docker image inspect --format '{{.Id}}' 2>/dev/null | sed 's/^sha256://; s/^\(.\{12\}\).*/\1/')
+for IMG_ID in $(sudo docker images "$DEPLOY_REPO" --format '{{.ID}}' | sort -u); do
+    if ! echo "$KEEP_IDS $IN_USE_IDS" | grep -q "$IMG_ID"; then
+        sudo docker rmi -f "$IMG_ID" > /dev/null 2>&1 || true
+    fi
+done
+sudo docker image prune -f > /dev/null 2>&1 || true
+echo -e "${GREEN}✅ 이미지 정리 완료${NC}"
+
 
