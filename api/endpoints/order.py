@@ -273,7 +273,13 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail="만료된 주문입니다. 새로 주문해 주세요."
                     )
-                # PENDING: 페이레터에 결제 URL만 재발급 (DB 변경 없음)
+                # PENDING: 결제수단이 바뀌었을 수 있으므로 pgcode/payment 갱신 후 페이레터 URL 재발급
+                cursor.execute(
+                    "UPDATE orders SET pgcode = %s, payment = %s WHERE id = %s",
+                    (gifticon.pgcode, gifticon.payment, existing['id'])
+                )
+                connection.commit()
+
                 pl_data = _request_payletter_url(
                     gifticon, user_id, existing['order_no']
                 )
