@@ -3,6 +3,7 @@ import pymysql
 from datetime import datetime
 from typing import Optional, Dict, List
 from db.session import get_db_connection, close_db_connection
+from core import clock
 from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
 from botocore.exceptions import ClientError
 from crud import store as store_crud
@@ -17,7 +18,9 @@ def get_dashboard_statistics(connection) -> Dict:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     try:
-        today = datetime.now().date()
+        # GNB-200: DB(RDS) 세션 타임존은 Asia/Seoul, 앱 서버(EC2)는 UTC로 서로 다름.
+        # datetime.now()는 UTC를 반환해 KST 자정~09:00 사이 생성분이 "어제"로 밀려 누락됨.
+        today = clock.now().date()
         start_of_month = today.replace(day=1)
 
         # gifticon 관련 집계 1회 쿼리
