@@ -32,19 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pymysql
 from core.config import settings
-
-# GNB-169: pgcode별 PG 수수료율 (%)
-PG_FEE_RATE_MAP = {
-    "creditcard":    2.7,
-    "naverpay":      2.8,
-    "kakaopay":      2.8,
-    "applepay":      2.9,
-    "samsungpay":    2.9,
-    "banktransfer":  2.0,
-    "voucher":       0.0,
-    # 나머지는 신용카드 기본값 적용
-}
-PG_FEE_RATE_DEFAULT = 2.7
+from core.fees import PG_FEE_RATE_MAP, PG_FEE_RATE_DEFAULT
 
 
 def get_connection(db_name: str):

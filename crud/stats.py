@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 from db.session import get_db_connection, close_db_connection
 from crud import promotion as promotion_crud
+from core.fees import PG_FEE_RATE_MAP, PG_FEE_RATE_DEFAULT
 
 
 # ── 대시보드 API CRUD (GNB-164 / GNB-165 / GNB-166) ──────────────────────────
@@ -16,21 +17,42 @@ def get_dashboard_summary() -> Dict:
     """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
 
     집계 기준:
-    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED 상태(미사용) 기프티콘의 menu.price 합계
+    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED/REFUND_REQUESTED 상태
+      (환불 완료 전까지는 매장이 여전히 보유한 금액) 기프티콘의 menu.price 합계에서
+      결제수단(pgcode)별 PG수수료를 차감한 금액. PG수수료는 orders.amount(실 결제금액)
+      기준으로 계산 (GNB-199)
     - current_cycle: settlement_details.settlement_id IS NULL 건 합계 (현재 진행 중인 주기)
     - cumulative: stats_daily_platform 전체 SUM
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        # 발행잔액: 미사용(UNUSED/PENDING/EXPIRED) 기프티콘 menu.price 합계, 환불/취소 제외
+        # 발행잔액: 미사용 + 환불요청중(아직 환불 미완료) 기프티콘 menu.price 합계 - PG수수료
+        # REFUNDED/CANCELED/USED는 이미 확정(환불완료/취소완료/사용완료)되어 제외
         cursor.execute("""
-            SELECT COALESCE(SUM(m.price), 0) AS issued_balance
+            SELECT
+                m.price AS menu_price,
+                o.amount AS order_amount,
+                LOWER(COALESCE(o.pgcode, '')) AS pgcode
             FROM gifticon g
             JOIN menu m ON g.menu_id = m.id
-            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED')
+            LEFT JOIN orders o ON g.order_id = o.id
+            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED', 'REFUND_REQUESTED')
         """)
-        issued_balance = int(cursor.fetchone()['issued_balance'] or 0)
+        rows = cursor.fetchall()
+
+        total_menu_price = 0
+        total_pg_fee = 0
+        for r in rows:
+            menu_price = int(r['menu_price'] or 0)
+            order_amount = int(r['order_amount'] or 0)
+            pgcode = r['pgcode'] or ''
+            pg_rate = PG_FEE_RATE_MAP.get(pgcode, PG_FEE_RATE_DEFAULT)
+
+            total_menu_price += menu_price
+            total_pg_fee += math.floor(order_amount * pg_rate / 100)
+
+        issued_balance = total_menu_price - total_pg_fee
 
         # 현재 진행 중인 정산 주기 조회
         cursor.execute("""
