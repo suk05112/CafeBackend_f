@@ -118,6 +118,33 @@ def test_used_status_excluded():
         teardown(*ids)
 
 
+def test_refund_requested_included():
+    """REFUND_REQUESTED(환불 요청 중, 아직 미완료)는 발행잔액에 포함되어야 함"""
+    before = stats_crud.get_dashboard_summary()["issued_balance"]
+    menu_price, order_amount = 10000, 10000
+    ids = setup_gifticon(menu_price, order_amount, "creditcard", "REFUND_REQUESTED")
+    try:
+        after = stats_crud.get_dashboard_summary()["issued_balance"]
+        rate = PG_FEE_RATE_MAP["creditcard"]
+        expected = menu_price - math.floor(order_amount * rate / 100)
+        assert after - before == expected, f"REFUND_REQUESTED가 잔액에서 누락됨: 기대 {expected}, 실제 {after - before}"
+    finally:
+        teardown(*ids)
+
+
+def test_refunded_and_canceled_excluded():
+    """REFUNDED(환불 완료), CANCELED(취소 완료)는 발행잔액에서 제외되어야 함"""
+    before = stats_crud.get_dashboard_summary()["issued_balance"]
+    ids_refunded = setup_gifticon(10000, 10000, "creditcard", "REFUNDED")
+    ids_canceled = setup_gifticon(10000, 10000, "creditcard", "CANCELED")
+    try:
+        after = stats_crud.get_dashboard_summary()["issued_balance"]
+        assert after == before, "REFUNDED/CANCELED 상태는 잔액에 포함되면 안 됨"
+    finally:
+        teardown(*ids_refunded)
+        teardown(*ids_canceled)
+
+
 def test_promo_price_uses_order_amount_not_menu_price():
     """menu.price와 orders.amount가 다른 경우(프로모션 할인 등) PG수수료는 orders.amount 기준"""
     before = stats_crud.get_dashboard_summary()["issued_balance"]
@@ -136,6 +163,8 @@ if __name__ == "__main__":
     tests = [
         test_pg_fee_deducted_per_pgcode,
         test_used_status_excluded,
+        test_refund_requested_included,
+        test_refunded_and_canceled_excluded,
         test_promo_price_uses_order_amount_not_menu_price,
     ]
     passed = failed = 0
