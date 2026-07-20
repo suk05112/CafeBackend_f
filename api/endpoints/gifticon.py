@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 import re
+import math
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
@@ -215,10 +216,21 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
             connection.rollback()
             return {'result': 1}  # 동시 요청으로 이미 사용 처리됨
 
-        # settlement_details: 개별 기프티콘 매출액만 기록 (수수료는 정산 배치에서 총액 기준으로 산정)
+        # settlement_details: 개별 기프티콘 매출액 + 기본(프로모션 미적용) 수수료 기록
+        # 프로모션 적용 최종 정산액은 settlement 테이블에서만 산정
+        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+        fee_rate = float(cursor.fetchone()['base_fee_rate'])
+
+        fee_supply = math.floor(sales_amount * fee_rate / 100)
+        fee_vat = round(fee_supply * 0.1)
+        fee_amount = fee_supply + fee_vat
+        settlement_amount = sales_amount - fee_amount
+
         cursor.execute(
-            "INSERT INTO settlement_details (settlement_id, gifticon_id, sales_amount) VALUES (NULL, %s, %s)",
-            (gifticon_id, sales_amount)
+            """INSERT INTO settlement_details
+               (settlement_id, gifticon_id, sales_amount, fee_rate, fee_supply, fee_vat, fee_amount, settlement_amount)
+               VALUES (NULL, %s, %s, %s, %s, %s, %s, %s)""",
+            (gifticon_id, sales_amount, fee_rate, fee_supply, fee_vat, fee_amount, settlement_amount)
         )
 
         connection.commit()
