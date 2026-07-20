@@ -11,6 +11,7 @@ from core.config import settings
 from db.session import get_db_connection, close_db_connection
 from app.system_logger import log_scheduler_error
 from app.aligo_service import send_gift_auto_refund_to_sender
+from scripts.aggregate_daily_platform_stats import aggregate_one_day, upsert_stats, get_base_fee_rate
 
 
 def _acquire_lock(cursor, lock_name: str) -> bool:
@@ -413,6 +414,44 @@ def auto_refund_unregistered_gifts():
         close_db_connection(connection)
 
 
+def aggregate_yesterday_platform_stats():
+    """
+    전날(KST 기준) 플랫폼 일별 통계를 stats_daily_platform에 집계.
+    scripts/aggregate_daily_platform_stats.py의 로직 재사용.
+    MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.Cursor)
+    lock_acquired = False
+
+    try:
+        lock_acquired = _acquire_lock(cursor, "aggregate_daily_platform_stats")
+        if not lock_acquired:
+            return
+
+        target = (clock.now() - timedelta(days=1)).date()
+        base_fee_rate = get_base_fee_rate(cursor)
+        stats = aggregate_one_day(cursor, target, base_fee_rate)
+        upsert_stats(cursor, stats)
+        connection.commit()
+
+        logger.info(
+            f"[scheduler] aggregate_daily_platform_stats: {target} 집계 완료 "
+            f"발행:{stats['total_issued_count']}건 사용:{stats['total_used_count']}건 "
+            f"신규매장:{stats['new_store_count']}"
+        )
+
+    except Exception as e:
+        connection.rollback()
+        logger.error(f"[scheduler] aggregate_daily_platform_stats 오류: {e}")
+        log_scheduler_error("aggregate_daily_platform_stats", e)
+    finally:
+        if lock_acquired:
+            _release_lock(cursor, "aggregate_daily_platform_stats")
+        cursor.close()
+        close_db_connection(connection)
+
+
 def create_scheduler() -> BackgroundScheduler:
     scheduler = BackgroundScheduler(timezone="Asia/Seoul")
     scheduler.add_job(expire_pending_orders, "interval", minutes=15, id="expire_pending_orders")
@@ -422,8 +461,11 @@ def create_scheduler() -> BackgroundScheduler:
     if os.getenv("ENV", "dev") in ("test", "local"):
         scheduler.add_job(expire_gifticons, "interval", minutes=1, id="expire_gifticons")
         scheduler.add_job(auto_refund_unregistered_gifts, "interval", minutes=1, id="auto_refund_unregistered_gifts")
+        scheduler.add_job(aggregate_yesterday_platform_stats, "interval", minutes=1, id="aggregate_daily_platform_stats")
     else:
         scheduler.add_job(expire_gifticons, "cron", hour=3, minute=20, id="expire_gifticons")
         scheduler.add_job(auto_refund_unregistered_gifts, "cron", hour=3, minute=10, id="auto_refund_unregistered_gifts")
+        # GNB-202: 매일 03:40 KST 전날 통계 집계 (다른 배치와 시간대 분산)
+        scheduler.add_job(aggregate_yesterday_platform_stats, "cron", hour=3, minute=40, id="aggregate_daily_platform_stats")
 
     return scheduler
