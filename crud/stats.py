@@ -250,7 +250,8 @@ def get_dashboard_stats(period: str, page: int = 1, size: int = 30) -> Dict:
 def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
     """정산 주기별 플랫폼 매출 이력
 
-    GNB-169: 현재 날짜 이전 주기만 표시 (period_end_date <= today), 10개씩 페이지네이션
+    GNB-201: 오늘이 포함된(또는 미래) 진행 중인 주기도 표시 (정산 미생성 상태여도
+    노출, 관련 정산 데이터는 0으로 나타남). 10개씩 페이지네이션.
 
     집계 기준:
     - total_settlement_amount: 매장 지급 총액 (net_payout_amount 합계, COMPLETED/PENDING)
@@ -263,13 +264,11 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         offset = (page - 1) * size
-        today = date.today()
 
         cursor.execute("""
             SELECT COUNT(DISTINCT sc.cycle_id) AS total
             FROM settlement_cycles sc
-            WHERE sc.period_end_date <= %s
-        """, (today,))
+        """)
         total = int(cursor.fetchone()['total'] or 0)
 
         cursor.execute("""
@@ -288,11 +287,10 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
                     AS platform_vat_amount
             FROM settlement_cycles sc
             LEFT JOIN settlement s ON sc.cycle_id = s.cycle_id
-            WHERE sc.period_end_date <= %s
             GROUP BY sc.cycle_id, sc.period_start_date, sc.period_end_date, sc.payout_date
             ORDER BY sc.period_start_date DESC
             LIMIT %s OFFSET %s
-        """, (today, size, offset))
+        """, (size, offset))
         rows = cursor.fetchall()
 
         items = []
