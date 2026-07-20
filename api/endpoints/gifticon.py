@@ -147,6 +147,7 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             "gift_code": gifticon['gift_code'],
             "order_id": order_id_value,
             "validity": gifticon['validity'],
+            "refund_deadline": gifticon.get('refund_deadline'),
             "sender": gifticon['sender'],
             "type": gifticon['type'],
             "name": gifticon.get('menu_name_snapshot') or '',

@@ -328,13 +328,15 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
         image_key_snapshot = menu_row['image_key']
 
         # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
+        # refund_deadline: 구매자 100% 환불 마감일을 발급 시점 정책(60일)으로 고정 저장
+        refund_deadline = (get_kst_now() + timedelta(days=60)).date()
         cursor.execute(
             """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, status,
-                                      menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', %s, %s, %s, %s)""",
+                                      menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot, refund_deadline)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', %s, %s, %s, %s, %s)""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
              gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
-             menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot)
+             menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot, refund_deadline)
         )
         gifticon_id = cursor.lastrowid
 
@@ -656,15 +658,6 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 detail=f"Order {order_id} is already refunded",
             )
 
-        order_created = order["created_at"]
-        if hasattr(order_created, "date"):
-            order_date = order_created.date()
-        else:
-            order_date = order_created
-        today = get_kst_now().date()
-        cutoff_date = order_date + timedelta(days=60)
-        within_purchaser_refund_period = today < cutoff_date  # 60일 이내(당일 포함), 60일째 당일은 불포함
-
         amount = int(order.get("amount") or 0)
 
         # 2. 연결된 기프티콘 조회
@@ -675,20 +668,34 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
         gifticon_rows = cursor.fetchall()
         gifticon_ids = [r["gifticon_id"] for r in gifticon_rows]
 
-        # GNB-93: 이미 사용된(USED) 기프티콘이 있으면 환불 불가
+        # GNB-93: 이미 사용된(USED) 기프티콘이 있으면 환불 불가. 동시에 refund_deadline 조회.
+        gifticons = []
         if gifticon_ids:
             cursor.execute(
-                "SELECT COUNT(*) as cnt FROM gifticon WHERE id IN ({}) AND status='USED'".format(
+                "SELECT id, status, refund_deadline FROM gifticon WHERE id IN ({})".format(
                     ','.join(['%s'] * len(gifticon_ids))
                 ),
                 gifticon_ids,
             )
-            used_count = cursor.fetchone()["cnt"]
+            gifticons = cursor.fetchall()
+            used_count = sum(1 for g in gifticons if g["status"] == "USED")
             if used_count > 0:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="이미 사용된 기프티콘이 포함되어 있어 환불할 수 없습니다.",
                 )
+
+        # GNB-195: 발급 시점에 저장된 refund_deadline(gifticon)을 기준으로 판정.
+        # NULL이 하나라도 있으면 환불 정책 자체가 없는 상품이므로 즉시 차단.
+        if any(g["refund_deadline"] is None for g in gifticons):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이 상품은 환불이 불가능합니다.",
+            )
+        today = get_kst_now().date()
+        refund_deadline = gifticons[0]["refund_deadline"] if gifticons else None
+        # refund_deadline = 발급일 + 60일(당일 미포함 cutoff). today가 이 날짜보다 이르면 구매자 환불 구간.
+        within_purchaser_refund_period = refund_deadline is not None and today < refund_deadline
 
         if within_purchaser_refund_period:
             # 60일 이내: 구매자 환불 (페이레터 결제 취소)
@@ -878,7 +885,7 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
         # 나에게 선물하기(자가구매)는 구매자=수신자이므로 이 조건을 그대로 통과한다.
         # 타인에게 선물한 경우에만 구매자(gifticon.user_id가 아닌 사람)가 걸러진다.
         cursor.execute(
-            """SELECT id, user_id, status FROM gifticon WHERE id IN ({}) """.format(
+            """SELECT id, user_id, status, refund_deadline FROM gifticon WHERE id IN ({}) """.format(
                 ','.join(['%s'] * len(gifticon_ids))
             ),
             gifticon_ids,
@@ -895,12 +902,15 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
             if not caller_id or any(g["user_id"] != caller_id for g in gifticons):
                 raise HTTPException(status_code=403, detail="Forbidden")
 
-        # 4. 60일 판정 (구매자 환불과 동일 기준)
-        order_created = order["created_at"]
-        order_date = order_created.date() if hasattr(order_created, "date") else order_created
+        # 4. 발급 시점에 저장된 refund_deadline(gifticon) 기준으로 판정 (구매자 환불과 동일 기준)
+        if any(g["refund_deadline"] is None for g in gifticons):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="이 상품은 환불이 불가능합니다.",
+            )
         today = get_kst_now().date()
-        cutoff_date = order_date + timedelta(days=60)
-        within_purchaser_refund_period = today < cutoff_date
+        refund_deadline = gifticons[0]["refund_deadline"]
+        within_purchaser_refund_period = today < refund_deadline
         if within_purchaser_refund_period:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
