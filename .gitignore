@@ -53,6 +53,7 @@ Thumbs.db
 
 # Firebase / Apple 인증 키
 *.json
+!deploy/*.json
 *.p8
 db_backups/
 
