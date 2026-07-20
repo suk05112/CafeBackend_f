@@ -28,7 +28,7 @@ router = APIRouter()
 
 
 class RefundReceiverAccount(BaseModel):
-    """수신자 환불 시 계좌정보 (7일 이후 환불일 때 필수)"""
+    """수신자 환불 시 계좌정보 (60일 이후 환불일 때 필수)"""
     account_holder: str
     bank_code: str
     bank_name: str
@@ -619,12 +619,12 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
         cursor.close()
         close_db_connection(connection)
         
-# 기프티콘 환불 (7일 이내: 구매자 환불, 7일 이후: 수신자 환불 + 계좌정보). reason 저장 (7일 전/후 공통)
+# 기프티콘 환불 (60일 이내: 구매자 환불, 60일 이후: 수신자 환불 + 계좌정보). reason 저장 (60일 전/후 공통)
 @router.post("/refund/{order_id}")
 def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest] = None, user=Depends(verify_firebase_token)):
     """
-    주문일(created_at) 기준 7일 이내: 구매자에게 토스 결제 취소 환불.
-    주문일 기준 7일 이후: 수신자 환불(계좌정보 필수), 기프티콘만 무효화.
+    주문일(created_at) 기준 60일 이내: 구매자에게 토스 결제 취소 환불.
+    주문일 기준 60일 이후: 수신자 환불(계좌정보 필수), 기프티콘만 무효화.
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
@@ -662,8 +662,8 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
         else:
             order_date = order_created
         today = get_kst_now().date()
-        cutoff_date = order_date + timedelta(days=7)
-        within_7_days = today < cutoff_date  # GNB-94: 7일 이내(당일 포함), 7일째 당일은 불포함
+        cutoff_date = order_date + timedelta(days=60)
+        within_purchaser_refund_period = today < cutoff_date  # 60일 이내(당일 포함), 60일째 당일은 불포함
 
         amount = int(order.get("amount") or 0)
 
@@ -690,8 +690,8 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                     detail="이미 사용된 기프티콘이 포함되어 있어 환불할 수 없습니다.",
                 )
 
-        if within_7_days:
-            # 7일 이내: 구매자 환불 (페이레터 결제 취소)
+        if within_purchaser_refund_period:
+            # 60일 이내: 구매자 환불 (페이레터 결제 취소)
             payment_key = order.get("payment_key")
             if not payment_key:
                 raise HTTPException(
@@ -818,10 +818,10 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 "gifticons_canceled": len(gifticon_ids),
             }
         else:
-            # 7일 경과: 구매자 환불 불가. 수신자가 /order/refund-request/{order_id}로 신청해야 함
+            # 60일 경과: 구매자 환불 불가. 수신자가 /order/refund-request/{order_id}로 신청해야 함
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="환불 가능 기간(7일)이 지났습니다.",
+                detail="환불 가능 기간(60일)이 지났습니다.",
             )
 
     except HTTPException:
@@ -835,11 +835,11 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
         close_db_connection(connection)
 
 
-# 수신자 환불 신청 (7일 경과 후: 계좌정보 입력해 신청 접수, 관리자 수동 승인 후 완료)
+# 수신자 환불 신청 (60일 경과 후: 계좌정보 입력해 신청 접수, 관리자 수동 승인 후 완료)
 @router.post("/refund-request/{order_id}")
 def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verify_firebase_token)):
     """
-    주문일(created_at) 기준 7일 경과 후, 기프티콘의 수신자(gifticon.user_id)가 계좌정보를 입력해
+    주문일(created_at) 기준 60일 경과 후, 기프티콘의 수신자(gifticon.user_id)가 계좌정보를 입력해
     환불을 신청하는 API. 나에게 선물하기(자가구매)의 경우 구매자 본인이 곧 수신자이므로 동일하게 호출한다.
     신청 시점에는 관리자 승인 대기 상태(REQUESTED)로만 접수되며, 실제 계좌이체는 관리자가 수동 처리한다.
     구매자에게는 신청~완료 전 구간 동안 orders.status가 그대로 유지되어 결제완료로만 보인다.
@@ -895,16 +895,16 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
             if not caller_id or any(g["user_id"] != caller_id for g in gifticons):
                 raise HTTPException(status_code=403, detail="Forbidden")
 
-        # 4. 7일 판정 (구매자 환불과 동일 기준)
+        # 4. 60일 판정 (구매자 환불과 동일 기준)
         order_created = order["created_at"]
         order_date = order_created.date() if hasattr(order_created, "date") else order_created
         today = get_kst_now().date()
-        cutoff_date = order_date + timedelta(days=7)
-        within_7_days = today < cutoff_date
-        if within_7_days:
+        cutoff_date = order_date + timedelta(days=60)
+        within_purchaser_refund_period = today < cutoff_date
+        if within_purchaser_refund_period:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="아직 구매자 환불 가능 기간입니다. 7일이 지난 후 신청해주세요.",
+                detail="아직 구매자 환불 가능 기간입니다. 60일이 지난 후 신청해주세요.",
             )
 
         # 5. 이미 사용된(USED) 기프티콘이 있으면 환불 불가
