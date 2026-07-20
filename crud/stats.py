@@ -17,16 +17,18 @@ def get_dashboard_summary() -> Dict:
     """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
 
     집계 기준:
-    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED 상태(미사용) 기프티콘의
-      menu.price 합계에서 결제수단(pgcode)별 PG수수료를 차감한 금액.
-      PG수수료는 orders.amount(실 결제금액) 기준으로 계산 (GNB-199)
+    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED/REFUND_REQUESTED 상태
+      (환불 완료 전까지는 매장이 여전히 보유한 금액) 기프티콘의 menu.price 합계에서
+      결제수단(pgcode)별 PG수수료를 차감한 금액. PG수수료는 orders.amount(실 결제금액)
+      기준으로 계산 (GNB-199)
     - current_cycle: settlement_details.settlement_id IS NULL 건 합계 (현재 진행 중인 주기)
     - cumulative: stats_daily_platform 전체 SUM
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        # 발행잔액: 미사용(UNUSED/PENDING/EXPIRED) 기프티콘 menu.price 합계 - PG수수료
+        # 발행잔액: 미사용 + 환불요청중(아직 환불 미완료) 기프티콘 menu.price 합계 - PG수수료
+        # REFUNDED/CANCELED/USED는 이미 확정(환불완료/취소완료/사용완료)되어 제외
         cursor.execute("""
             SELECT
                 m.price AS menu_price,
@@ -35,7 +37,7 @@ def get_dashboard_summary() -> Dict:
             FROM gifticon g
             JOIN menu m ON g.menu_id = m.id
             LEFT JOIN orders o ON g.order_id = o.id
-            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED')
+            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED', 'REFUND_REQUESTED')
         """)
         rows = cursor.fetchall()
 
