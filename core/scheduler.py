@@ -150,14 +150,10 @@ def delete_old_records():
 
 def expire_gifticons():
     """
-    유효기간(validity) 이 지난 UNUSED 기프티콘을 EXPIRED로 전환 후 90% 환불 처리.
+    유효기간(validity) 이 지난 UNUSED 기프티콘을 EXPIRED로 전환.
 
-    처리 순서:
-    1. validity <= clock.now() 인 UNUSED 기프티콘 조회
-    2. gifticon.status = 'EXPIRED' 업데이트
-    3. 페이레터 결제 취소 API 호출 (90% 환불)
-    4. 성공: refund 레코드 COMPLETED, gifticon.status = 'REFUNDED'
-    5. 실패: refund 레코드 FAILED (다음 배치에서 재시도)
+    GNB-196: 자동환불(EXPIRY) 폐지. EXPIRED 전환 이후의 환불은
+    수신자의 환불 신청 API(POST /order/refund-request/{order_id})를 통해 처리한다.
 
     MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
     """
@@ -173,102 +169,32 @@ def expire_gifticons():
 
         now = clock.now()
 
-        # 1. 만료 대상 조회 (validity <= now, UNUSED)
-        # FAILED 환불 재시도 포함: EXPIRED 상태인데 COMPLETED refund 없는 것도 포함
+        # 만료 대상 조회 (validity <= now, UNUSED)
         cursor.execute("""
-            SELECT
-                g.id AS gifticon_id,
-                g.user_id,
-                g.menu_id,
-                g.store_id,
-                g.validity,
-                o.id AS order_id,
-                o.payment_key,
-                o.pgcode,
-                o.amount,
-                m.menu_name,
-                u.phone AS user_phone
+            SELECT g.id AS gifticon_id
             FROM gifticon g
-            JOIN orders o ON g.order_id = o.id
-            JOIN menu m ON g.menu_id = m.id
-            LEFT JOIN user u ON g.user_id = u.id
-            WHERE g.status IN ('UNUSED', 'EXPIRED')
+            WHERE g.status = 'UNUSED'
               AND g.validity IS NOT NULL
               AND g.validity <= %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM refund r
-                  WHERE r.order_id = o.id AND r.status = 'COMPLETED'
-              )
         """, (now.date(),))
         targets = cursor.fetchall()
 
         if not targets:
             return
 
-        logger.info(f"[scheduler] expire_gifticons: {len(targets)}건 만료 처리 시작")
+        gifticon_ids = [g["gifticon_id"] for g in targets]
+        fmt = ",".join(["%s"] * len(gifticon_ids))
+        cursor.execute(
+            f"UPDATE gifticon SET status = 'EXPIRED' WHERE id IN ({fmt}) AND status = 'UNUSED'",
+            gifticon_ids
+        )
+        connection.commit()
 
-        for g in targets:
-            gid = g["gifticon_id"]
-            order_id = g["order_id"]
-            payment_key = g["payment_key"]
-            pgcode = g["pgcode"] or "creditcard"
-            user_id = g["user_id"]
-            original_amount = int(g["amount"] or 0)
-            refund_amount = int(original_amount * 0.9)
-
-            try:
-                # 2. EXPIRED로 상태 변경
-                cursor.execute(
-                    "UPDATE gifticon SET status = 'EXPIRED' WHERE id = %s AND status IN ('UNUSED', 'EXPIRED')",
-                    (gid,)
-                )
-
-                # 3. refund 레코드 선삽입 (PROCESSING)
-                cursor.execute("""
-                    INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at, reason)
-                    VALUES (%s, 'EXPIRY', %s, %s, %s, 'PROCESSING', %s, '유효기간 만료 자동 환불')
-                """, (order_id, original_amount, refund_amount, original_amount - refund_amount, now))
-                refund_id = cursor.lastrowid
-
-                connection.commit()
-
-                # 4. 페이레터 환불 API 호출
-                success = _payletter_cancel(payment_key, user_id, refund_amount, pgcode)
-
-                if success:
-                    cursor.execute(
-                        "UPDATE gifticon SET status = 'REFUNDED' WHERE id = %s",
-                        (gid,)
-                    )
-                    cursor.execute(
-                        "UPDATE orders SET status = 'REFUNDED' WHERE id = %s",
-                        (order_id,)
-                    )
-                    if refund_id:
-                        cursor.execute(
-                            "UPDATE refund SET status = 'COMPLETED', refunded_at = %s WHERE id = %s",
-                            (now, refund_id)
-                        )
-                    connection.commit()
-                    logger.info(f"[scheduler] expire_gifticons: gifticon_id={gid} 환불 완료 {refund_amount}원")
-
-                else:
-                    if refund_id:
-                        cursor.execute(
-                            "UPDATE refund SET status = 'FAILED' WHERE id = %s",
-                            (refund_id,)
-                        )
-                    connection.commit()
-                    logger.warning(f"[scheduler] expire_gifticons: gifticon_id={gid} 환불 실패 → FAILED 기록")
-
-            except Exception as e:
-                connection.rollback()
-                logger.error(f"[scheduler] expire_gifticons gifticon_id={gid} 처리 오류: {e}")
-                log_scheduler_error("expire_gifticons", e)
+        logger.info(f"[scheduler] expire_gifticons: {len(gifticon_ids)}건 만료 처리 {gifticon_ids}")
 
     except Exception as e:
         connection.rollback()
-        logger.error(f"[scheduler] expire_gifticons 전체 오류: {e}")
+        logger.error(f"[scheduler] expire_gifticons 오류: {e}")
         log_scheduler_error("expire_gifticons", e)
     finally:
         if lock_acquired:
