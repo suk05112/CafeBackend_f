@@ -445,11 +445,14 @@ def create_settlement_data(cycle_id: int) -> Dict:
         period_end = cycle['period_end_date']
         payout_date = cycle['payout_date']
 
-        # 매장별 총 매출 집계 (개별 수수료 없음)
+        # 매장별 총 매출 및 건별 기본 수수료 합계 집계 (settlement_details와 정합성 보장)
         cursor.execute("""
             SELECT
                 g.store_id,
                 SUM(sd.sales_amount) AS total_sales,
+                SUM(sd.fee_supply) AS total_fee_supply,
+                SUM(sd.fee_vat) AS total_fee_vat,
+                SUM(sd.fee_amount) AS total_fee_amount,
                 COALESCE(a.bank, '') AS bank_name,
                 COALESCE(a.account, '') AS account_number
             FROM settlement_details sd
@@ -482,8 +485,10 @@ def create_settlement_data(cycle_id: int) -> Dict:
             applied_fee_rate = fee_info['applied_fee_rate']
             applied_promo_id = fee_info['applied_promo_id']
 
-            # 원본(프로모션 미적용) 수수료 계산
-            original_supply, original_vat, original_fee = _calc_fee(total_sales, base_fee_rate)
+            # 원본(프로모션 미적용) 수수료: settlement_details 건별 합계로 산출 (정합성 보장)
+            original_supply = int(row['total_fee_supply'] or 0)
+            original_vat = int(row['total_fee_vat'] or 0)
+            original_fee = int(row['total_fee_amount'] or 0)
 
             # 프로모션 적용 수수료 (프로모션 있을 때만)
             if applied_promo_id is not None:
