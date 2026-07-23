@@ -20,7 +20,7 @@ def get_dashboard_summary() -> Dict:
     - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED/REFUND_REQUESTED 상태
       (환불 완료 전까지는 매장이 여전히 보유한 금액) 기프티콘의 menu.price 합계에서
       결제수단(pgcode)별 PG수수료를 차감한 금액. PG수수료는 orders.amount(실 결제금액)
-      기준으로 계산 (GNB-199)
+      기준으로 계산 (GNB-199). orders.status가 PENDING(결제 미완료)인 건은 제외 (GNB-208)
     - current_cycle: settlement_details.settlement_id IS NULL 건 합계 (현재 진행 중인 주기)
     - cumulative: stats_daily_platform 전체 SUM
     """
@@ -29,6 +29,7 @@ def get_dashboard_summary() -> Dict:
     try:
         # 발행잔액: 미사용 + 환불요청중(아직 환불 미완료) 기프티콘 menu.price 합계 - PG수수료
         # REFUNDED/CANCELED/USED는 이미 확정(환불완료/취소완료/사용완료)되어 제외
+        # orders.status가 PENDING(결제 대기/미완료)인 건도 제외 (GNB-208)
         cursor.execute("""
             SELECT
                 m.price AS menu_price,
@@ -38,6 +39,7 @@ def get_dashboard_summary() -> Dict:
             JOIN menu m ON g.menu_id = m.id
             LEFT JOIN orders o ON g.order_id = o.id
             WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED', 'REFUND_REQUESTED')
+              AND (o.status IS NULL OR o.status != 'PENDING')
         """)
         rows = cursor.fetchall()
 
