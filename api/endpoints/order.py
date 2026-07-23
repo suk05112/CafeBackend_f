@@ -882,11 +882,11 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
                 detail=f"Order {order_id}에 연결된 기프티콘이 없습니다.",
             )
 
-        # 3. 권한 검증: 호출자가 수신자(선물 등록을 마친 gifticon.user_id)인지 확인
-        # 나에게 선물하기(자가구매)는 구매자=수신자이므로 이 조건을 그대로 통과한다.
-        # 타인에게 선물한 경우에만 구매자(gifticon.user_id가 아닌 사람)가 걸러진다.
+        # 3. 권한 검증: 호출자가 수신자(gifticon.receiver_id)인지 확인
+        # 나에게 선물하기(자가구매)는 발신자=수신자이므로 이 조건을 그대로 통과한다.
+        # 타인에게 선물한 경우에만 수신자(gifticon.receiver_id가 아닌 사람)가 걸러진다.
         cursor.execute(
-            """SELECT id, user_id, status, purchaser_refund_deadline FROM gifticon WHERE id IN ({}) """.format(
+            """SELECT id, receiver_id, status, purchaser_refund_deadline FROM gifticon WHERE id IN ({}) """.format(
                 ','.join(['%s'] * len(gifticon_ids))
             ),
             gifticon_ids,
@@ -900,7 +900,7 @@ def requestReceiverRefund(order_id: int, body: RefundRequest, user=Depends(verif
             db_user = cursor.fetchone()
             caller_id = db_user["id"] if db_user else None
 
-            if not caller_id or any(g["user_id"] != caller_id for g in gifticons):
+            if not caller_id or any(g["receiver_id"] != caller_id for g in gifticons):
                 raise HTTPException(status_code=403, detail="Forbidden")
 
         # 4. 발급 시점에 저장된 purchaser_refund_deadline(gifticon) 기준으로 판정 (구매자 환불과 동일 기준)
