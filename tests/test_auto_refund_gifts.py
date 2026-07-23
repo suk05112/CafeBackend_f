@@ -155,7 +155,7 @@ def test_7_days_payletter_success():
         refunds = fetch_refunds(order_id)
         assert len(refunds) == 1, f"환불 레코드 1건이어야 함: {len(refunds)}건"
         assert refunds[0]["status"] == "COMPLETED", f"refund 상태: {refunds[0]['status']}"
-        assert int(refunds[0]["amount"]) == 5000, f"환불액: {refunds[0]['amount']}"
+        assert int(refunds[0]["refunded_amount"]) == 5000, f"환불액: {refunds[0]['refunded_amount']}"
         assert refunds[0]["refund_type"] == "PURCHASER"
     finally:
         teardown_test_data(order_id, gifticon_id)
@@ -196,8 +196,8 @@ def test_skip_already_refunded():
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     cur.execute("""
-        INSERT INTO refund (order_id, refund_type, amount, status, refunded_at)
-        VALUES (%s, 'PURCHASER', 5000, 'COMPLETED', NOW())
+        INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, status, refunded_at)
+        VALUES (%s, 'PURCHASER', 5000, 5000, 'COMPLETED', NOW())
     """, (order_id,))
     conn.commit()
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -219,8 +219,8 @@ def test_retry_failed_refund():
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     cur.execute("""
-        INSERT INTO refund (order_id, refund_type, amount, status, refunded_at)
-        VALUES (%s, 'PURCHASER', 5000, 'FAILED', NOW())
+        INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, status, refunded_at)
+        VALUES (%s, 'PURCHASER', 5000, 5000, 'FAILED', NOW())
     """, (order_id,))
     conn.commit()
     cur.execute("SET FOREIGN_KEY_CHECKS=1")

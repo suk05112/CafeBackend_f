@@ -225,9 +225,9 @@ def expire_gifticons():
 
                 # 3. refund 레코드 선삽입 (PROCESSING)
                 cursor.execute("""
-                    INSERT INTO refund (order_id, refund_type, amount, status, refunded_at, reason)
-                    VALUES (%s, 'EXPIRY', %s, 'PROCESSING', %s, '유효기간 만료 자동 환불')
-                """, (order_id, refund_amount, now))
+                    INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at, reason)
+                    VALUES (%s, 'EXPIRY', %s, %s, %s, 'PROCESSING', %s, '유효기간 만료 자동 환불')
+                """, (order_id, original_amount, refund_amount, original_amount - refund_amount, now))
                 refund_id = cursor.lastrowid
 
                 connection.commit()
@@ -360,9 +360,9 @@ def auto_refund_unregistered_gifts():
                     refund_id = failed_refund_id
                 else:
                     cursor.execute(
-                        """INSERT INTO refund (order_id, refund_type, amount, status, refunded_at)
-                           VALUES (%s, 'PURCHASER', %s, 'PROCESSING', %s)""",
-                        (order_id, amount, now)
+                        """INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at)
+                           VALUES (%s, 'PURCHASER', %s, %s, 0, 'PROCESSING', %s)""",
+                        (order_id, amount, amount, now)
                     )
                     refund_id = cursor.lastrowid
                 connection.commit()
