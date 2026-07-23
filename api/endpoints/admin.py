@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from app.auth.auth_dependency import verify_manager_api_key as verify_firebase_token
 from db.session import get_db_connection, close_db_connection
+from core import scheduler as batch_scheduler
 from crud import admin as admin_crud
 from crud import store as store_crud
 from crud import menu as menu_crud
@@ -1795,3 +1796,32 @@ def toggle_popup(popup_id: int, user=Depends(verify_firebase_token)):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         close_db_connection(connection)
+
+
+# ── Batch Management ──────────────────────────────────────────────────────────
+
+@router.get("/batch/jobs")
+def list_batch_jobs(user=Depends(verify_firebase_token)):
+    """등록된 배치 목록 조회 (이름, 설명, 스케줄)"""
+    return [
+        {"id": job_id, **meta}
+        for job_id, meta in batch_scheduler.BATCH_JOBS.items()
+    ]
+
+
+@router.post("/batch/run/{job_id}")
+def run_batch_job(job_id: str, user=Depends(verify_firebase_token)):
+    """스케줄과 무관하게 배치를 즉시 실행"""
+    meta = batch_scheduler.BATCH_JOBS.get(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="존재하지 않는 배치입니다.")
+    if not meta.get("runnable"):
+        raise HTTPException(status_code=400, detail="즉시 실행을 지원하지 않는 배치입니다.")
+
+    job_fn = batch_scheduler.JOB_FUNCTIONS[job_id]
+    try:
+        result = job_fn()
+        return {"job_id": job_id, "result": result}
+    except Exception as e:
+        print(f"Error in run_batch_job({job_id}): {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
