@@ -548,6 +548,7 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
                 g.status AS gifticon_status,
                 g.validity,
                 g.created_at AS gifticon_created_at,
+                g.image_key_snapshot,
                 m.id AS menu_id,
                 m.menu_name,
                 m.price AS menu_price,
@@ -566,9 +567,9 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
         # 3. 기프티콘 목록 구성
         gifticon_list = []
         for row in gifticon_rows:
-            # 메뉴 이미지 URL 생성
-            menu_url = None
-            menu_url = get_s3_public_url(bucket_name, f'menu/menu_{order["store_id"]}_{row["menu_id"]}.png')
+            # 메뉴 이미지 URL 생성 (발급 시점 스냅샷 사용)
+            image_key = row.get('image_key_snapshot') or ''
+            menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
             
             # orders_gifticon 테이블의 receiver_id가 비어있는지 확인
             is_receiver_linked = row['orders_gifticon_receiver_id'] is not None
