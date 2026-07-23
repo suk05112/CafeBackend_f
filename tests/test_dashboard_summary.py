@@ -38,7 +38,7 @@ def new_conn():
     )
 
 
-def setup_gifticon(menu_price: int, order_amount: int, pgcode: str, status: str) -> tuple[int, int, int]:
+def setup_gifticon(menu_price: int, order_amount: int, pgcode: str, status: str, order_status: str = "COMPLETED") -> tuple[int, int, int]:
     """(menu_id, order_id, gifticon_id) 반환"""
     conn = new_conn()
     cur = conn.cursor()
@@ -50,8 +50,8 @@ def setup_gifticon(menu_price: int, order_amount: int, pgcode: str, status: str)
     menu_id = cur.lastrowid
     cur.execute(
         """INSERT INTO orders (store_id, user_id, payment_key, amount, status, order_no, payment, pgcode)
-           VALUES (99999, 99999, 'TEST_FAKE_KEY', %s, 'COMPLETED', %s, 'card', %s)""",
-        (order_amount, f"BAL-TEST-{os.getpid()}-{menu_id}", pgcode)
+           VALUES (99999, 99999, 'TEST_FAKE_KEY', %s, %s, %s, 'card', %s)""",
+        (order_amount, order_status, f"BAL-TEST-{os.getpid()}-{menu_id}", pgcode)
     )
     order_id = cur.lastrowid
     cur.execute(
@@ -145,6 +145,17 @@ def test_refunded_and_canceled_excluded():
         teardown(*ids_canceled)
 
 
+def test_order_pending_excluded():
+    """orders.status가 PENDING(결제 미완료)인 건은 gifticon.status와 무관하게 발행잔액에서 제외되어야 함 (GNB-208)"""
+    before = stats_crud.get_dashboard_summary()["issued_balance"]
+    ids = setup_gifticon(10000, 10000, "creditcard", "UNUSED", order_status="PENDING")
+    try:
+        after = stats_crud.get_dashboard_summary()["issued_balance"]
+        assert after == before, "orders.status=PENDING 건은 잔액에 포함되면 안 됨"
+    finally:
+        teardown(*ids)
+
+
 def test_promo_price_uses_order_amount_not_menu_price():
     """menu.price와 orders.amount가 다른 경우(프로모션 할인 등) PG수수료는 orders.amount 기준"""
     before = stats_crud.get_dashboard_summary()["issued_balance"]
@@ -165,6 +176,7 @@ if __name__ == "__main__":
         test_used_status_excluded,
         test_refund_requested_included,
         test_refunded_and_canceled_excluded,
+        test_order_pending_excluded,
         test_promo_price_uses_order_amount_not_menu_price,
     ]
     passed = failed = 0
