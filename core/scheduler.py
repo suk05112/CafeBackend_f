@@ -67,11 +67,13 @@ def expire_pending_orders():
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.Cursor)
     lock_acquired = False
+    result = {"processed": 0}
 
     try:
         lock_acquired = _acquire_lock(cursor, "expire_pending_orders")
         if not lock_acquired:
-            return
+            result["skipped"] = "lock"
+            return result
 
         cutoff = clock.now() - timedelta(minutes=15)
         cursor.execute(
@@ -81,23 +83,26 @@ def expire_pending_orders():
         order_ids = [row[0] for row in cursor.fetchall()]
 
         if not order_ids:
-            return
+            return result
 
         fmt = ",".join(["%s"] * len(order_ids))
         cursor.execute(f"UPDATE orders SET status = 'EXPIRED' WHERE id IN ({fmt})", order_ids)
         connection.commit()
 
+        result["processed"] = len(order_ids)
         logger.info(f"[scheduler] expire_pending_orders: {len(order_ids)}건 만료 처리 {order_ids}")
 
     except Exception as e:
         connection.rollback()
         logger.error(f"[scheduler] expire_pending_orders 오류: {e}")
         log_scheduler_error("expire_pending_orders", e)
+        result["error"] = str(e)
     finally:
         if lock_acquired:
             _release_lock(cursor, "expire_pending_orders")
         cursor.close()
         close_db_connection(connection)
+    return result
 
 
 def delete_old_records():
@@ -108,11 +113,13 @@ def delete_old_records():
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.Cursor)
     lock_acquired = False
+    result = {"orders_deleted": 0, "gifticon_deleted": 0}
 
     try:
         lock_acquired = _acquire_lock(cursor, "delete_old_records")
         if not lock_acquired:
-            return
+            result["skipped"] = "lock"
+            return result
 
         cutoff = clock.now() - timedelta(days=30)
 
@@ -135,29 +142,29 @@ def delete_old_records():
         orders_deleted = cursor.rowcount
 
         connection.commit()
+        result["orders_deleted"] = orders_deleted
+        result["gifticon_deleted"] = gifticon_deleted
         logger.info(f"[scheduler] delete_old_records: orders {orders_deleted}건, gifticon {gifticon_deleted}건 삭제")
 
     except Exception as e:
         connection.rollback()
         logger.error(f"[scheduler] delete_old_records 오류: {e}")
         log_scheduler_error("delete_old_records", e)
+        result["error"] = str(e)
     finally:
         if lock_acquired:
             _release_lock(cursor, "delete_old_records")
         cursor.close()
         close_db_connection(connection)
+    return result
 
 
 def expire_gifticons():
     """
-    유효기간(validity) 이 지난 UNUSED 기프티콘을 EXPIRED로 전환 후 90% 환불 처리.
+    유효기간(validity) 이 지난 UNUSED 기프티콘을 EXPIRED로 전환.
 
-    처리 순서:
-    1. validity <= clock.now() 인 UNUSED 기프티콘 조회
-    2. gifticon.status = 'EXPIRED' 업데이트
-    3. 페이레터 결제 취소 API 호출 (90% 환불)
-    4. 성공: refund 레코드 COMPLETED, gifticon.status = 'REFUNDED'
-    5. 실패: refund 레코드 FAILED (다음 배치에서 재시도)
+    GNB-196: 자동환불(EXPIRY) 폐지. EXPIRED 전환 이후의 환불은
+    수신자의 환불 신청 API(POST /order/refund-request/{order_id})를 통해 처리한다.
 
     MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
     """
@@ -165,117 +172,52 @@ def expire_gifticons():
     lock_cursor = connection.cursor(pymysql.cursors.Cursor)
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     lock_acquired = False
+    result = {"processed": 0}
 
     try:
         lock_acquired = _acquire_lock(lock_cursor, "expire_gifticons")
         if not lock_acquired:
-            return
+            result["skipped"] = "lock"
+            return result
 
         now = clock.now()
 
-        # 1. 만료 대상 조회 (validity <= now, UNUSED)
-        # FAILED 환불 재시도 포함: EXPIRED 상태인데 COMPLETED refund 없는 것도 포함
+        # 만료 대상 조회 (validity <= now, UNUSED)
         cursor.execute("""
-            SELECT
-                g.id AS gifticon_id,
-                g.user_id,
-                g.menu_id,
-                g.store_id,
-                g.validity,
-                o.id AS order_id,
-                o.payment_key,
-                o.pgcode,
-                o.amount,
-                m.menu_name,
-                u.phone AS user_phone
+            SELECT g.id AS gifticon_id
             FROM gifticon g
-            JOIN orders o ON g.order_id = o.id
-            JOIN menu m ON g.menu_id = m.id
-            LEFT JOIN user u ON g.user_id = u.id
-            WHERE g.status IN ('UNUSED', 'EXPIRED')
+            WHERE g.status = 'UNUSED'
               AND g.validity IS NOT NULL
               AND g.validity <= %s
-              AND NOT EXISTS (
-                  SELECT 1 FROM refund r
-                  WHERE r.order_id = o.id AND r.status = 'COMPLETED'
-              )
         """, (now.date(),))
         targets = cursor.fetchall()
 
         if not targets:
-            return
+            return result
 
-        logger.info(f"[scheduler] expire_gifticons: {len(targets)}건 만료 처리 시작")
+        gifticon_ids = [g["gifticon_id"] for g in targets]
+        fmt = ",".join(["%s"] * len(gifticon_ids))
+        cursor.execute(
+            f"UPDATE gifticon SET status = 'EXPIRED' WHERE id IN ({fmt}) AND status = 'UNUSED'",
+            gifticon_ids
+        )
+        connection.commit()
 
-        for g in targets:
-            gid = g["gifticon_id"]
-            order_id = g["order_id"]
-            payment_key = g["payment_key"]
-            pgcode = g["pgcode"] or "creditcard"
-            user_id = g["user_id"]
-            original_amount = int(g["amount"] or 0)
-            refund_amount = int(original_amount * 0.9)
-
-            try:
-                # 2. EXPIRED로 상태 변경
-                cursor.execute(
-                    "UPDATE gifticon SET status = 'EXPIRED' WHERE id = %s AND status IN ('UNUSED', 'EXPIRED')",
-                    (gid,)
-                )
-
-                # 3. refund 레코드 선삽입 (PROCESSING)
-                cursor.execute("""
-                    INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, fee_amount, status, refunded_at, reason)
-                    VALUES (%s, 'EXPIRY', %s, %s, %s, 'PROCESSING', %s, '유효기간 만료 자동 환불')
-                """, (order_id, original_amount, refund_amount, original_amount - refund_amount, now))
-                refund_id = cursor.lastrowid
-
-                connection.commit()
-
-                # 4. 페이레터 환불 API 호출
-                success = _payletter_cancel(payment_key, user_id, refund_amount, pgcode)
-
-                if success:
-                    cursor.execute(
-                        "UPDATE gifticon SET status = 'REFUNDED' WHERE id = %s",
-                        (gid,)
-                    )
-                    cursor.execute(
-                        "UPDATE orders SET status = 'REFUNDED' WHERE id = %s",
-                        (order_id,)
-                    )
-                    if refund_id:
-                        cursor.execute(
-                            "UPDATE refund SET status = 'COMPLETED', refunded_at = %s WHERE id = %s",
-                            (now, refund_id)
-                        )
-                    connection.commit()
-                    logger.info(f"[scheduler] expire_gifticons: gifticon_id={gid} 환불 완료 {refund_amount}원")
-
-                else:
-                    if refund_id:
-                        cursor.execute(
-                            "UPDATE refund SET status = 'FAILED' WHERE id = %s",
-                            (refund_id,)
-                        )
-                    connection.commit()
-                    logger.warning(f"[scheduler] expire_gifticons: gifticon_id={gid} 환불 실패 → FAILED 기록")
-
-            except Exception as e:
-                connection.rollback()
-                logger.error(f"[scheduler] expire_gifticons gifticon_id={gid} 처리 오류: {e}")
-                log_scheduler_error("expire_gifticons", e)
+        result["processed"] = len(gifticon_ids)
+        logger.info(f"[scheduler] expire_gifticons: {len(gifticon_ids)}건 만료 처리 {gifticon_ids}")
 
     except Exception as e:
         connection.rollback()
-        logger.error(f"[scheduler] expire_gifticons 전체 오류: {e}")
+        logger.error(f"[scheduler] expire_gifticons 오류: {e}")
         log_scheduler_error("expire_gifticons", e)
+        result["error"] = str(e)
     finally:
         if lock_acquired:
             _release_lock(lock_cursor, "expire_gifticons")
         lock_cursor.close()
         cursor.close()
         close_db_connection(connection)
+    return result
 
 
 def auto_refund_unregistered_gifts():
@@ -289,11 +231,13 @@ def auto_refund_unregistered_gifts():
     lock_cursor = connection.cursor(pymysql.cursors.Cursor)
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     lock_acquired = False
+    result = {"processed": 0, "refunded": 0, "failed": 0}
 
     try:
         lock_acquired = _acquire_lock(lock_cursor, "auto_refund_unregistered_gifts")
         if not lock_acquired:
-            return
+            result["skipped"] = "lock"
+            return result
 
         cutoff = clock.now() - timedelta(days=7)
 
@@ -326,8 +270,9 @@ def auto_refund_unregistered_gifts():
         targets = cursor.fetchall()
 
         if not targets:
-            return
+            return result
 
+        result["processed"] = len(targets)
         logger.info(f"[scheduler] auto_refund_unregistered_gifts: {len(targets)}건 대상")
 
         for row in targets:
@@ -378,6 +323,7 @@ def auto_refund_unregistered_gifts():
                         (now, refund_id)
                     )
                     connection.commit()
+                    result["refunded"] += 1
                     logger.info(f"[scheduler] auto_refund order_id={order_id} 환불 완료")
                 else:
                     cursor.execute(
@@ -385,6 +331,7 @@ def auto_refund_unregistered_gifts():
                         (refund_id,)
                     )
                     connection.commit()
+                    result["failed"] += 1
                     logger.warning(f"[scheduler] auto_refund order_id={order_id} 환불 실패 → FAILED 기록")
 
                 # 발신자 알림톡 발송 (실패해도 환불은 유지)
@@ -399,6 +346,7 @@ def auto_refund_unregistered_gifts():
 
             except Exception as e:
                 connection.rollback()
+                result["failed"] += 1
                 logger.error(f"[scheduler] auto_refund order_id={order_id} 실패: {e}")
                 log_scheduler_error("auto_refund_unregistered_gifts", e)
 
@@ -406,12 +354,14 @@ def auto_refund_unregistered_gifts():
         connection.rollback()
         logger.error(f"[scheduler] auto_refund_unregistered_gifts 오류: {e}")
         log_scheduler_error("auto_refund_unregistered_gifts", e)
+        result["error"] = str(e)
     finally:
         if lock_acquired:
             _release_lock(lock_cursor, "auto_refund_unregistered_gifts")
         lock_cursor.close()
         cursor.close()
         close_db_connection(connection)
+    return result
 
 
 def aggregate_yesterday_platform_stats():
@@ -423,11 +373,13 @@ def aggregate_yesterday_platform_stats():
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.Cursor)
     lock_acquired = False
+    result = {}
 
     try:
         lock_acquired = _acquire_lock(cursor, "aggregate_daily_platform_stats")
         if not lock_acquired:
-            return
+            result["skipped"] = "lock"
+            return result
 
         target = (clock.now() - timedelta(days=1)).date()
         base_fee_rate = get_base_fee_rate(cursor)
@@ -435,6 +387,10 @@ def aggregate_yesterday_platform_stats():
         upsert_stats(cursor, stats)
         connection.commit()
 
+        result["target_date"] = str(target)
+        result["issued_count"] = stats["total_issued_count"]
+        result["used_count"] = stats["total_used_count"]
+        result["new_store_count"] = stats["new_store_count"]
         logger.info(
             f"[scheduler] aggregate_daily_platform_stats: {target} 집계 완료 "
             f"발행:{stats['total_issued_count']}건 사용:{stats['total_used_count']}건 "
@@ -445,11 +401,60 @@ def aggregate_yesterday_platform_stats():
         connection.rollback()
         logger.error(f"[scheduler] aggregate_daily_platform_stats 오류: {e}")
         log_scheduler_error("aggregate_daily_platform_stats", e)
+        result["error"] = str(e)
     finally:
         if lock_acquired:
             _release_lock(cursor, "aggregate_daily_platform_stats")
         cursor.close()
         close_db_connection(connection)
+    return result
+
+
+BATCH_JOBS = {
+    "expire_pending_orders": {
+        "name": "미결제 주문 만료",
+        "description": "15분 이상 PENDING 상태인 주문을 EXPIRED로 전환합니다.",
+        "schedule": "15분마다",
+        "runnable": True,
+        "requires_confirm": False,
+    },
+    "delete_old_records": {
+        "name": "오래된 레코드 삭제",
+        "description": "30일 초과된 EXPIRED 주문 및 PENDING 기프티콘을 삭제합니다.",
+        "schedule": "매일 03:00",
+        "runnable": True,
+        "requires_confirm": False,
+    },
+    "expire_gifticons": {
+        "name": "기프티콘 유효기간 만료",
+        "description": "유효기간이 지난 미사용 기프티콘을 EXPIRED로 전환합니다. (자동환불 없음, 수신자 환불 신청으로 처리)",
+        "schedule": "매일 03:20",
+        "runnable": True,
+        "requires_confirm": False,
+    },
+    "auto_refund_unregistered_gifts": {
+        "name": "미등록 선물 자동환불",
+        "description": "7일간 미등록된 선물 기프티콘을 자동 환불합니다. 실제 결제 취소(페이레터)가 발생합니다.",
+        "schedule": "매일 03:10",
+        "runnable": True,
+        "requires_confirm": True,
+    },
+    "aggregate_yesterday_platform_stats": {
+        "name": "전날 플랫폼 통계 집계",
+        "description": "전날(KST 기준) 플랫폼 일별 통계를 집계합니다.",
+        "schedule": "매일 03:40",
+        "runnable": True,
+        "requires_confirm": False,
+    },
+}
+
+JOB_FUNCTIONS = {
+    "expire_pending_orders": expire_pending_orders,
+    "delete_old_records": delete_old_records,
+    "expire_gifticons": expire_gifticons,
+    "auto_refund_unregistered_gifts": auto_refund_unregistered_gifts,
+    "aggregate_yesterday_platform_stats": aggregate_yesterday_platform_stats,
+}
 
 
 def create_scheduler() -> BackgroundScheduler:
