@@ -320,7 +320,9 @@ def get_owner_settlement_list_unified(
             if period_start <= today <= period_end:
                 current_cycle = c
 
-            if period_end < cutoff or period_end > today:
+            if period_end < cutoff:
+                continue
+            if period_end > today and not (period_start <= today <= period_end):
                 continue
             cursor.execute("""
                 SELECT s.settlement_id, s.cycle_id, s.period_start, s.period_end,
@@ -374,7 +376,10 @@ def get_owner_settlement_list_unified(
                 'failure_reason': row.get('failure_reason'),
             })
 
-        if current_cycle:
+        current_cycle_already_in_result = current_cycle is not None and any(
+            r.get('cycle_id') == current_cycle['cycle_id'] for r in result
+        )
+        if current_cycle and not current_cycle_already_in_result:
             preview = _build_preview_summary(cursor, store_id, current_cycle)
             if preview:
                 result.insert(0, preview)
