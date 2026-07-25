@@ -499,7 +499,48 @@ async def updatePaymentResult(request: Request):
     finally:
         cursor.close()
         close_db_connection(connection)
-        
+
+
+@router.get("/{order_id}/status")
+def getOrderStatus(order_id: int, user=Depends(verify_firebase_token)):
+    """
+    order_id로 주문의 결제 상태(status)만 조회하는 경량 API.
+    앱이 결제 웹뷰 복귀 후 결제 성공(COMPLETED) 여부를 폴링하는 용도.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute("SELECT id, user_id, status FROM orders WHERE id = %s", (order_id,))
+        order = cursor.fetchone()
+
+        if not order:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Order with id {order_id} not found"
+            )
+
+        # 소유자 검증
+        if user is not None:
+            uid = user.get("uid")
+            cursor.execute("SELECT id FROM user WHERE uid = %s LIMIT 1", (uid,))
+            db_user = cursor.fetchone()
+            if not db_user or db_user["id"] != order["user_id"]:
+                raise HTTPException(status_code=403, detail="Forbidden")
+
+        return {"order_id": order["id"], "status": order["status"]}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        traceback.print_exc()
+        raise InternalError(e, "getOrderStatus")
+
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
 @router.get("/detail/{order_id}")
 def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
     """
