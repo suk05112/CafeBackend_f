@@ -118,6 +118,13 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
                 detail="Gifticon not found"
             )
 
+        # 결제가 완료되지 않은(PENDING) 기프티콘은 유효하지 않은 것으로 처리 (안전망)
+        if gifticon.get('status') == 'PENDING':
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Gifticon not found"
+            )
+
         print("읽어온 기프티콘", gifticon)
 
         # order_id 조회 (gifticon 테이블에 order_id가 있으면 직접 사용, 없으면 orders_gifticon에서 조회)
@@ -380,19 +387,26 @@ def linkGifticonToUser(request: LinkGifticonRequest):
     try:
         # 1. 기프티콘 존재 여부 및 receiver_phone 확인
         cursor.execute('''
-            SELECT id, receiver_phone, user_id, receiver_id
-            FROM gifticon 
+            SELECT id, receiver_phone, user_id, receiver_id, status
+            FROM gifticon
             WHERE id = %s
         ''', (request.gifticon_id,))
-        
+
         gifticon = cursor.fetchone()
-        
+
         if not gifticon:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Gifticon with id {request.gifticon_id} not found"
             )
-        
+
+        # 1-1. 결제가 완료되지 않은(PENDING) 기프티콘은 연결 불가
+        if gifticon['status'] == 'PENDING':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Gifticon is not ready"
+            )
+
         # 2. receiver_phone 일치 여부 확인
         if normalize_phone(gifticon['receiver_phone']) != normalize_phone(request.receiver_phone):
             print(f"receiver_phone does not match: {gifticon['receiver_phone']} != {request.receiver_phone}")
