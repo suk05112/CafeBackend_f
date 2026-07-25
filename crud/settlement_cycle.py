@@ -26,10 +26,10 @@ def get_settlement_cycles(
             conditions.append("sc.status = %s")
             params.append(status)
         if start_date:
-            conditions.append("sc.period_start_date >= %s")
+            conditions.append("sc.period_end_date >= %s")
             params.append(start_date)
         if end_date:
-            conditions.append("sc.period_end_date <= %s")
+            conditions.append("sc.period_start_date <= %s")
             params.append(end_date)
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
