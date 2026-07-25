@@ -409,7 +409,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
             return None
 
         cursor.execute("""
-            SELECT sd.id, sd.gifticon_id, sd.sales_amount,
+            SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
                 g.used_at, m.menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
@@ -431,6 +431,8 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'menu_name': d.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(d['sales_amount'] or 0),
+                'fee_amount': int(d['fee_amount'] or 0),
+                'settlement_amount': int(d['settlement_amount'] or 0),
             })
 
         return {
@@ -492,7 +494,7 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
     period_end_str = period_end.isoformat()
 
     cursor.execute("""
-        SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount,
+        SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
                g.used_at, m.menu_name
         FROM settlement_details sd
         JOIN gifticon g ON sd.gifticon_id = g.id
@@ -611,6 +613,8 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
                 'menu_name': r.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(r['sales_amount'] or 0),
+                'fee_amount': int(r['fee_amount'] or 0),
+                'settlement_amount': int(r['settlement_amount'] or 0),
             })
 
         return {
