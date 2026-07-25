@@ -3,6 +3,7 @@
 
 템플릿 목록:
   - UH_9771: 정산 완료 안내          변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
+  - UJ_8024: 정산 실패 안내          변수: #{매장명}, #{정산기간}, #{실패사유}
   - UH_9772: 입점 심사 결과 안내      변수: #{심사결과}, #{상세사유}
   - UJ_1609: 선물 결제 취소 안내      변수: #{sender}, #{menu}
   - UJ_4468: 미등록 상품권 발신자 환불안내  변수: #{메뉴}
@@ -160,6 +161,30 @@ def send_settlement_complete(
         recvname=recvname,
     )
     return _send("UH_9771", [recipient], button=CHANNEL_ADD_BUTTON)
+
+
+def send_settlement_failed(
+    receiver: str,
+    store_name: str,
+    period: str,
+    failure_reason: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_8024: 정산 실패 안내"""
+    message = (
+        f"안녕하세요, 사장님.\n"
+        f"정산대금 지급이 실패하였습니다.\n\n"
+        f"■ 매장명: {store_name}\n"
+        f"■ 정산 기간: {period}\n"
+        f"■ 실패 사유: {failure_reason}"
+    )
+    recipient = AlimtalkRecipient(
+        receiver=receiver,
+        subject="정산 실패 안내",
+        message=message,
+        recvname=recvname,
+    )
+    return _send("UJ_8024", [recipient], button=CHANNEL_ADD_BUTTON)
 
 
 def send_gift_cancel_to_receiver(
