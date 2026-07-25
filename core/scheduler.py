@@ -10,7 +10,7 @@ from core import clock
 from core.config import settings
 from db.session import get_db_connection, close_db_connection
 from app.system_logger import log_scheduler_error
-from app.aligo_service import send_gift_auto_refund_to_sender
+from app.aligo_service import send_gift_auto_refund_to_sender, send_gift_auto_refund_to_receiver
 from scripts.aggregate_daily_platform_stats import aggregate_one_day, upsert_stats, get_base_fee_rate
 
 
@@ -253,6 +253,8 @@ def auto_refund_unregistered_gifts():
                 g.id AS gifticon_id,
                 g.menu_id,
                 g.receiver_phone,
+                g.receiver,
+                g.sender,
                 m.menu_name,
                 u.phone AS sender_phone,
                 r.id AS failed_refund_id
@@ -343,6 +345,18 @@ def auto_refund_unregistered_gifts():
                         )
                     except Exception as e:
                         logger.error(f"[scheduler] 알림톡 발송 실패 order_id={order_id}: {e}")
+
+                # 수신자 알림톡 발송 (실패해도 환불은 유지)
+                if success and row["receiver_phone"]:
+                    try:
+                        send_gift_auto_refund_to_receiver(
+                            receiver=row["receiver_phone"],
+                            menu=menu_name,
+                            refund_amount=f"{amount:,}",
+                            recvname=row.get("receiver", ""),
+                        )
+                    except Exception as e:
+                        logger.error(f"[scheduler] 수신자 알림톡 발송 실패 order_id={order_id}: {e}")
 
             except Exception as e:
                 connection.rollback()

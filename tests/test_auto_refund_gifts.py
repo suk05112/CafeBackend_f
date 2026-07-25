@@ -318,6 +318,38 @@ def test_skip_non_gift_type():
         teardown_test_data(order_id, gifticon_id)
 
 
+# ── T12: 7일 경과 + 환불 성공 → 발신자/수신자 알림톡 각각 발송 ────────────────
+def test_alimtalk_sent_to_sender_and_receiver():
+    order_id, gifticon_id = setup_test_data(days_ago=7)
+    try:
+        with patch("core.scheduler._payletter_cancel", return_value=True), \
+             patch("core.scheduler.send_gift_auto_refund_to_sender") as mock_sender, \
+             patch("core.scheduler.send_gift_auto_refund_to_receiver") as mock_receiver:
+            auto_refund_unregistered_gifts()
+        mock_sender.assert_called_once()
+        mock_receiver.assert_called_once()
+        _, receiver_kwargs = mock_receiver.call_args
+        assert receiver_kwargs["receiver"] == "01000000000"
+        assert receiver_kwargs["menu"] == "테스트메뉴"
+        assert receiver_kwargs["refund_amount"] == "5,000"
+    finally:
+        teardown_test_data(order_id, gifticon_id)
+
+
+# ── T13: 페이레터 실패 → 알림톡 미발송 ───────────────────────────────────────
+def test_alimtalk_not_sent_on_payletter_failure():
+    order_id, gifticon_id = setup_test_data(days_ago=7)
+    try:
+        with patch("core.scheduler._payletter_cancel", return_value=False), \
+             patch("core.scheduler.send_gift_auto_refund_to_sender") as mock_sender, \
+             patch("core.scheduler.send_gift_auto_refund_to_receiver") as mock_receiver:
+            auto_refund_unregistered_gifts()
+        mock_sender.assert_not_called()
+        mock_receiver.assert_not_called()
+    finally:
+        teardown_test_data(order_id, gifticon_id)
+
+
 # ── T11: ENV=test 환경에서 1분 interval 등록 확인 ────────────────────────────
 def test_scheduler_interval_in_test_env():
     os.environ["ENV"] = "test"
@@ -353,6 +385,8 @@ if __name__ == "__main__":
     run("T08: freeze_time 경계값 7일+1초 → 처리", test_freeze_time_boundary_just_over_7_days)
     run("T09: receiver_id 있는 경우 → 미처리", test_skip_registered_receiver)
     run("T10: type=1 일반 구매 → 미처리", test_skip_non_gift_type)
+    run("T12: 환불 성공 → 발신자/수신자 알림톡 각각 발송", test_alimtalk_sent_to_sender_and_receiver)
+    run("T13: 페이레터 실패 → 알림톡 미발송", test_alimtalk_not_sent_on_payletter_failure)
     run("T11: ENV=test 1분 interval 등록 확인", test_scheduler_interval_in_test_env)
 
     print("=" * 60)

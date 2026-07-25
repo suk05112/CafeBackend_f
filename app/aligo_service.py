@@ -16,6 +16,16 @@
                환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
                환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
              발송 시점: 스케줄러 자동 환불 완료 후
+  - UJ_8027: 환불완료 안내(수신자)          변수: #{메뉴}, {환불금액}
+             수신자: 수신자
+             제목: 환불 완료 안내
+             내용:
+               상품권 등록 기한이 지나 결제가 자동 취소되었습니다.
+               선물하신 분께 환불이 진행됩니다.
+
+               상품명: #{메뉴}
+               환불 금액: {환불금액}원
+             발송 시점: 스케줄러 자동 환불 완료 후
 
 알림톡 전송 API 명세 (POST https://kakaoapi.aligo.in/akv10/alimtalk/send/):
   필수 파라미터:
@@ -202,6 +212,30 @@ def send_gift_auto_refund_to_sender(
         recvname=recvname,
     )
     return _send("UJ_4468", [recipient])
+
+
+def send_gift_auto_refund_to_receiver(
+    receiver: str,
+    menu: str,
+    refund_amount: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_8027: 미등록 상품권 수신자 환불안내 (수신자에게 발송)"""
+    message = (
+        f"상품권 등록 기한이 지나 결제가 자동 취소되었습니다.\n"
+        f"선물하신 분께 환불이 진행됩니다.\n\n"
+        f"상품명: {menu}\n"
+        f"환불 금액: {refund_amount}원"
+    )
+    recipient = AlimtalkRecipient(
+        receiver=receiver,
+        subject="환불 완료 안내",
+        message=message,
+        recvname=recvname,
+        emtitle="환불 완료 안내",
+        emtext="기프넛 환불이 완료되었습니다.",
+    )
+    return _send("UJ_8027", [recipient])
 
 
 def send_store_review_result(
