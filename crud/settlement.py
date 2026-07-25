@@ -409,7 +409,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
             return None
 
         cursor.execute("""
-            SELECT sd.id, sd.gifticon_id, sd.sales_amount,
+            SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
                 g.used_at, m.menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
@@ -431,6 +431,8 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'menu_name': d.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(d['sales_amount'] or 0),
+                'fee_amount': int(d['fee_amount'] or 0),
+                'settlement_amount': int(d['settlement_amount'] or 0),
             })
 
         return {
@@ -493,6 +495,7 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
 
     cursor.execute("""
         SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount,
+               sd.fee_supply, sd.fee_vat, sd.fee_amount, sd.settlement_amount,
                g.used_at, m.menu_name
         FROM settlement_details sd
         JOIN gifticon g ON sd.gifticon_id = g.id
@@ -515,8 +518,9 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
     applied_promo_id = fee_info['applied_promo_id']
     applied_promo_title = fee_info['applied_promo_title']
 
-    original_supply = math.floor(total_sales * base_fee_rate / 100)
-    original_vat = round(original_supply * 0.1)
+    # 건별로 저장된 기본 수수료(fee_supply/fee_vat)를 합산해 상세내역과 정합성을 맞춘다.
+    original_supply = sum(int(r['fee_supply'] or 0) for r in rows)
+    original_vat = sum(int(r['fee_vat'] or 0) for r in rows)
     original_fee = original_supply + original_vat
 
     if applied_promo_id is not None:
@@ -611,6 +615,8 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
                 'menu_name': r.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(r['sales_amount'] or 0),
+                'fee_amount': int(r['fee_amount'] or 0),
+                'settlement_amount': int(r['settlement_amount'] or 0),
             })
 
         return {
