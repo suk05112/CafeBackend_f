@@ -827,7 +827,12 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 sd.gifticon_id,
                 g.used_at,
                 m.menu_name,
-                sd.sales_amount
+                sd.sales_amount,
+                sd.fee_rate,
+                sd.fee_supply,
+                sd.fee_vat,
+                sd.fee_amount,
+                sd.settlement_amount
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -867,10 +872,15 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
             'store_logo_url': _generate_presigned_url(settlement.get('store_logo_key')),
             'bankbook_url': _generate_presigned_url(settlement.get('bankbook_key')),
         }
+        applied_promo_id = settlement.get('applied_promo_id')
+        header_applied_fee_rate = float(settlement['applied_fee_rate']) if settlement.get('applied_fee_rate') is not None else None
+
         items = []
         for i, d in enumerate(details, 1):
             used_at = d.get('used_at')
             used_at_str = used_at.strftime('%Y-%m-%d %H:%M') if used_at and hasattr(used_at, 'strftime') else (str(used_at) if used_at else '-')
+            base_fee_rate = float(d['fee_rate']) if d.get('fee_rate') is not None else None
+            applied_fee_rate = header_applied_fee_rate if applied_promo_id is not None else base_fee_rate
             items.append({
                 'index': i,
                 'id': d.get('id'),
@@ -878,6 +888,12 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 'menu_name': d.get('menu_name') or '-',
                 'used_at': used_at_str,
                 'sales_amount': int(d.get('sales_amount') or 0),
+                'base_fee_rate': base_fee_rate,
+                'applied_fee_rate': applied_fee_rate,
+                'fee_supply': int(d['fee_supply']) if d.get('fee_supply') is not None else 0,
+                'fee_vat': int(d['fee_vat']) if d.get('fee_vat') is not None else 0,
+                'fee_amount': int(d['fee_amount']) if d.get('fee_amount') is not None else 0,
+                'settlement_amount': int(d['settlement_amount']) if d.get('settlement_amount') is not None else int(d.get('sales_amount') or 0),
             })
         import math as _math
         return {
