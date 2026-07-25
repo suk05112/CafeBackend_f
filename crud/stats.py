@@ -17,18 +17,20 @@ def get_dashboard_summary() -> Dict:
     """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
 
     집계 기준:
-    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED/REFUND_REQUESTED 상태
-      (환불 완료 전까지는 매장이 여전히 보유한 금액) 기프티콘의 menu.price 합계에서
+    - issued_balance: 매장이 아직 정산(지급)받지 못한 기프티콘의 menu.price 합계에서
       결제수단(pgcode)별 PG수수료를 차감한 금액. PG수수료는 orders.amount(실 결제금액)
-      기준으로 계산 (GNB-199). orders.status가 PENDING(결제 미완료)인 건은 제외 (GNB-208)
+      기준으로 계산 (GNB-199). orders.status가 PENDING(결제 미완료)인 건은 제외 (GNB-208).
+      대상 판정은 gifticon.status가 아니라 정산 완료 여부 기준 (GNB-211):
+      REFUND_REQUESTED/EXPIRED/UNUSED는 무조건 포함, USED는 정산이 COMPLETED가
+      아닌 경우만 포함, PENDING/REFUNDED/CANCELED는 제외
     - current_cycle: settlement_details.settlement_id IS NULL 건 합계 (현재 진행 중인 주기)
     - cumulative: stats_daily_platform 전체 SUM
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        # 발행잔액: 미사용 + 환불요청중(아직 환불 미완료) 기프티콘 menu.price 합계 - PG수수료
-        # REFUNDED/CANCELED/USED는 이미 확정(환불완료/취소완료/사용완료)되어 제외
+        # 발행잔액: 정산 미완료(매장이 아직 못 받은) 기프티콘 menu.price 합계 - PG수수료 (GNB-211)
+        # REFUNDED/CANCELED/PENDING은 제외. USED는 정산이 COMPLETED된 건만 제외
         # orders.status가 PENDING(결제 대기/미완료)인 건도 제외 (GNB-208)
         cursor.execute("""
             SELECT
@@ -38,7 +40,12 @@ def get_dashboard_summary() -> Dict:
             FROM gifticon g
             JOIN menu m ON g.menu_id = m.id
             LEFT JOIN orders o ON g.order_id = o.id
-            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED', 'REFUND_REQUESTED')
+            LEFT JOIN settlement_details sd ON sd.gifticon_id = g.id
+            LEFT JOIN settlement s ON sd.settlement_id = s.settlement_id
+            WHERE (
+                g.status IN ('REFUND_REQUESTED', 'EXPIRED', 'UNUSED')
+                OR (g.status = 'USED' AND (s.status IS NULL OR s.status != 'COMPLETED'))
+            )
               AND (o.status IS NULL OR o.status != 'PENDING')
         """)
         rows = cursor.fetchall()
