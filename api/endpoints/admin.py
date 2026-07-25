@@ -73,7 +73,7 @@ def get_dashboard_statistics(user=Depends(verify_firebase_token)):
 def get_dashboard_summary(user=Depends(verify_firebase_token)):
     """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
 
-    - issued_balance: 미사용 기프티콘 menu.price 합계 (REFUNDED/CANCELED 제외)
+    - issued_balance: 정산 미완료(매장이 아직 못 받은) 기프티콘 menu.price 합계 (GNB-211)
     - current_cycle: settlement_details 미연결 건 기준 실시간 예상값
     - cumulative: stats_daily_platform 전체 SUM (매일 00:10 배치 갱신)
     """

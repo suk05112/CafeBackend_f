@@ -19,6 +19,7 @@ GNB-199: 발행잔액(issued_balance) PG수수료 반영 검증 테스트
 import sys
 import os
 import math
+from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 os.environ["ENV"] = "dev"
@@ -66,10 +67,39 @@ def setup_gifticon(menu_price: int, order_amount: int, pgcode: str, status: str,
     return menu_id, order_id, gifticon_id
 
 
-def teardown(menu_id: int, order_id: int, gifticon_id: int):
+def attach_settlement(gifticon_id: int, sales_amount: int, settlement_status: str) -> tuple[int, int]:
+    """gifticon에 settlement_details + settlement을 연결. (settlement_id, detail_id) 반환.
+
+    GNB-211: USED 기프티콘이 정산 상태(COMPLETED 여부)에 따라 발행잔액 포함/제외되는지
+    검증하기 위해 필요한 최소 settlement/settlement_details row를 생성한다.
+    """
     conn = new_conn()
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
+    cur.execute(
+        """INSERT INTO settlement (store_id, period_start, period_end, total_sales_amount, status)
+           VALUES (99999, CURDATE(), CURDATE(), %s, %s)""",
+        (sales_amount, settlement_status)
+    )
+    settlement_id = cur.lastrowid
+    cur.execute(
+        "INSERT INTO settlement_details (settlement_id, gifticon_id, sales_amount) VALUES (%s, %s, %s)",
+        (settlement_id, gifticon_id, sales_amount)
+    )
+    detail_id = cur.lastrowid
+    cur.execute("SET FOREIGN_KEY_CHECKS=1")
+    conn.commit()
+    cur.close(); conn.close()
+    return settlement_id, detail_id
+
+
+def teardown(menu_id: int, order_id: int, gifticon_id: int, settlement_id: Optional[int] = None):
+    conn = new_conn()
+    cur = conn.cursor()
+    cur.execute("SET FOREIGN_KEY_CHECKS=0")
+    cur.execute("DELETE FROM settlement_details WHERE gifticon_id = %s", (gifticon_id,))
+    if settlement_id is not None:
+        cur.execute("DELETE FROM settlement WHERE settlement_id = %s", (settlement_id,))
     cur.execute("DELETE FROM gifticon WHERE id = %s", (gifticon_id,))
     cur.execute("DELETE FROM orders WHERE id = %s", (order_id,))
     cur.execute("DELETE FROM menu WHERE id = %s", (menu_id,))
@@ -107,13 +137,57 @@ def test_pg_fee_deducted_per_pgcode():
             teardown(*ids)
 
 
-def test_used_status_excluded():
-    """USED 상태는 발행잔액 집계에서 제외됨을 유지 검증(회귀 방지)"""
+def test_used_status_not_settled_included():
+    """USED이지만 정산 미완료(settlement_details 미연결)인 경우 발행잔액에 포함되어야 함 (GNB-211)"""
     before = stats_crud.get_dashboard_summary()["issued_balance"]
-    ids = setup_gifticon(10000, 10000, "creditcard", "USED")
+    menu_price, order_amount = 10000, 10000
+    ids = setup_gifticon(menu_price, order_amount, "creditcard", "USED")
     try:
         after = stats_crud.get_dashboard_summary()["issued_balance"]
-        assert after == before, "USED 상태는 잔액에 포함되면 안 됨"
+        rate = PG_FEE_RATE_MAP["creditcard"]
+        expected = menu_price - math.floor(order_amount * rate / 100)
+        assert after - before == expected, f"USED+정산미완료가 잔액에서 누락됨: 기대 {expected}, 실제 {after - before}"
+    finally:
+        teardown(*ids)
+
+
+def test_used_status_settlement_not_completed_included():
+    """USED이고 settlement_details는 연결됐지만 settlement.status가 COMPLETED가 아니면 포함되어야 함 (GNB-211)"""
+    before = stats_crud.get_dashboard_summary()["issued_balance"]
+    menu_price, order_amount = 10000, 10000
+    ids = setup_gifticon(menu_price, order_amount, "creditcard", "USED")
+    menu_id, order_id, gifticon_id = ids
+    settlement_id, _ = attach_settlement(gifticon_id, menu_price, "PENDING")
+    try:
+        after = stats_crud.get_dashboard_summary()["issued_balance"]
+        rate = PG_FEE_RATE_MAP["creditcard"]
+        expected = menu_price - math.floor(order_amount * rate / 100)
+        assert after - before == expected, f"USED+정산PENDING이 잔액에서 누락됨: 기대 {expected}, 실제 {after - before}"
+    finally:
+        teardown(menu_id, order_id, gifticon_id, settlement_id)
+
+
+def test_used_status_settlement_completed_excluded():
+    """USED이고 settlement.status가 COMPLETED(정산 완료)면 발행잔액에서 제외되어야 함 (GNB-211)"""
+    before = stats_crud.get_dashboard_summary()["issued_balance"]
+    menu_price, order_amount = 10000, 10000
+    ids = setup_gifticon(menu_price, order_amount, "creditcard", "USED")
+    menu_id, order_id, gifticon_id = ids
+    settlement_id, _ = attach_settlement(gifticon_id, menu_price, "COMPLETED")
+    try:
+        after = stats_crud.get_dashboard_summary()["issued_balance"]
+        assert after == before, "USED+정산COMPLETED는 잔액에 포함되면 안 됨"
+    finally:
+        teardown(menu_id, order_id, gifticon_id, settlement_id)
+
+
+def test_pending_status_excluded():
+    """gifticon.status=PENDING은 정산 여부와 무관하게 발행잔액에서 제외되어야 함 (GNB-211)"""
+    before = stats_crud.get_dashboard_summary()["issued_balance"]
+    ids = setup_gifticon(10000, 10000, "creditcard", "PENDING")
+    try:
+        after = stats_crud.get_dashboard_summary()["issued_balance"]
+        assert after == before, "PENDING 상태는 잔액에 포함되면 안 됨"
     finally:
         teardown(*ids)
 
@@ -160,7 +234,7 @@ def test_promo_price_uses_order_amount_not_menu_price():
     """menu.price와 orders.amount가 다른 경우(프로모션 할인 등) PG수수료는 orders.amount 기준"""
     before = stats_crud.get_dashboard_summary()["issued_balance"]
     menu_price, order_amount = 10000, 8000  # 20% 할인 결제 가정
-    ids = setup_gifticon(menu_price, order_amount, "creditcard", "PENDING")
+    ids = setup_gifticon(menu_price, order_amount, "creditcard", "UNUSED")
     try:
         after = stats_crud.get_dashboard_summary()["issued_balance"]
         rate = PG_FEE_RATE_MAP["creditcard"]
@@ -173,7 +247,10 @@ def test_promo_price_uses_order_amount_not_menu_price():
 if __name__ == "__main__":
     tests = [
         test_pg_fee_deducted_per_pgcode,
-        test_used_status_excluded,
+        test_used_status_not_settled_included,
+        test_used_status_settlement_not_completed_included,
+        test_used_status_settlement_completed_excluded,
+        test_pending_status_excluded,
         test_refund_requested_included,
         test_refunded_and_canceled_excluded,
         test_order_pending_excluded,
