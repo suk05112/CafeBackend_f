@@ -2,7 +2,7 @@
 FCM 푸시 메시지 전송 서비스
 """
 from firebase_admin import messaging
-from app.firebase_init import user_app, owner_app
+from app.firebase_init import get_active_user_app, get_active_owner_app
 from db.session import get_db_connection, close_db_connection
 import pymysql
 from loguru import logger
@@ -36,7 +36,7 @@ def send_fcm_notification_to_user(user_id: int, title: str, body: str):
             notification=messaging.Notification(title=title, body=body),
             tokens=fcm_tokens
         )
-        response = messaging.send_each_for_multicast(message, app=user_app)
+        response = messaging.send_each_for_multicast(message, app=get_active_user_app())
 
         logger.info(f"FCM notification sent to user_id {user_id}: {response.success_count} successful, {response.failure_count} failed")
 
@@ -82,7 +82,7 @@ def send_fcm_notification_to_owner(owner_id: int, title: str, body: str):
             notification=messaging.Notification(title=title, body=body),
             tokens=fcm_tokens
         )
-        response = messaging.send_each_for_multicast(message, app=owner_app)
+        response = messaging.send_each_for_multicast(message, app=get_active_owner_app())
 
         logger.info(f"FCM notification sent to owner_id {owner_id}: {response.success_count} successful, {response.failure_count} failed")
 
@@ -133,7 +133,7 @@ def send_fcm_notification_to_all_users(title: str, body: str, use_marketing: boo
                 notification=messaging.Notification(title=title, body=body),
                 tokens=batch_tokens
             )
-            response = messaging.send_each_for_multicast(message, app=user_app)
+            response = messaging.send_each_for_multicast(message, app=get_active_user_app())
             total_sent += response.success_count
             total_failed += response.failure_count
 
@@ -186,7 +186,7 @@ def send_fcm_notification_to_all_owners(title: str, body: str, use_marketing: bo
                 notification=messaging.Notification(title=title, body=body),
                 tokens=batch_tokens
             )
-            response = messaging.send_each_for_multicast(message, app=owner_app)
+            response = messaging.send_each_for_multicast(message, app=get_active_owner_app())
             total_sent += response.success_count
             total_failed += response.failure_count
 

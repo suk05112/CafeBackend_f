@@ -9,6 +9,7 @@ from pydantic import BaseModel
 from loguru import logger
 
 import re
+import math
 import pymysql
 from db.session import get_db_connection, close_db_connection
 from datetime import datetime, timezone, timedelta
@@ -40,7 +41,7 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
     gifticonList = []
        
     try:
-        # gifticon 테이블을 기준으로 조회하여 모든 기프티콘을 가져옴
+        # gifticon 테이블을 기준으로 조회하여 모든 기프티콘을 가져옴 (메뉴 정보는 발급 시점 스냅샷 사용)
         cursor.execute('''
             SELECT
                 g.id as gifticon_id,
@@ -56,29 +57,28 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
                 g.menu_id,
                 g.store_id,
                 g.created_at,
-                m.menu_name,
-                m.price,
-                m.description,
-                m.image_key,
+                g.menu_name_snapshot,
+                g.price_snapshot,
+                g.description_snapshot,
+                g.image_key_snapshot,
                 s.store_name
             FROM gifticon g
-            LEFT JOIN menu m ON g.menu_id = m.id
             LEFT JOIN store s ON g.store_id = s.id
-            WHERE g.receiver_id = %s AND g.status != 'UNKNOWN'
+            WHERE g.receiver_id = %s AND g.status NOT IN ('PENDING', 'UNKNOWN')
             ORDER BY g.id DESC
         ''', (user_id,))
-                    
+
         rows = cursor.fetchall()
         print("sql 실행 결과:", len(rows), "개")
 
         for row in rows:
-            image_key = row.get('image_key') or ''
+            image_key = row.get('image_key_snapshot') or ''
             menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
-                "name": row.get('menu_name') or '',
-                "price": row.get('price') or 0,
-                "description": row.get('description') or '',
+                "name": row.get('menu_name_snapshot') or '',
+                "price": row.get('price_snapshot') or 0,
+                "description": row.get('description_snapshot') or '',
                 "validity": row['validity'],
                 "sender": row['sender'],
                 "receiver": row['receiver'],
@@ -118,6 +118,13 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
                 detail="Gifticon not found"
             )
 
+        # 결제가 완료되지 않은(PENDING) 기프티콘은 유효하지 않은 것으로 처리 (안전망)
+        if gifticon.get('status') == 'PENDING':
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Gifticon not found"
+            )
+
         print("읽어온 기프티콘", gifticon)
 
         # order_id 조회 (gifticon 테이블에 order_id가 있으면 직접 사용, 없으면 orders_gifticon에서 조회)
@@ -141,28 +148,17 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
                 detail="Store not found"
             )
         
-        cursor.execute('''SELECT menu_name, image_key
-        FROM menu
-        WHERE id=%s ;''', (gifticon['menu_id'],))
-
-        menu_result = cursor.fetchone()
-
-        if not menu_result:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Menu not found"
-            )
-
-        image_key = menu_result.get('image_key') or ''
+        image_key = gifticon.get('image_key_snapshot') or ''
         menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
             "gift_code": gifticon['gift_code'],
             "order_id": order_id_value,
             "validity": gifticon['validity'],
+            "purchaser_refund_deadline": gifticon.get('purchaser_refund_deadline'),
             "sender": gifticon['sender'],
             "type": gifticon['type'],
-            "name": menu_result.get('menu_name') or menu_result.get('name'),
+            "name": gifticon.get('menu_name_snapshot') or '',
             "status": gifticon.get('status'),
             "menu_url" : menu_url,
             "msg" : gifticon.get('msg'),
@@ -228,10 +224,21 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
             connection.rollback()
             return {'result': 1}  # 동시 요청으로 이미 사용 처리됨
 
-        # settlement_details: 개별 기프티콘 매출액만 기록 (수수료는 정산 배치에서 총액 기준으로 산정)
+        # settlement_details: 개별 기프티콘 매출액 + 기본(프로모션 미적용) 수수료 기록
+        # 프로모션 적용 최종 정산액은 settlement 테이블에서만 산정
+        cursor.execute("SELECT base_fee_rate FROM platform_config WHERE config_id = 1")
+        fee_rate = float(cursor.fetchone()['base_fee_rate'])
+
+        fee_supply = math.floor(sales_amount * fee_rate / 100)
+        fee_vat = round(fee_supply * 0.1)
+        fee_amount = fee_supply + fee_vat
+        settlement_amount = sales_amount - fee_amount
+
         cursor.execute(
-            "INSERT INTO settlement_details (settlement_id, gifticon_id, sales_amount) VALUES (NULL, %s, %s)",
-            (gifticon_id, sales_amount)
+            """INSERT INTO settlement_details
+               (settlement_id, gifticon_id, sales_amount, fee_rate, fee_supply, fee_vat, fee_amount, settlement_amount)
+               VALUES (NULL, %s, %s, %s, %s, %s, %s, %s)""",
+            (gifticon_id, sales_amount, fee_rate, fee_supply, fee_vat, fee_amount, settlement_amount)
         )
 
         connection.commit()
@@ -380,19 +387,26 @@ def linkGifticonToUser(request: LinkGifticonRequest):
     try:
         # 1. 기프티콘 존재 여부 및 receiver_phone 확인
         cursor.execute('''
-            SELECT id, receiver_phone, user_id, receiver_id
-            FROM gifticon 
+            SELECT id, receiver_phone, user_id, receiver_id, status
+            FROM gifticon
             WHERE id = %s
         ''', (request.gifticon_id,))
-        
+
         gifticon = cursor.fetchone()
-        
+
         if not gifticon:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail=f"Gifticon with id {request.gifticon_id} not found"
             )
-        
+
+        # 1-1. 결제가 완료되지 않은(PENDING) 기프티콘은 연결 불가
+        if gifticon['status'] == 'PENDING':
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Gifticon is not ready"
+            )
+
         # 2. receiver_phone 일치 여부 확인
         if normalize_phone(gifticon['receiver_phone']) != normalize_phone(request.receiver_phone):
             print(f"receiver_phone does not match: {gifticon['receiver_phone']} != {request.receiver_phone}")

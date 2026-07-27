@@ -8,6 +8,7 @@ from datetime import date, datetime
 
 from db.session import get_db_connection, close_db_connection
 from crud import promotion as promotion_crud
+from core.fees import PG_FEE_RATE_MAP, PG_FEE_RATE_DEFAULT
 
 
 # ── 대시보드 API CRUD (GNB-164 / GNB-165 / GNB-166) ──────────────────────────
@@ -16,21 +17,51 @@ def get_dashboard_summary() -> Dict:
     """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
 
     집계 기준:
-    - issued_balance: gifticon 중 UNUSED/PENDING/EXPIRED 상태(미사용) 기프티콘의 menu.price 합계
+    - issued_balance: 매장이 아직 정산(지급)받지 못한 기프티콘의 menu.price 합계에서
+      결제수단(pgcode)별 PG수수료를 차감한 금액. PG수수료는 orders.amount(실 결제금액)
+      기준으로 계산 (GNB-199). orders.status가 PENDING(결제 미완료)인 건은 제외 (GNB-208).
+      대상 판정은 gifticon.status가 아니라 정산 완료 여부 기준 (GNB-211):
+      REFUND_REQUESTED/EXPIRED/UNUSED는 무조건 포함, USED는 정산이 COMPLETED가
+      아닌 경우만 포함, PENDING/REFUNDED/CANCELED는 제외
     - current_cycle: settlement_details.settlement_id IS NULL 건 합계 (현재 진행 중인 주기)
     - cumulative: stats_daily_platform 전체 SUM
     """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
-        # 발행잔액: 미사용(UNUSED/PENDING/EXPIRED) 기프티콘 menu.price 합계, 환불/취소 제외
+        # 발행잔액: 정산 미완료(매장이 아직 못 받은) 기프티콘 menu.price 합계 - PG수수료 (GNB-211)
+        # REFUNDED/CANCELED/PENDING은 제외. USED는 정산이 COMPLETED된 건만 제외
+        # orders.status가 PENDING(결제 대기/미완료)인 건도 제외 (GNB-208)
         cursor.execute("""
-            SELECT COALESCE(SUM(m.price), 0) AS issued_balance
+            SELECT
+                m.price AS menu_price,
+                o.amount AS order_amount,
+                LOWER(COALESCE(o.pgcode, '')) AS pgcode
             FROM gifticon g
             JOIN menu m ON g.menu_id = m.id
-            WHERE g.status IN ('UNUSED', 'PENDING', 'EXPIRED')
+            LEFT JOIN orders o ON g.order_id = o.id
+            LEFT JOIN settlement_details sd ON sd.gifticon_id = g.id
+            LEFT JOIN settlement s ON sd.settlement_id = s.settlement_id
+            WHERE (
+                g.status IN ('REFUND_REQUESTED', 'EXPIRED', 'UNUSED')
+                OR (g.status = 'USED' AND (s.status IS NULL OR s.status != 'COMPLETED'))
+            )
+              AND (o.status IS NULL OR o.status != 'PENDING')
         """)
-        issued_balance = int(cursor.fetchone()['issued_balance'] or 0)
+        rows = cursor.fetchall()
+
+        total_menu_price = 0
+        total_pg_fee = 0
+        for r in rows:
+            menu_price = int(r['menu_price'] or 0)
+            order_amount = int(r['order_amount'] or 0)
+            pgcode = r['pgcode'] or ''
+            pg_rate = PG_FEE_RATE_MAP.get(pgcode, PG_FEE_RATE_DEFAULT)
+
+            total_menu_price += menu_price
+            total_pg_fee += math.floor(order_amount * pg_rate / 100)
+
+        issued_balance = total_menu_price - total_pg_fee
 
         # 현재 진행 중인 정산 주기 조회
         cursor.execute("""
@@ -250,7 +281,8 @@ def get_dashboard_stats(period: str, page: int = 1, size: int = 30) -> Dict:
 def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
     """정산 주기별 플랫폼 매출 이력
 
-    GNB-169: 현재 날짜 이전 주기만 표시 (period_end_date <= today), 10개씩 페이지네이션
+    GNB-201: 오늘이 포함된(또는 미래) 진행 중인 주기도 표시 (정산 미생성 상태여도
+    노출, 관련 정산 데이터는 0으로 나타남). 10개씩 페이지네이션.
 
     집계 기준:
     - total_settlement_amount: 매장 지급 총액 (net_payout_amount 합계, COMPLETED/PENDING)
@@ -263,13 +295,11 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         offset = (page - 1) * size
-        today = date.today()
 
         cursor.execute("""
             SELECT COUNT(DISTINCT sc.cycle_id) AS total
             FROM settlement_cycles sc
-            WHERE sc.period_end_date <= %s
-        """, (today,))
+        """)
         total = int(cursor.fetchone()['total'] or 0)
 
         cursor.execute("""
@@ -288,11 +318,10 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
                     AS platform_vat_amount
             FROM settlement_cycles sc
             LEFT JOIN settlement s ON sc.cycle_id = s.cycle_id
-            WHERE sc.period_end_date <= %s
             GROUP BY sc.cycle_id, sc.period_start_date, sc.period_end_date, sc.payout_date
             ORDER BY sc.period_start_date DESC
             LIMIT %s OFFSET %s
-        """, (today, size, offset))
+        """, (size, offset))
         rows = cursor.fetchall()
 
         items = []
@@ -425,11 +454,14 @@ def create_settlement_data(cycle_id: int) -> Dict:
         period_end = cycle['period_end_date']
         payout_date = cycle['payout_date']
 
-        # 매장별 총 매출 집계 (개별 수수료 없음)
+        # 매장별 총 매출 및 건별 기본 수수료 합계 집계 (settlement_details와 정합성 보장)
         cursor.execute("""
             SELECT
                 g.store_id,
                 SUM(sd.sales_amount) AS total_sales,
+                SUM(sd.fee_supply) AS total_fee_supply,
+                SUM(sd.fee_vat) AS total_fee_vat,
+                SUM(sd.fee_amount) AS total_fee_amount,
                 COALESCE(a.bank, '') AS bank_name,
                 COALESCE(a.account, '') AS account_number
             FROM settlement_details sd
@@ -456,14 +488,24 @@ def create_settlement_data(cycle_id: int) -> Dict:
             bank_name = row['bank_name'] or ''
             account_number = row['account_number'] or ''
 
+            # 이미 이 매장×주기에 대해 생성된 정산이 있으면 재시도하지 않고 skip (GNB-220)
+            cursor.execute(
+                "SELECT settlement_id FROM settlement WHERE store_id = %s AND cycle_id = %s",
+                (store_id, cycle_id)
+            )
+            if cursor.fetchone():
+                continue
+
             # 지급 예정일 기준 프로모션 조회
             fee_info = promotion_crud.get_fee_info_for_settlement(store_id, payout_date)
             base_fee_rate = fee_info['base_fee_rate']
             applied_fee_rate = fee_info['applied_fee_rate']
             applied_promo_id = fee_info['applied_promo_id']
 
-            # 원본(프로모션 미적용) 수수료 계산
-            original_supply, original_vat, original_fee = _calc_fee(total_sales, base_fee_rate)
+            # 원본(프로모션 미적용) 수수료: settlement_details 건별 합계로 산출 (정합성 보장)
+            original_supply = int(row['total_fee_supply'] or 0)
+            original_vat = int(row['total_fee_vat'] or 0)
+            original_fee = int(row['total_fee_amount'] or 0)
 
             # 프로모션 적용 수수료 (프로모션 있을 때만)
             if applied_promo_id is not None:

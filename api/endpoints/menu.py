@@ -105,7 +105,7 @@ def update_menu(menu_id: int, menu: Menu):
         if not success:
             raise HTTPException(status_code=404, detail="Menu not found")
 
-        if menu.delete_image:
+        if not menu.change_image:
             return {'menu_id': menu_id}
 
         s3_urls = menu_crud.generate_menu_s3_urls(menu.store_id, menu_id)

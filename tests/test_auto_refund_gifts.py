@@ -46,11 +46,12 @@ def setup_test_data(days_ago: int) -> tuple[int, int]:
     created_at = clock.now() - timedelta(days=days_ago)
 
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
+    # 고정 id INSERT 금지: AUTO_INCREMENT 카운터가 점프해 실제 메뉴 id가 튀는 원인 (GNB-184)
     cur.execute("""
-        INSERT INTO menu (id, store_id, menu_name, price, status)
-        VALUES (99999, 99999, '테스트메뉴', 5000, 'ACTIVE')
-        ON DUPLICATE KEY UPDATE menu_name='테스트메뉴'
+        INSERT INTO menu (store_id, menu_name, price, status)
+        VALUES (99999, '테스트메뉴', 5000, 'ACTIVE')
     """)
+    menu_id = cur.lastrowid
     cur.execute("""
         INSERT INTO orders (store_id, user_id, payment_key, amount, status, order_no, payment, pgcode, created_at)
         VALUES (99999, 99999, 'TEST_GIFT_FAKE_KEY', 5000, 'COMPLETED', %s, 'card', 'creditcard', %s)
@@ -59,8 +60,8 @@ def setup_test_data(days_ago: int) -> tuple[int, int]:
     cur.execute("""
         INSERT INTO gifticon (user_id, type, sender, menu_id, store_id, order_id, status, gift_code,
                               receiver_phone, receiver_id)
-        VALUES (99999, 2, '테스트발신자', 99999, 99999, %s, 'UNUSED', %s, '01000000000', NULL)
-    """, (order_id, f"GTEST-{order_id}"))
+        VALUES (99999, 2, '테스트발신자', %s, 99999, %s, 'UNUSED', %s, '01000000000', NULL)
+    """, (menu_id, order_id, f"GTEST-{order_id}"))
     gifticon_id = cur.lastrowid
     conn.commit()
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -74,6 +75,7 @@ def teardown_test_data(order_id: int, gifticon_id: int):
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     cur.execute("DELETE FROM refund WHERE order_id = %s", (order_id,))
+    cur.execute("DELETE FROM menu WHERE id = (SELECT menu_id FROM gifticon WHERE id = %s)", (gifticon_id,))
     cur.execute("DELETE FROM gifticon WHERE id = %s", (gifticon_id,))
     cur.execute("DELETE FROM orders WHERE id = %s", (order_id,))
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -153,7 +155,7 @@ def test_7_days_payletter_success():
         refunds = fetch_refunds(order_id)
         assert len(refunds) == 1, f"환불 레코드 1건이어야 함: {len(refunds)}건"
         assert refunds[0]["status"] == "COMPLETED", f"refund 상태: {refunds[0]['status']}"
-        assert int(refunds[0]["amount"]) == 5000, f"환불액: {refunds[0]['amount']}"
+        assert int(refunds[0]["refunded_amount"]) == 5000, f"환불액: {refunds[0]['refunded_amount']}"
         assert refunds[0]["refund_type"] == "PURCHASER"
     finally:
         teardown_test_data(order_id, gifticon_id)
@@ -194,8 +196,8 @@ def test_skip_already_refunded():
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     cur.execute("""
-        INSERT INTO refund (order_id, refund_type, amount, status, refunded_at)
-        VALUES (%s, 'PURCHASER', 5000, 'COMPLETED', NOW())
+        INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, status, refunded_at)
+        VALUES (%s, 'PURCHASER', 5000, 5000, 'COMPLETED', NOW())
     """, (order_id,))
     conn.commit()
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -217,8 +219,8 @@ def test_retry_failed_refund():
     cur = conn.cursor()
     cur.execute("SET FOREIGN_KEY_CHECKS=0")
     cur.execute("""
-        INSERT INTO refund (order_id, refund_type, amount, status, refunded_at)
-        VALUES (%s, 'PURCHASER', 5000, 'FAILED', NOW())
+        INSERT INTO refund (order_id, refund_type, original_amount, refunded_amount, status, refunded_at)
+        VALUES (%s, 'PURCHASER', 5000, 5000, 'FAILED', NOW())
     """, (order_id,))
     conn.commit()
     cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -316,6 +318,38 @@ def test_skip_non_gift_type():
         teardown_test_data(order_id, gifticon_id)
 
 
+# ── T12: 7일 경과 + 환불 성공 → 발신자/수신자 알림톡 각각 발송 ────────────────
+def test_alimtalk_sent_to_sender_and_receiver():
+    order_id, gifticon_id = setup_test_data(days_ago=7)
+    try:
+        with patch("core.scheduler._payletter_cancel", return_value=True), \
+             patch("core.scheduler.send_gift_auto_refund_to_sender") as mock_sender, \
+             patch("core.scheduler.send_gift_auto_refund_to_receiver") as mock_receiver:
+            auto_refund_unregistered_gifts()
+        mock_sender.assert_called_once()
+        mock_receiver.assert_called_once()
+        _, receiver_kwargs = mock_receiver.call_args
+        assert receiver_kwargs["receiver"] == "01000000000"
+        assert receiver_kwargs["menu"] == "테스트메뉴"
+        assert receiver_kwargs["refund_amount"] == "5,000"
+    finally:
+        teardown_test_data(order_id, gifticon_id)
+
+
+# ── T13: 페이레터 실패 → 알림톡 미발송 ───────────────────────────────────────
+def test_alimtalk_not_sent_on_payletter_failure():
+    order_id, gifticon_id = setup_test_data(days_ago=7)
+    try:
+        with patch("core.scheduler._payletter_cancel", return_value=False), \
+             patch("core.scheduler.send_gift_auto_refund_to_sender") as mock_sender, \
+             patch("core.scheduler.send_gift_auto_refund_to_receiver") as mock_receiver:
+            auto_refund_unregistered_gifts()
+        mock_sender.assert_not_called()
+        mock_receiver.assert_not_called()
+    finally:
+        teardown_test_data(order_id, gifticon_id)
+
+
 # ── T11: ENV=test 환경에서 1분 interval 등록 확인 ────────────────────────────
 def test_scheduler_interval_in_test_env():
     os.environ["ENV"] = "test"
@@ -351,6 +385,8 @@ if __name__ == "__main__":
     run("T08: freeze_time 경계값 7일+1초 → 처리", test_freeze_time_boundary_just_over_7_days)
     run("T09: receiver_id 있는 경우 → 미처리", test_skip_registered_receiver)
     run("T10: type=1 일반 구매 → 미처리", test_skip_non_gift_type)
+    run("T12: 환불 성공 → 발신자/수신자 알림톡 각각 발송", test_alimtalk_sent_to_sender_and_receiver)
+    run("T13: 페이레터 실패 → 알림톡 미발송", test_alimtalk_not_sent_on_payletter_failure)
     run("T11: ENV=test 1분 interval 등록 확인", test_scheduler_interval_in_test_env)
 
     print("=" * 60)

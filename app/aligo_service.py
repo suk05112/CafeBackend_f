@@ -16,6 +16,16 @@
                환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
                환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
              발송 시점: 스케줄러 자동 환불 완료 후
+  - UJ_8027: 환불완료 안내(수신자)          변수: #{메뉴}, {환불금액}
+             수신자: 수신자
+             제목: 환불 완료 안내
+             내용:
+               상품권 등록 기한이 지나 결제가 자동 취소되었습니다.
+               선물하신 분께 환불이 진행됩니다.
+
+               상품명: #{메뉴}
+               환불 금액: {환불금액}원
+             발송 시점: 스케줄러 자동 환불 완료 후
 
 알림톡 전송 API 명세 (POST https://kakaoapi.aligo.in/akv10/alimtalk/send/):
   필수 파라미터:
@@ -26,7 +36,7 @@
     - sender      : 발신자 연락처
     - receiver_N  : 수신자 연락처 (N: 1~500)
     - subject_N   : 알림톡 제목
-    - message_N   : 알림톡 내용 (템플릿 서식과 정확히 일치해야 함)
+    - message_N   : 알림톡 내용 (템플릿 서식과 정확히 일치해야 함, 개행문자까지 동일해야 함)
   선택 파라미터:
     - senddate    : 예약일 (datetime)
     - recvname_N  : 수신자 이름
@@ -37,10 +47,33 @@
     - fmessage_N  : 실패 시 대체문자 내용
     - testMode    : 테스트 모드 (Y or N, 기본 N)
   응답:
-    - code 0      : 성공
+    - code 0      : 성공 (단, 접수 성공일 뿐 최종 발송 성공이 아님)
     - code -99 외 : 실패 (message 필드에 사유)
+    - info.mid    : 메시지 ID (발송결과 조회 시 사용)
     - info.scnt   : 정상 요청된 연락처 수
     - info.fcnt   : 잘못 요청된 연락처 수
+
+발송결과 조회 API:
+  - 목록: POST /akv10/history/list/   (apikey, userid, page, page_size)
+      · reserve_state 는 접수 상태(예: "전송완료")일 뿐, 카카오 최종 발송 결과가 아님
+  - 상세: POST /akv10/history/detail/ (apikey, userid, mid)
+      · rslt         : 결과 코드 (U = 실패)
+      · rslt_message : 실패 사유 (예: "메시지가 템플릿과 일치하지않음")
+  ※ 전송 성공 여부는 반드시 history/detail 의 rslt 로 확인할 것.
+
+템플릿 관리 API:
+  - 목록: POST /akv10/template/list/    (apikey, userid, senderkey, [tpl_code])
+  - 생성: POST /akv10/template/add/     (+ tpl_name, tpl_content, [tpl_button, tpl_type, tpl_emtype ...])
+  - 수정: POST /akv10/template/modify/  (+ tpl_code, tpl_name, tpl_content)
+      · status=R(대기) 이고 inspStatus 가 REG(등록) 또는 REJ(반려)인 경우에만 수정 가능
+  - 삭제: POST /akv10/template/del/     (+ tpl_code) — 승인 완료된 템플릿은 삭제 불가
+  - 검수요청: POST /akv10/template/request/ (+ tpl_code) — 검수 4~5일 소요
+
+  템플릿 상태 필드 (발송 실패 원인 파악 시 반드시 확인):
+    - status     : S(중단) / A(정상) / R(대기)
+    - inspStatus : REG(등록) / REQ(심사요청) / APR(승인) / REJ(반려)
+  ※ inspStatus=APR 이어도 status 가 A(정상) 가 아니면 발송 시
+    "메시지가 템플릿과 일치하지않음" 으로 리젝된다. 검수 승인 후 활성화 여부를 확인할 것.
 """
 import json
 import urllib.request
@@ -133,7 +166,22 @@ def _send(
         return {"code": -1, "message": str(e)}
 
 
-# ── 템플릿별 발송 함수 ──────────────────────────────────────────────────────────
+def send_alimtalk_log_row(row: dict) -> dict:
+    """
+    alimtalk_log 한 건(DictCursor row)을 실제로 발송한다.
+    배치(core.scheduler.send_pending_alimtalk)와 관리자 수동 재발송에서 공용으로 사용.
+    """
+    button = json.loads(row["button_json"]) if row.get("button_json") else None
+    recipient = AlimtalkRecipient(
+        receiver=row["receiver_phone"],
+        subject=row["subject"],
+        message=row["message"],
+        recvname=row.get("recvname") or "",
+    )
+    return _send(row["tpl_code"], [recipient], button=button)
+
+
+# ── 템플릿별 발송 함수 (큐 적재만 수행, 실제 발송은 배치가 처리) ──────────────────
 
 def send_settlement_complete(
     receiver: str,
@@ -153,13 +201,16 @@ def send_settlement_complete(
         f"■ 정산 금액: {amount}원\n"
         f"■ 입금 계좌: {bank_name} ({account_number})"
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UH_9771",
+        category="SETTLEMENT_COMPLETE",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="정산 완료 안내",
         message=message,
-        recvname=recvname,
+        button=CHANNEL_ADD_BUTTON,
     )
-    return _send("UH_9771", [recipient], button=CHANNEL_ADD_BUTTON)
 
 
 def send_gift_cancel_to_receiver(
@@ -173,15 +224,15 @@ def send_gift_cancel_to_receiver(
         f"{sender} 님께서 선물하신 {menu} 주문이 취소되었습니다.\n"
         f"해당 상품권은 사용할 수 없습니다."
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UJ_1609",
+        category="GIFT_CANCEL",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="선물 결제 취소 안내",
         message=message,
-        recvname=recvname,
-        emtitle="주문취소 안내",
-        emtext="상품권 주문이 취소되었습니다.",
     )
-    return _send("UJ_1609", [recipient])
 
 
 def send_gift_auto_refund_to_sender(
@@ -195,13 +246,39 @@ def send_gift_auto_refund_to_sender(
         f"▶상품명: {menu}\n\n"
         f"환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라 환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다."
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UJ_4468",
+        category="AUTO_REFUND_SENDER",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="자동 환불 안내",
         message=message,
-        recvname=recvname,
     )
-    return _send("UJ_4468", [recipient])
+
+
+def send_gift_auto_refund_to_receiver(
+    receiver: str,
+    menu: str,
+    refund_amount: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_8027: 미등록 상품권 수신자 환불안내 (수신자에게 발송)"""
+    message = (
+        f"상품권 등록 기한이 지나 결제가 자동 취소되었습니다.\n"
+        f"선물하신 분께 환불이 진행됩니다.\n\n"
+        f"상품명: {menu}\n"
+        f"환불 금액: {refund_amount}원"
+    )
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UJ_8027",
+        category="AUTO_REFUND_RECEIVER",
+        receiver_phone=receiver,
+        recvname=recvname,
+        subject="환불 완료 안내",
+        message=message,
+    )
 
 
 def send_store_review_result(
@@ -218,13 +295,15 @@ def send_store_review_result(
         f"※ 메뉴가 등록된 매장은 승인 즉시 앱에 노출됩니다. "
         f"아직 메뉴를 등록하지 않으셨다면 사장님 앱에서 등록을 완료해 주세요."
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UH_9772",
+        category="STORE_REVIEW_RESULT",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="입점 심사 결과 안내",
         message=message,
-        recvname=recvname,
-        emtitle="입점 심사 결과 안내",
+        button=CHANNEL_ADD_BUTTON,
     )
-    return _send("UH_9772", [recipient], button=CHANNEL_ADD_BUTTON)
 
 

@@ -10,6 +10,7 @@ from fastapi.responses import StreamingResponse
 from typing import Optional
 from app.auth.auth_dependency import verify_manager_api_key as verify_firebase_token
 from db.session import get_db_connection, close_db_connection
+from core import scheduler as batch_scheduler
 from crud import admin as admin_crud
 from crud import store as store_crud
 from crud import menu as menu_crud
@@ -72,7 +73,7 @@ def get_dashboard_statistics(user=Depends(verify_firebase_token)):
 def get_dashboard_summary(user=Depends(verify_firebase_token)):
     """실시간 요약: 발행잔액 / 이번 정산주기 예정 / 누적 지표
 
-    - issued_balance: 미사용 기프티콘 menu.price 합계 (REFUNDED/CANCELED 제외)
+    - issued_balance: 정산 미완료(매장이 아직 못 받은) 기프티콘 menu.price 합계 (GNB-211)
     - current_cycle: settlement_details 미연결 건 기준 실시간 예상값
     - cumulative: stats_daily_platform 전체 SUM (매일 00:10 배치 갱신)
     """
@@ -1445,24 +1446,24 @@ def update_settlement_tax_invoice(settlement_id: int, body: dict, user=Depends(v
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/settlement/create/{cycle_id}")
-def create_settlement_data(cycle_id: int, user=Depends(verify_firebase_token)):
-    """정산 데이터 생성 (정산 주기별)
-    
+@router.get("/settlement/cycles/{cycle_id}/preview")
+def get_settlement_cycle_preview(cycle_id: int, user=Depends(verify_firebase_token)):
+    """정산 주기 미리보기 (배치 생성 전 예상 총액/정산건수/정산예정 매장수)
+
     cycle_id는 /admin/settlement/cycles API로 조회 가능합니다.
+    실제 정산 데이터는 배치(generate_weekly_settlements)가 주기 종료 후 자동 생성합니다.
     """
-    connection = get_db_connection()
     try:
-        from crud import stats as stats_crud
-        result = stats_crud.create_settlement_data(cycle_id)
+        from crud import settlement as settlement_crud
+        result = settlement_crud.get_settlement_cycle_preview(cycle_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="정산 주기를 찾을 수 없습니다.")
         return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error in create_settlement_data: {traceback.format_exc()}")
+        print(f"Error in get_settlement_cycle_preview: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        close_db_connection(connection)
 
 
 @router.get("/refund/list")
@@ -1795,3 +1796,80 @@ def toggle_popup(popup_id: int, user=Depends(verify_firebase_token)):
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         close_db_connection(connection)
+
+
+# ── Batch Management ──────────────────────────────────────────────────────────
+
+@router.get("/batch/jobs")
+def list_batch_jobs(user=Depends(verify_firebase_token)):
+    """등록된 배치 목록 조회 (이름, 설명, 스케줄)"""
+    return [
+        {"id": job_id, **meta}
+        for job_id, meta in batch_scheduler.BATCH_JOBS.items()
+    ]
+
+
+@router.post("/batch/run/{job_id}")
+def run_batch_job(job_id: str, user=Depends(verify_firebase_token)):
+    """스케줄과 무관하게 배치를 즉시 실행"""
+    meta = batch_scheduler.BATCH_JOBS.get(job_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="존재하지 않는 배치입니다.")
+    if not meta.get("runnable"):
+        raise HTTPException(status_code=400, detail="즉시 실행을 지원하지 않는 배치입니다.")
+
+    job_fn = batch_scheduler.JOB_FUNCTIONS[job_id]
+    try:
+        result = job_fn()
+        return {"job_id": job_id, "result": result}
+    except Exception as e:
+        print(f"Error in run_batch_job({job_id}): {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Alimtalk (알림톡) ────────────────────────────────────────────────────────
+
+@router.get("/alimtalk/logs")
+def get_alimtalk_logs_api(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(None, description="PENDING, SENT, FAILED"),
+    user=Depends(verify_firebase_token),
+):
+    """알림톡 발송 큐/이력 조회 (상태 필터 + 페이지네이션)"""
+    try:
+        from crud import alimtalk as alimtalk_crud
+        result = alimtalk_crud.get_log_list(status=status, page=page, limit=limit)
+        return result
+    except Exception as e:
+        print(f"Error in get_alimtalk_logs_api: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/alimtalk/retry")
+def retry_alimtalk_api(log_ids: list[int], user=Depends(verify_firebase_token)):
+    """선택한 알림톡 로그를 즉시 재발송한다 (자동 배치와 달리 5회 재시도 상한 미적용)"""
+    try:
+        from crud import alimtalk as alimtalk_crud
+        from app.aligo_service import send_alimtalk_log_row
+        from core import clock
+
+        rows = alimtalk_crud.get_by_ids(log_ids)
+        result = {"requested": len(log_ids), "sent": 0, "failed": 0, "not_found": len(log_ids) - len(rows)}
+        for row in rows:
+            try:
+                send_result = send_alimtalk_log_row(row)
+                if send_result.get("code") == 0:
+                    aligo_mid = send_result.get("info", {}).get("mid")
+                    alimtalk_crud.mark_sent(row["id"], aligo_mid, clock.now())
+                    result["sent"] += 1
+                else:
+                    alimtalk_crud.mark_failed(row["id"], str(send_result.get("message")))
+                    result["failed"] += 1
+            except Exception as e:
+                alimtalk_crud.mark_failed(row["id"], str(e))
+                result["failed"] += 1
+        return result
+    except Exception as e:
+        print(f"Error in retry_alimtalk_api: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -2,6 +2,7 @@
 Settlement Cycle CRUD 로직
 """
 import pymysql
+import holidays
 from typing import List, Dict, Optional
 from datetime import date, datetime, timedelta
 
@@ -25,10 +26,10 @@ def get_settlement_cycles(
             conditions.append("sc.status = %s")
             params.append(status)
         if start_date:
-            conditions.append("sc.period_start_date >= %s")
+            conditions.append("sc.period_end_date >= %s")
             params.append(start_date)
         if end_date:
-            conditions.append("sc.period_end_date <= %s")
+            conditions.append("sc.period_start_date <= %s")
             params.append(end_date)
 
         where_clause = ("WHERE " + " AND ".join(conditions)) if conditions else ""
@@ -102,10 +103,12 @@ def get_settlement_cycle_by_id(cycle_id: int) -> Optional[Dict]:
 
 
 def is_business_day(target_date: date) -> bool:
-    """영업일 여부 확인 (토요일, 일요일 제외)"""
+    """영업일 여부 확인 (토요일, 일요일, 대한민국 공휴일 제외)"""
     # 0 = 월요일, 6 = 일요일
-    weekday = target_date.weekday()
-    return weekday < 5  # 월~금만 영업일
+    if target_date.weekday() >= 5:
+        return False
+    kr_holidays = holidays.KR(years=target_date.year)
+    return target_date not in kr_holidays
 
 
 def get_next_business_day(target_date: date) -> date:
@@ -148,9 +151,11 @@ def generate_settlement_cycles(start_date: date, end_date: date) -> int:
             period_start = current_sunday          # 일요일
             period_end = current_sunday + timedelta(days=6)  # 토요일
 
-            # payout_date: 종료일(토) 기준 3주 후 화요일
+            # payout_date: 종료일(토) 기준 3주 후 화요일 (공휴일이면 다음 영업일)
             three_weeks_later = period_end + timedelta(weeks=3)
             payout_date = get_next_tuesday(three_weeks_later)
+            if not is_business_day(payout_date):
+                payout_date = get_next_business_day(payout_date - timedelta(days=1))
 
             # 중복 확인
             cursor.execute("""

@@ -320,7 +320,9 @@ def get_owner_settlement_list_unified(
             if period_start <= today <= period_end:
                 current_cycle = c
 
-            if period_end < cutoff or period_end > today:
+            if period_end < cutoff:
+                continue
+            if period_end > today and not (period_start <= today <= period_end):
                 continue
             cursor.execute("""
                 SELECT s.settlement_id, s.cycle_id, s.period_start, s.period_end,
@@ -374,7 +376,10 @@ def get_owner_settlement_list_unified(
                 'failure_reason': row.get('failure_reason'),
             })
 
-        if current_cycle:
+        current_cycle_already_in_result = current_cycle is not None and any(
+            r.get('cycle_id') == current_cycle['cycle_id'] for r in result
+        )
+        if current_cycle and not current_cycle_already_in_result:
             preview = _build_preview_summary(cursor, store_id, current_cycle)
             if preview:
                 result.insert(0, preview)
@@ -409,7 +414,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
             return None
 
         cursor.execute("""
-            SELECT sd.id, sd.gifticon_id, sd.sales_amount,
+            SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
                 g.used_at, m.menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
@@ -431,6 +436,8 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
                 'menu_name': d.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(d['sales_amount'] or 0),
+                'fee_amount': int(d['fee_amount'] or 0),
+                'settlement_amount': int(d['settlement_amount'] or 0),
             })
 
         return {
@@ -493,6 +500,7 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
 
     cursor.execute("""
         SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount,
+               sd.fee_supply, sd.fee_vat, sd.fee_amount, sd.settlement_amount,
                g.used_at, m.menu_name
         FROM settlement_details sd
         JOIN gifticon g ON sd.gifticon_id = g.id
@@ -515,8 +523,9 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
     applied_promo_id = fee_info['applied_promo_id']
     applied_promo_title = fee_info['applied_promo_title']
 
-    original_supply = math.floor(total_sales * base_fee_rate / 100)
-    original_vat = round(original_supply * 0.1)
+    # 건별로 저장된 기본 수수료(fee_supply/fee_vat)를 합산해 상세내역과 정합성을 맞춘다.
+    original_supply = sum(int(r['fee_supply'] or 0) for r in rows)
+    original_vat = sum(int(r['fee_vat'] or 0) for r in rows)
     original_fee = original_supply + original_vat
 
     if applied_promo_id is not None:
@@ -611,6 +620,8 @@ def get_owner_settlement_preview(store_id: int) -> Optional[Dict]:
                 'menu_name': r.get('menu_name'),
                 'used_at': used_at_str,
                 'amount': int(r['sales_amount'] or 0),
+                'fee_amount': int(r['fee_amount'] or 0),
+                'settlement_amount': int(r['settlement_amount'] or 0),
             })
 
         return {
@@ -692,6 +703,74 @@ def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) 
         close_db_connection(connection)
 
 
+def get_settlement_cycle_preview(cycle_id: int) -> Optional[Dict]:
+    """관리자: 정산 주기 미리보기 (배치 생성 전 예상 총액/정산건수/정산예정 매장수).
+
+    settlement_id가 없는(아직 정산되지 않은) settlement_details를 매장별로 집계해
+    프로모션 적용 후 예상 순지급액을 계산한다. 이미 배치가 실행되어 해당 매장의
+    settlement이 생성된 경우 그 매장은 집계에서 자연히 제외된다(sd.settlement_id IS NULL 조건).
+    cycle_id가 없으면 None 반환.
+    """
+    from crud import promotion as promotion_crud
+    from crud.stats import _calc_fee
+
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("""
+            SELECT cycle_id, period_start_date, period_end_date, payout_date, status
+            FROM settlement_cycles
+            WHERE cycle_id = %s
+        """, (cycle_id,))
+        cycle = cursor.fetchone()
+        if not cycle:
+            return None
+
+        period_start = cycle['period_start_date']
+        period_end = cycle['period_end_date']
+        payout_date = cycle['payout_date']
+
+        cursor.execute("""
+            SELECT
+                g.store_id,
+                SUM(sd.sales_amount) AS total_sales,
+                COUNT(*) AS detail_count
+            FROM settlement_details sd
+            JOIN gifticon g ON sd.gifticon_id = g.id
+            WHERE sd.settlement_id IS NULL
+              AND g.used_at >= %s
+              AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            GROUP BY g.store_id
+        """, (period_start, period_end))
+        store_rows = cursor.fetchall()
+
+        total_expected_amount = 0
+        expected_settlement_count = 0
+        for row in store_rows:
+            store_id = row['store_id']
+            total_sales = int(row['total_sales'] or 0)
+            expected_settlement_count += int(row['detail_count'] or 0)
+
+            fee_info = promotion_crud.get_fee_info_for_settlement(store_id, payout_date)
+            applied_fee_rate = fee_info['applied_fee_rate']
+            _, _, fee_amount = _calc_fee(total_sales, applied_fee_rate)
+            total_expected_amount += total_sales - fee_amount
+
+        return {
+            'cycle_id': cycle_id,
+            'period_start_date': period_start.isoformat() if period_start else None,
+            'period_end_date': period_end.isoformat() if period_end else None,
+            'payout_date': payout_date.isoformat() if payout_date else None,
+            'status': cycle['status'],
+            'expected_store_count': len(store_rows),
+            'expected_settlement_count': expected_settlement_count,
+            'total_expected_amount': total_expected_amount,
+        }
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
 def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
     """관리자: 정산 주기별 매장 정산 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -700,6 +779,13 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
     try:
         cursor.execute("SELECT COUNT(*) AS cnt FROM settlement WHERE cycle_id = %s", (cycle_id,))
         total = int((cursor.fetchone() or {}).get('cnt') or 0)
+
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM settlement WHERE cycle_id = %s AND status = 'FAILED'",
+            (cycle_id,)
+        )
+        failed_count = int((cursor.fetchone() or {}).get('cnt') or 0)
+
         offset = (page - 1) * limit
 
         cursor.execute("""
@@ -752,6 +838,7 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
         import math
         return {
             'settlements': result,
+            'failed_count': failed_count,
             'pagination': {
                 'total': total,
                 'page': page,
@@ -821,7 +908,12 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 sd.gifticon_id,
                 g.used_at,
                 m.menu_name,
-                sd.sales_amount
+                sd.sales_amount,
+                sd.fee_rate,
+                sd.fee_supply,
+                sd.fee_vat,
+                sd.fee_amount,
+                sd.settlement_amount
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -861,10 +953,15 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
             'store_logo_url': _generate_presigned_url(settlement.get('store_logo_key')),
             'bankbook_url': _generate_presigned_url(settlement.get('bankbook_key')),
         }
+        applied_promo_id = settlement.get('applied_promo_id')
+        header_applied_fee_rate = float(settlement['applied_fee_rate']) if settlement.get('applied_fee_rate') is not None else None
+
         items = []
         for i, d in enumerate(details, 1):
             used_at = d.get('used_at')
             used_at_str = used_at.strftime('%Y-%m-%d %H:%M') if used_at and hasattr(used_at, 'strftime') else (str(used_at) if used_at else '-')
+            base_fee_rate = float(d['fee_rate']) if d.get('fee_rate') is not None else None
+            applied_fee_rate = header_applied_fee_rate if applied_promo_id is not None else base_fee_rate
             items.append({
                 'index': i,
                 'id': d.get('id'),
@@ -872,6 +969,12 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 'menu_name': d.get('menu_name') or '-',
                 'used_at': used_at_str,
                 'sales_amount': int(d.get('sales_amount') or 0),
+                'base_fee_rate': base_fee_rate,
+                'applied_fee_rate': applied_fee_rate,
+                'fee_supply': int(d['fee_supply']) if d.get('fee_supply') is not None else 0,
+                'fee_vat': int(d['fee_vat']) if d.get('fee_vat') is not None else 0,
+                'fee_amount': int(d['fee_amount']) if d.get('fee_amount') is not None else 0,
+                'settlement_amount': int(d['settlement_amount']) if d.get('settlement_amount') is not None else int(d.get('sales_amount') or 0),
             })
         import math as _math
         return {

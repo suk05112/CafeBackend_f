@@ -41,7 +41,7 @@ from core.config import settings
 import core.dreamsecurity as dreamsecurity
 from fastapi.responses import HTMLResponse, RedirectResponse
 from firebase_admin import auth as firebase_auth
-from app.firebase_init import owner_app
+from app.firebase_init import get_active_owner_app
 import core.crypto as crypto
 
 router = APIRouter()
@@ -1016,6 +1016,7 @@ def get_owner_store_list(owner_id: int):
                 s.district_code,
                 s.inspection_status,
                 s.inspection_msg,
+                s.contract_completed,
                 s.status,
                 s.open_yn,
                 s.created_at,
@@ -1036,6 +1037,10 @@ def get_owner_store_list(owner_id: int):
                 Params={'Bucket': bucket_name, 'Key': store_logo_key},
                 ExpiresIn=3600) if store_logo_key else None
 
+            inspection_status = store.get('inspection_status')
+            if inspection_status == 'APPROVED' and store.get('contract_completed') != 'COMPLETED':
+                inspection_status = 'PENDING'
+
             store_data = {
                 'store_id': store['id'],
                 'owner_id': store['owner_id'],
@@ -1048,7 +1053,7 @@ def get_owner_store_list(owner_id: int):
                 'store_lng': float(store['store_lng']) if store.get('store_lng') else None,
                 'region_code': store.get('region_code'),
                 'district_code': store.get('district_code'),
-                'inspection_status': store.get('inspection_status'),
+                'inspection_status': inspection_status,
                 'inspection_msg': store.get('inspection_msg'),
                 'status': store.get('status'),
                 'open_yn': store.get('open_yn'),
@@ -1427,7 +1432,7 @@ async def reset_password(body: OwnerResetPassword):
         except ValueError:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="비밀번호 복호화에 실패했습니다.")
 
-        firebase_auth.update_user(row["uid"], password=new_password, app=owner_app)
+        firebase_auth.update_user(row["uid"], password=new_password, app=get_active_owner_app())
 
         return {"msg": "success"}
 

@@ -21,8 +21,9 @@ services:
       - ./.env.prod:/app/.env.prod:ro
       # Firebase 인증서 (레지스트리 이미지에는 미포함 — 서버 파일 마운트)
       - ./cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json:/app/cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json:ro
+      - ./cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json:/app/cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json:ro
       - ./cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:/app/cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:ro
-      - ./gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json:ro
+      - ./gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:ro
       - ./gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:/app/gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:ro
     networks:
       - app-network
@@ -53,8 +54,9 @@ services:
       - ./.env.prod:/app/.env.prod:ro
       # Firebase 인증서 (레지스트리 이미지에는 미포함 — 서버 파일 마운트)
       - ./cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json:/app/cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json:ro
+      - ./cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json:/app/cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json:ro
       - ./cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:/app/cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:ro
-      - ./gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json:ro
+      - ./gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:ro
       - ./gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:/app/gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:ro
     working_dir: /app
     networks:
@@ -88,8 +90,9 @@ services:
       - ./.env.dev:/app/.env.dev:ro
       # Firebase 인증서 (레지스트리 이미지에는 미포함 — 서버 파일 마운트)
       - ./cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json:/app/cafeplatform-firebase-adminsdk-oq7t0-930245c6eb.json:ro
+      - ./cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json:/app/cafe-owner-firebase-adminsdk-4pxe9-e44664feb1.json:ro
       - ./cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:/app/cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:ro
-      - ./gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-b834ddfd38.json:ro
+      - ./gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:ro
       - ./gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:/app/gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:ro
     working_dir: /app
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--env-file", ".env.dev", "--log-level", "debug" ]

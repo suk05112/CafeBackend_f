@@ -158,18 +158,19 @@ def update_menu(menu_id: int, store_id: int, menu_data: Menu) -> bool:
             if cursor.fetchone() is None:
                 return False
 
-        cursor2 = connection.cursor(pymysql.cursors.DictCursor)
-        cursor2.execute("SELECT image_key FROM menu WHERE id = %s", (menu_id,))
-        row = cursor2.fetchone()
-        cursor2.close()
-        existing_key = row['image_key'] if row else None
+        if menu_data.change_image or menu_data.delete_image:
+            cursor2 = connection.cursor(pymysql.cursors.DictCursor)
+            cursor2.execute("SELECT image_key FROM menu WHERE id = %s", (menu_id,))
+            row = cursor2.fetchone()
+            cursor2.close()
+            existing_key = row['image_key'] if row else None
 
-        if existing_key:
-            s3.delete_object(Bucket=bucket_name, Key=existing_key)
+            if existing_key:
+                s3.delete_object(Bucket=bucket_name, Key=existing_key)
 
-        if menu_data.delete_image:
-            cursor.execute("UPDATE menu SET image_key = NULL WHERE id = %s", (menu_id,))
-            connection.commit()
+            if menu_data.delete_image:
+                cursor.execute("UPDATE menu SET image_key = NULL WHERE id = %s", (menu_id,))
+                connection.commit()
 
         return True
     except Exception as e:

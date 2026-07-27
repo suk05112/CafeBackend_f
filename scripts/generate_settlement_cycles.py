@@ -14,17 +14,16 @@ from crud.settlement_cycle import generate_settlement_cycles
 
 def main():
     """메인 함수"""
-    # 오늘 날짜부터 1년치 생성
-    start_date = date.today()
-    months = 12
-    
+    start_date = date(2026, 5, 3)
+    end_date = date(2030, 12, 31)
+
     print(f"정산 주기 데이터 생성 시작...")
     print(f"시작일: {start_date}")
-    print(f"생성 기간: {months}개월")
+    print(f"종료일: {end_date}")
     print()
-    
+
     try:
-        count = generate_settlement_cycles(start_date, months)
+        count = generate_settlement_cycles(start_date, end_date)
         print(f"✓ {count}개의 정산 주기가 생성되었습니다.")
         print()
         print("생성 완료!")
