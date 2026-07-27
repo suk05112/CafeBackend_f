@@ -319,6 +319,7 @@ def get_owner_settlement_list_unified(
 
             if period_start <= today <= period_end:
                 current_cycle = c
+                continue  # 진행 중 cycle은 settlement 레코드 존재 여부와 무관하게 항상 실시간 preview로 대체
 
             if period_end < cutoff:
                 continue
