@@ -517,7 +517,7 @@ BATCH_JOBS = {
     "send_pending_alimtalk": {
         "name": "알림톡 발송 큐 처리",
         "description": "대기 중이거나 재시도 가능한(5회 미만 실패) 알림톡을 발송합니다.",
-        "schedule": "5분마다",
+        "schedule": "매일 10:00",
         "runnable": True,
         "requires_confirm": False,
     },
@@ -549,7 +549,7 @@ def create_scheduler() -> BackgroundScheduler:
         scheduler.add_job(auto_refund_unregistered_gifts, "cron", hour=3, minute=10, id="auto_refund_unregistered_gifts")
         # GNB-202: 매일 03:40 KST 전날 통계 집계 (다른 배치와 시간대 분산)
         scheduler.add_job(aggregate_yesterday_platform_stats, "cron", hour=3, minute=40, id="aggregate_daily_platform_stats")
-        # GNB-217: 알림톡 발송 큐 5분마다 처리
-        scheduler.add_job(send_pending_alimtalk, "interval", minutes=5, id="send_pending_alimtalk")
+        # GNB-217: 알림톡 발송 큐, 매일 10:00 KST 일괄 처리
+        scheduler.add_job(send_pending_alimtalk, "cron", hour=10, minute=0, id="send_pending_alimtalk")
 
     return scheduler
