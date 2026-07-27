@@ -496,14 +496,14 @@ BATCH_JOBS = {
     "expire_gifticons": {
         "name": "기프티콘 유효기간 만료",
         "description": "유효기간이 지난 미사용 기프티콘을 EXPIRED로 전환합니다. (자동환불 없음, 수신자 환불 신청으로 처리)",
-        "schedule": "매일 03:20",
+        "schedule": "매일 00:01",
         "runnable": True,
         "requires_confirm": False,
     },
     "auto_refund_unregistered_gifts": {
         "name": "미등록 선물 자동환불",
         "description": "7일간 미등록된 선물 기프티콘을 자동 환불합니다. 실제 결제 취소(페이레터)가 발생합니다.",
-        "schedule": "매일 03:10",
+        "schedule": "10분마다",
         "runnable": True,
         "requires_confirm": True,
     },
@@ -545,8 +545,9 @@ def create_scheduler() -> BackgroundScheduler:
         scheduler.add_job(aggregate_yesterday_platform_stats, "interval", minutes=1, id="aggregate_daily_platform_stats")
         scheduler.add_job(send_pending_alimtalk, "interval", minutes=1, id="send_pending_alimtalk")
     else:
-        scheduler.add_job(expire_gifticons, "cron", hour=3, minute=20, id="expire_gifticons")
-        scheduler.add_job(auto_refund_unregistered_gifts, "cron", hour=3, minute=10, id="auto_refund_unregistered_gifts")
+        scheduler.add_job(expire_gifticons, "cron", hour=0, minute=1, id="expire_gifticons")
+        # 7일 경과 여부를 매 실행마다 재계산하므로 10분 주기로도 유실 없이 처리 가능 (최대 10분 지연)
+        scheduler.add_job(auto_refund_unregistered_gifts, "interval", minutes=10, id="auto_refund_unregistered_gifts")
         # GNB-202: 매일 03:40 KST 전날 통계 집계 (다른 배치와 시간대 분산)
         scheduler.add_job(aggregate_yesterday_platform_stats, "cron", hour=3, minute=40, id="aggregate_daily_platform_stats")
         # GNB-217: 알림톡 발송 큐, 매일 10:00 KST 일괄 처리
