@@ -10,7 +10,8 @@ from core import clock
 from core.config import settings
 from db.session import get_db_connection, close_db_connection
 from app.system_logger import log_scheduler_error
-from app.aligo_service import send_gift_auto_refund_to_sender
+from app.aligo_service import send_gift_auto_refund_to_sender, send_alimtalk_log_row
+from crud import alimtalk as alimtalk_crud
 from scripts.aggregate_daily_platform_stats import aggregate_one_day, upsert_stats, get_base_fee_rate
 
 
@@ -410,6 +411,59 @@ def aggregate_yesterday_platform_stats():
     return result
 
 
+def send_pending_alimtalk():
+    """
+    alimtalk_log에서 PENDING + 재시도 가능한 FAILED(retry_count < 5) 건을 조회하여
+    실제 알리고 발송을 수행하고 상태를 갱신한다.
+    MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
+    """
+    connection = get_db_connection()
+    lock_cursor = connection.cursor(pymysql.cursors.Cursor)
+    lock_acquired = False
+    result = {"processed": 0, "sent": 0, "failed": 0}
+
+    try:
+        lock_acquired = _acquire_lock(lock_cursor, "send_pending_alimtalk")
+        if not lock_acquired:
+            result["skipped"] = "lock"
+            return result
+
+        rows = alimtalk_crud.get_pending_and_retryable(limit=100)
+        if not rows:
+            return result
+
+        result["processed"] = len(rows)
+        logger.info(f"[scheduler] send_pending_alimtalk: {len(rows)}건 대상")
+
+        for row in rows:
+            log_id = row["id"]
+            try:
+                send_result = send_alimtalk_log_row(row)
+                if send_result.get("code") == 0:
+                    aligo_mid = send_result.get("info", {}).get("mid")
+                    alimtalk_crud.mark_sent(log_id, aligo_mid, clock.now())
+                    result["sent"] += 1
+                else:
+                    alimtalk_crud.mark_failed(log_id, str(send_result.get("message")))
+                    result["failed"] += 1
+            except Exception as e:
+                alimtalk_crud.mark_failed(log_id, str(e))
+                result["failed"] += 1
+                logger.error(f"[scheduler] send_pending_alimtalk id={log_id} 실패: {e}")
+                log_scheduler_error("send_pending_alimtalk", e)
+
+    except Exception as e:
+        logger.error(f"[scheduler] send_pending_alimtalk 오류: {e}")
+        log_scheduler_error("send_pending_alimtalk", e)
+        result["error"] = str(e)
+    finally:
+        if lock_acquired:
+            _release_lock(lock_cursor, "send_pending_alimtalk")
+        lock_cursor.close()
+        close_db_connection(connection)
+    return result
+
+
 BATCH_JOBS = {
     "expire_pending_orders": {
         "name": "미결제 주문 만료",
@@ -446,6 +500,13 @@ BATCH_JOBS = {
         "runnable": True,
         "requires_confirm": False,
     },
+    "send_pending_alimtalk": {
+        "name": "알림톡 발송 큐 처리",
+        "description": "대기 중이거나 재시도 가능한(5회 미만 실패) 알림톡을 발송합니다.",
+        "schedule": "5분마다",
+        "runnable": True,
+        "requires_confirm": False,
+    },
 }
 
 JOB_FUNCTIONS = {
@@ -454,6 +515,7 @@ JOB_FUNCTIONS = {
     "expire_gifticons": expire_gifticons,
     "auto_refund_unregistered_gifts": auto_refund_unregistered_gifts,
     "aggregate_yesterday_platform_stats": aggregate_yesterday_platform_stats,
+    "send_pending_alimtalk": send_pending_alimtalk,
 }
 
 
@@ -467,10 +529,13 @@ def create_scheduler() -> BackgroundScheduler:
         scheduler.add_job(expire_gifticons, "interval", minutes=1, id="expire_gifticons")
         scheduler.add_job(auto_refund_unregistered_gifts, "interval", minutes=1, id="auto_refund_unregistered_gifts")
         scheduler.add_job(aggregate_yesterday_platform_stats, "interval", minutes=1, id="aggregate_daily_platform_stats")
+        scheduler.add_job(send_pending_alimtalk, "interval", minutes=1, id="send_pending_alimtalk")
     else:
         scheduler.add_job(expire_gifticons, "cron", hour=3, minute=20, id="expire_gifticons")
         scheduler.add_job(auto_refund_unregistered_gifts, "cron", hour=3, minute=10, id="auto_refund_unregistered_gifts")
         # GNB-202: 매일 03:40 KST 전날 통계 집계 (다른 배치와 시간대 분산)
         scheduler.add_job(aggregate_yesterday_platform_stats, "cron", hour=3, minute=40, id="aggregate_daily_platform_stats")
+        # GNB-217: 알림톡 발송 큐 5분마다 처리
+        scheduler.add_job(send_pending_alimtalk, "interval", minutes=5, id="send_pending_alimtalk")
 
     return scheduler

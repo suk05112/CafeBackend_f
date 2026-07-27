@@ -1825,3 +1825,51 @@ def run_batch_job(job_id: str, user=Depends(verify_firebase_token)):
     except Exception as e:
         print(f"Error in run_batch_job({job_id}): {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Alimtalk (알림톡) ────────────────────────────────────────────────────────
+
+@router.get("/alimtalk/logs")
+def get_alimtalk_logs_api(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    status: Optional[str] = Query(None, description="PENDING, SENT, FAILED"),
+    user=Depends(verify_firebase_token),
+):
+    """알림톡 발송 큐/이력 조회 (상태 필터 + 페이지네이션)"""
+    try:
+        from crud import alimtalk as alimtalk_crud
+        result = alimtalk_crud.get_log_list(status=status, page=page, limit=limit)
+        return result
+    except Exception as e:
+        print(f"Error in get_alimtalk_logs_api: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/alimtalk/retry")
+def retry_alimtalk_api(log_ids: list[int], user=Depends(verify_firebase_token)):
+    """선택한 알림톡 로그를 즉시 재발송한다 (자동 배치와 달리 5회 재시도 상한 미적용)"""
+    try:
+        from crud import alimtalk as alimtalk_crud
+        from app.aligo_service import send_alimtalk_log_row
+        from core import clock
+
+        rows = alimtalk_crud.get_by_ids(log_ids)
+        result = {"requested": len(log_ids), "sent": 0, "failed": 0, "not_found": len(log_ids) - len(rows)}
+        for row in rows:
+            try:
+                send_result = send_alimtalk_log_row(row)
+                if send_result.get("code") == 0:
+                    aligo_mid = send_result.get("info", {}).get("mid")
+                    alimtalk_crud.mark_sent(row["id"], aligo_mid, clock.now())
+                    result["sent"] += 1
+                else:
+                    alimtalk_crud.mark_failed(row["id"], str(send_result.get("message")))
+                    result["failed"] += 1
+            except Exception as e:
+                alimtalk_crud.mark_failed(row["id"], str(e))
+                result["failed"] += 1
+        return result
+    except Exception as e:
+        print(f"Error in retry_alimtalk_api: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -133,7 +133,22 @@ def _send(
         return {"code": -1, "message": str(e)}
 
 
-# ── 템플릿별 발송 함수 ──────────────────────────────────────────────────────────
+def send_alimtalk_log_row(row: dict) -> dict:
+    """
+    alimtalk_log 한 건(DictCursor row)을 실제로 발송한다.
+    배치(core.scheduler.send_pending_alimtalk)와 관리자 수동 재발송에서 공용으로 사용.
+    """
+    button = json.loads(row["button_json"]) if row.get("button_json") else None
+    recipient = AlimtalkRecipient(
+        receiver=row["receiver_phone"],
+        subject=row["subject"],
+        message=row["message"],
+        recvname=row.get("recvname") or "",
+    )
+    return _send(row["tpl_code"], [recipient], button=button)
+
+
+# ── 템플릿별 발송 함수 (큐 적재만 수행, 실제 발송은 배치가 처리) ──────────────────
 
 def send_settlement_complete(
     receiver: str,
@@ -153,13 +168,16 @@ def send_settlement_complete(
         f"■ 정산 금액: {amount}원\n"
         f"■ 입금 계좌: {bank_name} ({account_number})"
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UH_9771",
+        category="SETTLEMENT_COMPLETE",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="정산 완료 안내",
         message=message,
-        recvname=recvname,
+        button=CHANNEL_ADD_BUTTON,
     )
-    return _send("UH_9771", [recipient], button=CHANNEL_ADD_BUTTON)
 
 
 def send_gift_cancel_to_receiver(
@@ -173,15 +191,15 @@ def send_gift_cancel_to_receiver(
         f"{sender} 님께서 선물하신 {menu} 주문이 취소되었습니다.\n"
         f"해당 상품권은 사용할 수 없습니다."
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UJ_1609",
+        category="GIFT_CANCEL",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="선물 결제 취소 안내",
         message=message,
-        recvname=recvname,
-        emtitle="주문취소 안내",
-        emtext="상품권 주문이 취소되었습니다.",
     )
-    return _send("UJ_1609", [recipient])
 
 
 def send_gift_auto_refund_to_sender(
@@ -195,13 +213,39 @@ def send_gift_auto_refund_to_sender(
         f"▶상품명: {menu}\n\n"
         f"환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라 환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다."
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UJ_4468",
+        category="AUTO_REFUND_SENDER",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="자동 환불 안내",
         message=message,
-        recvname=recvname,
     )
-    return _send("UJ_4468", [recipient])
+
+
+def send_gift_auto_refund_to_receiver(
+    receiver: str,
+    menu: str,
+    refund_amount: str,
+    recvname: str = "",
+) -> dict:
+    """UJ_8027: 미등록 상품권 수신자 환불안내 (수신자에게 발송)"""
+    message = (
+        f"상품권 등록 기한이 지나 결제가 자동 취소되었습니다.\n"
+        f"선물하신 분께 환불이 진행됩니다.\n\n"
+        f"상품명: {menu}\n"
+        f"환불 금액: {refund_amount}원"
+    )
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UJ_8027",
+        category="AUTO_REFUND_RECEIVER",
+        receiver_phone=receiver,
+        recvname=recvname,
+        subject="환불 완료 안내",
+        message=message,
+    )
 
 
 def send_store_review_result(
@@ -218,13 +262,15 @@ def send_store_review_result(
         f"※ 메뉴가 등록된 매장은 승인 즉시 앱에 노출됩니다. "
         f"아직 메뉴를 등록하지 않으셨다면 사장님 앱에서 등록을 완료해 주세요."
     )
-    recipient = AlimtalkRecipient(
-        receiver=receiver,
+    from crud import alimtalk as alimtalk_crud
+    return alimtalk_crud.enqueue(
+        tpl_code="UH_9772",
+        category="STORE_REVIEW_RESULT",
+        receiver_phone=receiver,
+        recvname=recvname,
         subject="입점 심사 결과 안내",
         message=message,
-        recvname=recvname,
-        emtitle="입점 심사 결과 안내",
+        button=CHANNEL_ADD_BUTTON,
     )
-    return _send("UH_9772", [recipient], button=CHANNEL_ADD_BUTTON)
 
 
