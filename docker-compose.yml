@@ -25,6 +25,9 @@ services:
       - ./cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:/app/cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:ro
       - ./gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:ro
       - ./gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:/app/gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:ro
+      # mobileOK 본인확인 키 파일 (레지스트리 이미지에는 미포함 — 서버 파일 마운트)
+      - ./docs/mobileOK/mok_keyInfo_dev.dat:/app/docs/mobileOK/mok_keyInfo_dev.dat:ro
+      - ./docs/mobileOK/mok_keyInfo_prod.dat:/app/docs/mobileOK/mok_keyInfo_prod.dat:ro
     networks:
       - app-network
     restart: unless-stopped
@@ -58,6 +61,9 @@ services:
       - ./cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:/app/cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:ro
       - ./gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:ro
       - ./gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:/app/gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:ro
+      # mobileOK 본인확인 키 파일 (레지스트리 이미지에는 미포함 — 서버 파일 마운트)
+      - ./docs/mobileOK/mok_keyInfo_dev.dat:/app/docs/mobileOK/mok_keyInfo_dev.dat:ro
+      - ./docs/mobileOK/mok_keyInfo_prod.dat:/app/docs/mobileOK/mok_keyInfo_prod.dat:ro
     working_dir: /app
     networks:
       - app-network
@@ -94,6 +100,9 @@ services:
       - ./cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:/app/cafe-owner-dev-firebase-adminsdk-fbsvc-dffff6ae75.json:ro
       - ./gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:/app/gifnut-dev-firebase-adminsdk-fbsvc-38860a44e8.json:ro
       - ./gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:/app/gifnutmanager-firebase-adminsdk-fbsvc-90c9adac85.json:ro
+      # mobileOK 본인확인 키 파일 (레지스트리 이미지에는 미포함 — 서버 파일 마운트)
+      - ./docs/mobileOK/mok_keyInfo_dev.dat:/app/docs/mobileOK/mok_keyInfo_dev.dat:ro
+      - ./docs/mobileOK/mok_keyInfo_prod.dat:/app/docs/mobileOK/mok_keyInfo_prod.dat:ro
     working_dir: /app
     command: [ "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--env-file", ".env.dev", "--log-level", "debug" ]
     networks:
