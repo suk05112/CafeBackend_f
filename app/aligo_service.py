@@ -16,6 +16,16 @@
                환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
                환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
              발송 시점: 스케줄러 자동 환불 완료 후
+  - UJ_8027: 환불완료 안내(수신자)          변수: #{메뉴}, {환불금액}
+             수신자: 수신자
+             제목: 환불 완료 안내
+             내용:
+               상품권 등록 기한이 지나 결제가 자동 취소되었습니다.
+               선물하신 분께 환불이 진행됩니다.
+
+               상품명: #{메뉴}
+               환불 금액: {환불금액}원
+             발송 시점: 스케줄러 자동 환불 완료 후
 
 알림톡 전송 API 명세 (POST https://kakaoapi.aligo.in/akv10/alimtalk/send/):
   필수 파라미터:
@@ -26,7 +36,7 @@
     - sender      : 발신자 연락처
     - receiver_N  : 수신자 연락처 (N: 1~500)
     - subject_N   : 알림톡 제목
-    - message_N   : 알림톡 내용 (템플릿 서식과 정확히 일치해야 함)
+    - message_N   : 알림톡 내용 (템플릿 서식과 정확히 일치해야 함, 개행문자까지 동일해야 함)
   선택 파라미터:
     - senddate    : 예약일 (datetime)
     - recvname_N  : 수신자 이름
@@ -37,10 +47,33 @@
     - fmessage_N  : 실패 시 대체문자 내용
     - testMode    : 테스트 모드 (Y or N, 기본 N)
   응답:
-    - code 0      : 성공
+    - code 0      : 성공 (단, 접수 성공일 뿐 최종 발송 성공이 아님)
     - code -99 외 : 실패 (message 필드에 사유)
+    - info.mid    : 메시지 ID (발송결과 조회 시 사용)
     - info.scnt   : 정상 요청된 연락처 수
     - info.fcnt   : 잘못 요청된 연락처 수
+
+발송결과 조회 API:
+  - 목록: POST /akv10/history/list/   (apikey, userid, page, page_size)
+      · reserve_state 는 접수 상태(예: "전송완료")일 뿐, 카카오 최종 발송 결과가 아님
+  - 상세: POST /akv10/history/detail/ (apikey, userid, mid)
+      · rslt         : 결과 코드 (U = 실패)
+      · rslt_message : 실패 사유 (예: "메시지가 템플릿과 일치하지않음")
+  ※ 전송 성공 여부는 반드시 history/detail 의 rslt 로 확인할 것.
+
+템플릿 관리 API:
+  - 목록: POST /akv10/template/list/    (apikey, userid, senderkey, [tpl_code])
+  - 생성: POST /akv10/template/add/     (+ tpl_name, tpl_content, [tpl_button, tpl_type, tpl_emtype ...])
+  - 수정: POST /akv10/template/modify/  (+ tpl_code, tpl_name, tpl_content)
+      · status=R(대기) 이고 inspStatus 가 REG(등록) 또는 REJ(반려)인 경우에만 수정 가능
+  - 삭제: POST /akv10/template/del/     (+ tpl_code) — 승인 완료된 템플릿은 삭제 불가
+  - 검수요청: POST /akv10/template/request/ (+ tpl_code) — 검수 4~5일 소요
+
+  템플릿 상태 필드 (발송 실패 원인 파악 시 반드시 확인):
+    - status     : S(중단) / A(정상) / R(대기)
+    - inspStatus : REG(등록) / REQ(심사요청) / APR(승인) / REJ(반려)
+  ※ inspStatus=APR 이어도 status 가 A(정상) 가 아니면 발송 시
+    "메시지가 템플릿과 일치하지않음" 으로 리젝된다. 검수 승인 후 활성화 여부를 확인할 것.
 """
 import json
 import urllib.request
