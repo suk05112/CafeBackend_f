@@ -319,6 +319,7 @@ def get_owner_settlement_list_unified(
 
             if period_start <= today <= period_end:
                 current_cycle = c
+                continue  # 진행 중 cycle은 settlement 레코드 존재 여부와 무관하게 항상 실시간 preview로 대체
 
             if period_end < cutoff:
                 continue
@@ -704,11 +705,13 @@ def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) 
 
 
 def get_settlement_cycle_preview(cycle_id: int) -> Optional[Dict]:
-    """관리자: 정산 주기 미리보기 (배치 생성 전 예상 총액/정산건수/정산예정 매장수).
+    """관리자: 정산 주기 미리보기 (배치 생성 전 예상 매장별 정산 리스트).
 
     settlement_id가 없는(아직 정산되지 않은) settlement_details를 매장별로 집계해
     프로모션 적용 후 예상 순지급액을 계산한다. 이미 배치가 실행되어 해당 매장의
     settlement이 생성된 경우 그 매장은 집계에서 자연히 제외된다(sd.settlement_id IS NULL 조건).
+    이미 완료된 주기의 매장별 정산 리스트(get_settlements_by_cycle)와 동일한 필드 구성으로
+    반환해 관리자 화면에서 진행 중/완료 주기를 같은 테이블로 보여줄 수 있게 한다.
     cycle_id가 없으면 None 반환.
     """
     from crud import promotion as promotion_crud
@@ -733,28 +736,43 @@ def get_settlement_cycle_preview(cycle_id: int) -> Optional[Dict]:
         cursor.execute("""
             SELECT
                 g.store_id,
+                st.store_name,
                 SUM(sd.sales_amount) AS total_sales,
                 COUNT(*) AS detail_count
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
+            LEFT JOIN store st ON g.store_id = st.id
             WHERE sd.settlement_id IS NULL
               AND g.used_at >= %s
               AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
-            GROUP BY g.store_id
+            GROUP BY g.store_id, st.store_name
+            ORDER BY g.store_id
         """, (period_start, period_end))
         store_rows = cursor.fetchall()
 
+        stores = []
         total_expected_amount = 0
         expected_settlement_count = 0
         for row in store_rows:
             store_id = row['store_id']
             total_sales = int(row['total_sales'] or 0)
-            expected_settlement_count += int(row['detail_count'] or 0)
+            detail_count = int(row['detail_count'] or 0)
+            expected_settlement_count += detail_count
 
             fee_info = promotion_crud.get_fee_info_for_settlement(store_id, payout_date)
             applied_fee_rate = fee_info['applied_fee_rate']
             _, _, fee_amount = _calc_fee(total_sales, applied_fee_rate)
-            total_expected_amount += total_sales - fee_amount
+            net_payout_amount = total_sales - fee_amount
+            total_expected_amount += net_payout_amount
+
+            stores.append({
+                'store_id': store_id,
+                'store_name': row['store_name'] or f"매장({store_id})",
+                'total_sales_amount': total_sales,
+                'total_fee_amount': fee_amount,
+                'net_payout_amount': net_payout_amount,
+                'detail_count': detail_count,
+            })
 
         return {
             'cycle_id': cycle_id,
@@ -762,9 +780,10 @@ def get_settlement_cycle_preview(cycle_id: int) -> Optional[Dict]:
             'period_end_date': period_end.isoformat() if period_end else None,
             'payout_date': payout_date.isoformat() if payout_date else None,
             'status': cycle['status'],
-            'expected_store_count': len(store_rows),
+            'expected_store_count': len(stores),
             'expected_settlement_count': expected_settlement_count,
             'total_expected_amount': total_expected_amount,
+            'stores': stores,
         }
     finally:
         cursor.close()
