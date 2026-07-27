@@ -488,6 +488,14 @@ def create_settlement_data(cycle_id: int) -> Dict:
             bank_name = row['bank_name'] or ''
             account_number = row['account_number'] or ''
 
+            # 이미 이 매장×주기에 대해 생성된 정산이 있으면 재시도하지 않고 skip (GNB-220)
+            cursor.execute(
+                "SELECT settlement_id FROM settlement WHERE store_id = %s AND cycle_id = %s",
+                (store_id, cycle_id)
+            )
+            if cursor.fetchone():
+                continue
+
             # 지급 예정일 기준 프로모션 조회
             fee_info = promotion_crud.get_fee_info_for_settlement(store_id, payout_date)
             base_fee_rate = fee_info['base_fee_rate']

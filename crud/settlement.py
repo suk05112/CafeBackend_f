@@ -703,6 +703,74 @@ def update_settlement_tax_invoice(settlement_id: int, tax_invoice_issued: bool) 
         close_db_connection(connection)
 
 
+def get_settlement_cycle_preview(cycle_id: int) -> Optional[Dict]:
+    """관리자: 정산 주기 미리보기 (배치 생성 전 예상 총액/정산건수/정산예정 매장수).
+
+    settlement_id가 없는(아직 정산되지 않은) settlement_details를 매장별로 집계해
+    프로모션 적용 후 예상 순지급액을 계산한다. 이미 배치가 실행되어 해당 매장의
+    settlement이 생성된 경우 그 매장은 집계에서 자연히 제외된다(sd.settlement_id IS NULL 조건).
+    cycle_id가 없으면 None 반환.
+    """
+    from crud import promotion as promotion_crud
+    from crud.stats import _calc_fee
+
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    try:
+        cursor.execute("""
+            SELECT cycle_id, period_start_date, period_end_date, payout_date, status
+            FROM settlement_cycles
+            WHERE cycle_id = %s
+        """, (cycle_id,))
+        cycle = cursor.fetchone()
+        if not cycle:
+            return None
+
+        period_start = cycle['period_start_date']
+        period_end = cycle['period_end_date']
+        payout_date = cycle['payout_date']
+
+        cursor.execute("""
+            SELECT
+                g.store_id,
+                SUM(sd.sales_amount) AS total_sales,
+                COUNT(*) AS detail_count
+            FROM settlement_details sd
+            JOIN gifticon g ON sd.gifticon_id = g.id
+            WHERE sd.settlement_id IS NULL
+              AND g.used_at >= %s
+              AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
+            GROUP BY g.store_id
+        """, (period_start, period_end))
+        store_rows = cursor.fetchall()
+
+        total_expected_amount = 0
+        expected_settlement_count = 0
+        for row in store_rows:
+            store_id = row['store_id']
+            total_sales = int(row['total_sales'] or 0)
+            expected_settlement_count += int(row['detail_count'] or 0)
+
+            fee_info = promotion_crud.get_fee_info_for_settlement(store_id, payout_date)
+            applied_fee_rate = fee_info['applied_fee_rate']
+            _, _, fee_amount = _calc_fee(total_sales, applied_fee_rate)
+            total_expected_amount += total_sales - fee_amount
+
+        return {
+            'cycle_id': cycle_id,
+            'period_start_date': period_start.isoformat() if period_start else None,
+            'period_end_date': period_end.isoformat() if period_end else None,
+            'payout_date': payout_date.isoformat() if payout_date else None,
+            'status': cycle['status'],
+            'expected_store_count': len(store_rows),
+            'expected_settlement_count': expected_settlement_count,
+            'total_expected_amount': total_expected_amount,
+        }
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
 def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> Dict:
     """관리자: 정산 주기별 매장 정산 리스트 (페이지네이션)"""
     connection = get_db_connection()
@@ -711,6 +779,13 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
     try:
         cursor.execute("SELECT COUNT(*) AS cnt FROM settlement WHERE cycle_id = %s", (cycle_id,))
         total = int((cursor.fetchone() or {}).get('cnt') or 0)
+
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM settlement WHERE cycle_id = %s AND status = 'FAILED'",
+            (cycle_id,)
+        )
+        failed_count = int((cursor.fetchone() or {}).get('cnt') or 0)
+
         offset = (page - 1) * limit
 
         cursor.execute("""
@@ -763,6 +838,7 @@ def get_settlements_by_cycle(cycle_id: int, page: int = 1, limit: int = 10) -> D
         import math
         return {
             'settlements': result,
+            'failed_count': failed_count,
             'pagination': {
                 'total': total,
                 'page': page,
