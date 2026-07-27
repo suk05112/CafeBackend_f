@@ -1446,24 +1446,24 @@ def update_settlement_tax_invoice(settlement_id: int, body: dict, user=Depends(v
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/settlement/create/{cycle_id}")
-def create_settlement_data(cycle_id: int, user=Depends(verify_firebase_token)):
-    """정산 데이터 생성 (정산 주기별)
-    
+@router.get("/settlement/cycles/{cycle_id}/preview")
+def get_settlement_cycle_preview(cycle_id: int, user=Depends(verify_firebase_token)):
+    """정산 주기 미리보기 (배치 생성 전 예상 총액/정산건수/정산예정 매장수)
+
     cycle_id는 /admin/settlement/cycles API로 조회 가능합니다.
+    실제 정산 데이터는 배치(generate_weekly_settlements)가 주기 종료 후 자동 생성합니다.
     """
-    connection = get_db_connection()
     try:
-        from crud import stats as stats_crud
-        result = stats_crud.create_settlement_data(cycle_id)
+        from crud import settlement as settlement_crud
+        result = settlement_crud.get_settlement_cycle_preview(cycle_id)
+        if result is None:
+            raise HTTPException(status_code=404, detail="정산 주기를 찾을 수 없습니다.")
         return result
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error in create_settlement_data: {traceback.format_exc()}")
+        print(f"Error in get_settlement_cycle_preview: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        close_db_connection(connection)
 
 
 @router.get("/refund/list")

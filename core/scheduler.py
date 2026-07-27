@@ -425,6 +425,60 @@ def aggregate_yesterday_platform_stats():
     return result
 
 
+def generate_weekly_settlements():
+    """
+    종료된(period_end_date < 오늘) OPEN 상태 정산 주기에 대해 매장별 정산 데이터를 생성.
+    이미 생성된 (store_id, cycle_id) 조합은 crud.stats.create_settlement_data 내부에서 skip.
+    MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
+    """
+    from crud import stats as stats_crud
+
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+    lock_acquired = False
+    result = {"cycles_processed": 0, "settlement_count": 0, "failed_count": 0}
+
+    try:
+        lock_acquired = _acquire_lock(cursor, "generate_weekly_settlements")
+        if not lock_acquired:
+            result["skipped"] = "lock"
+            return result
+
+        today = clock.now().date()
+        cursor.execute("""
+            SELECT cycle_id FROM settlement_cycles
+            WHERE status = 'OPEN' AND period_end_date < %s
+            ORDER BY period_start_date ASC
+        """, (today,))
+        cycles = cursor.fetchall()
+
+        if not cycles:
+            return result
+
+        for cycle in cycles:
+            cycle_id = cycle["cycle_id"]
+            try:
+                cycle_result = stats_crud.create_settlement_data(cycle_id)
+                result["cycles_processed"] += 1
+                result["settlement_count"] += cycle_result.get("settlement_count", 0)
+                result["failed_count"] += cycle_result.get("failed_count", 0)
+                logger.info(f"[scheduler] generate_weekly_settlements: cycle_id={cycle_id} 처리 완료 {cycle_result}")
+            except Exception as e:
+                logger.error(f"[scheduler] generate_weekly_settlements cycle_id={cycle_id} 실패: {e}")
+                log_scheduler_error("generate_weekly_settlements", e)
+
+    except Exception as e:
+        logger.error(f"[scheduler] generate_weekly_settlements 오류: {e}")
+        log_scheduler_error("generate_weekly_settlements", e)
+        result["error"] = str(e)
+    finally:
+        if lock_acquired:
+            _release_lock(cursor, "generate_weekly_settlements")
+        cursor.close()
+        close_db_connection(connection)
+    return result
+
+
 def send_pending_alimtalk():
     """
     alimtalk_log에서 PENDING + 재시도 가능한 FAILED(retry_count < 5) 건을 조회하여
@@ -521,6 +575,13 @@ BATCH_JOBS = {
         "runnable": True,
         "requires_confirm": False,
     },
+    "generate_weekly_settlements": {
+        "name": "정산 데이터 자동 생성",
+        "description": "종료된 정산 주기에 대해 매장별 정산 데이터를 생성합니다. (store_id, cycle_id) 조합당 1회만 생성됩니다.",
+        "schedule": "매주 일요일 03:00",
+        "runnable": True,
+        "requires_confirm": False,
+    },
 }
 
 JOB_FUNCTIONS = {
@@ -530,6 +591,7 @@ JOB_FUNCTIONS = {
     "auto_refund_unregistered_gifts": auto_refund_unregistered_gifts,
     "aggregate_yesterday_platform_stats": aggregate_yesterday_platform_stats,
     "send_pending_alimtalk": send_pending_alimtalk,
+    "generate_weekly_settlements": generate_weekly_settlements,
 }
 
 
@@ -544,6 +606,7 @@ def create_scheduler() -> BackgroundScheduler:
         scheduler.add_job(auto_refund_unregistered_gifts, "interval", minutes=1, id="auto_refund_unregistered_gifts")
         scheduler.add_job(aggregate_yesterday_platform_stats, "interval", minutes=1, id="aggregate_daily_platform_stats")
         scheduler.add_job(send_pending_alimtalk, "interval", minutes=1, id="send_pending_alimtalk")
+        scheduler.add_job(generate_weekly_settlements, "interval", minutes=1, id="generate_weekly_settlements")
     else:
         scheduler.add_job(expire_gifticons, "cron", hour=0, minute=1, id="expire_gifticons")
         # 7일 경과 여부를 매 실행마다 재계산하므로 10분 주기로도 유실 없이 처리 가능 (최대 10분 지연)
@@ -552,5 +615,7 @@ def create_scheduler() -> BackgroundScheduler:
         scheduler.add_job(aggregate_yesterday_platform_stats, "cron", hour=3, minute=40, id="aggregate_daily_platform_stats")
         # GNB-217: 알림톡 발송 큐, 매일 10:00 KST 일괄 처리
         scheduler.add_job(send_pending_alimtalk, "cron", hour=10, minute=0, id="send_pending_alimtalk")
+        # GNB-220: 매주 일요일 03:00 KST 종료된 정산 주기 자동 생성
+        scheduler.add_job(generate_weekly_settlements, "cron", day_of_week="sun", hour=3, minute=0, id="generate_weekly_settlements")
 
     return scheduler
