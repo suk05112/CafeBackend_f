@@ -35,7 +35,7 @@ from app.system_logger import (
 )
 
 # 모든 엔드포인트는 api/endpoints로 통합됨
-from api.endpoints import store, menu, settlement, common, admin, user, gifticon, owner, order
+from api.endpoints import store, menu, settlement, common, admin, user, gifticon, owner, order, system
 
 #https://fastapi.tiangolo.com/ko/
 
@@ -183,6 +183,7 @@ app.include_router(settlement.router, prefix=f'{prefix}/settlement', tags=["Sett
 app.include_router(common.router, prefix=prefix, tags=["Common"])
 app.include_router(common.router, prefix='', tags=["Common"])  # prefix 없이도 접근 가능
 app.include_router(admin.router, prefix=f'{prefix}/admin', tags=["Admin"])
+app.include_router(system.router, prefix=f'{prefix}/admin/system', tags=["System"])
 app.include_router(user.router, prefix=f'{prefix}/user', tags=["User"])
 app.include_router(gifticon.router, prefix=f'{prefix}/gifticon', tags=["Gifticon"])
 app.include_router(owner.router, prefix=f'{prefix}/owner', tags=["Owner"])
