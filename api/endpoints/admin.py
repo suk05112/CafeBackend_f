@@ -396,12 +396,14 @@ def get_orders(
     search: Optional[str] = Query(None, description="주문번호, user id로 검색"),
     page: int = Query(1, ge=1, description="페이지 번호"),
     limit: int = Query(20, ge=1, le=100, description="페이지당 항목 수"),
+    order_status: Optional[str] = Query(None, description="결제 상태 (PENDING, COMPLETED, EXPIRED, REFUNDED, UNKNOWN)"),
+    gift_status: Optional[str] = Query(None, description="기프티콘 상태 (PENDING, UNUSED, USED, EXPIRED, REFUNDED, CANCELED, REFUND_REQUESTED)"),
     user=Depends(verify_firebase_token),
 ):
     """주문 리스트 (관리자용, 페이지네이션)"""
     connection = get_db_connection()
     try:
-        result = admin_crud.get_orders(connection, search, page, limit)
+        result = admin_crud.get_orders(connection, search, page, limit, order_status, gift_status)
         return {
             'orders': result['items'],
             'pagination': {
@@ -1471,12 +1473,13 @@ def get_refund_list_api(
     page: int = Query(1, ge=1),
     limit: int = Query(20, ge=1, le=100),
     refund_type: Optional[str] = Query(None, description="PURCHASER 또는 RECEIVER"),
+    status: Optional[str] = Query(None, description="REQUESTED, COMPLETED 또는 FAILED"),
     user=Depends(verify_firebase_token),
 ):
     """환불 리스트 (관리자). id, 구매날짜, 환불요청날짜, 환불타입, 예금주, 계좌번호, 지급상태"""
     try:
         from crud import refund as refund_crud
-        result = refund_crud.get_refund_list(page=page, limit=limit, refund_type=refund_type)
+        result = refund_crud.get_refund_list(page=page, limit=limit, refund_type=refund_type, status=status)
         return result
     except Exception as e:
         print(f"Error in get_refund_list: {traceback.format_exc()}")
