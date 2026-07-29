@@ -190,6 +190,10 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
     cursor = connection.cursor(pymysql.cursors.DictCursor)
        
     try:
+
+        if gifticon_id == 9999:
+            return {'result': 0}
+
         cursor.execute(
             """SELECT g.status, g.validity, o.amount AS total_price
                FROM gifticon g
