@@ -1248,3 +1248,30 @@ def update_contract_status(storeId: int, body: dict):
             cursor.close()
         if connection:
             close_db_connection(connection)
+
+
+@router.patch("/{storeId}/sub-mall")
+def update_sub_mall_id(storeId: int, body: dict):
+    """정산용 하위몰 ID 등록/수정"""
+    sub_mall_id = body.get('sub_mall_id')
+
+    connection = None
+    cursor = None
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        cursor.execute('SELECT id FROM store WHERE id = %s', (storeId,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail=f"Store {storeId} not found")
+        cursor.execute('UPDATE store SET sub_mall_id = %s WHERE id = %s', (sub_mall_id, storeId))
+        connection.commit()
+        return {"message": f"Store {storeId} sub_mall_id updated to {sub_mall_id}"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise InternalError(e, "update_sub_mall_id")
+    finally:
+        if cursor:
+            cursor.close()
+        if connection:
+            close_db_connection(connection)

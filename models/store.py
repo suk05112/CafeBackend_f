@@ -14,6 +14,7 @@ class StoreCreate(BaseModel):
     logo_changed: bool = False
     business_changed: bool = False
     business_number: Optional[str] = None
+    sub_mall_id: Optional[str] = None
 
 
 class InspectionStatusUpdate(BaseModel):
