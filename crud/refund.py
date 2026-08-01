@@ -8,6 +8,7 @@ def get_refund_list(
     page: int = 1,
     limit: int = 20,
     refund_type: Optional[str] = None,
+    status: Optional[str] = None,
 ) -> Dict:
     """환불 리스트 (구매날짜=orders.created_at, 환불요청날짜=refunded_at, 환불타입, 예금주, 계좌번호, 지급상태)"""
     connection = get_db_connection()
@@ -45,6 +46,10 @@ def get_refund_list(
             count_sql += " AND r.refund_type = %s"
             list_sql += " AND r.refund_type = %s"
             params.append(refund_type)
+        if status:
+            count_sql += " AND r.status = %s"
+            list_sql += " AND r.status = %s"
+            params.append(status)
 
         cursor.execute(count_sql, params)
         total = cursor.fetchone()["total"] or 0

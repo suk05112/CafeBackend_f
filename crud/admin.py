@@ -142,7 +142,8 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
                 o.name as owner_name,
                 o.email as owner_email,
                 o.phone as owner_phone,
-                s.business_number as owner_business_number
+                s.business_number as owner_business_number,
+                s.sub_mall_id
             FROM store s
             LEFT JOIN owner o ON s.owner_id = o.id
             {where}
@@ -618,69 +619,77 @@ def get_user_giftcards(connection, user_id: int) -> List[Dict]:
         cursor.close()
 
 
-def get_orders(connection, search: Optional[str] = None, page: int = 1, limit: int = 20) -> Dict:
+def get_orders(
+    connection,
+    search: Optional[str] = None,
+    page: int = 1,
+    limit: int = 20,
+    order_status: Optional[str] = None,
+    gift_status: Optional[str] = None,
+) -> Dict:
     """주문 리스트 (관리자용, 페이지네이션)"""
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-    
+
     try:
-        # 전체 개수 조회
-        count_query = '''
-            SELECT COUNT(*) as total
-            FROM `orders` o
-            LEFT JOIN store s ON o.store_id = s.id
-        '''
-        count_params = []
+        where_clauses = []
+        params = []
         if search:
-            count_query += ' WHERE o.order_no LIKE %s OR o.user_id = %s'
+            where_clauses.append('(o.order_no LIKE %s OR o.user_id = %s)')
             search_pattern = f'%{search}%'
             try:
                 search_id = int(search)
-                count_params = [search_pattern, search_id]
             except ValueError:
-                count_params = [search_pattern, -1]
-        
-        cursor.execute(count_query, count_params)
+                search_id = -1
+            params.extend([search_pattern, search_id])
+        if order_status:
+            where_clauses.append('o.status = %s')
+            params.append(order_status)
+        if gift_status:
+            where_clauses.append('g.status = %s')
+            params.append(gift_status)
+        where_sql = (' WHERE ' + ' AND '.join(where_clauses)) if where_clauses else ''
+
+        join_sql = '''
+            FROM `orders` o
+            LEFT JOIN store s ON o.store_id = s.id
+            LEFT JOIN orders_gifticon og ON og.order_id = o.id
+            LEFT JOIN gifticon g ON g.id = og.gifticon_id
+        '''
+
+        # 전체 개수 조회
+        count_query = 'SELECT COUNT(*) as total ' + join_sql + where_sql
+        cursor.execute(count_query, params)
         total_count = cursor.fetchone()['total']
-        
+
         # 페이지네이션 계산
         offset = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-        
+
         # 데이터 조회
         query = '''
-            SELECT 
+            SELECT
                 o.id,
                 o.user_id,
                 o.status,
+                o.created_at,
                 o.order_no as order_number,
-                s.store_name
-            FROM `orders` o
-            LEFT JOIN store s ON o.store_id = s.id
+                s.store_name,
+                g.status as gift_status
+        ''' + join_sql + where_sql + '''
+            ORDER BY o.created_at DESC
+            LIMIT %s OFFSET %s
         '''
-        
-        params = []
-        if search:
-            query += ' WHERE o.order_no LIKE %s OR o.user_id = %s'
-            search_pattern = f'%{search}%'
-            try:
-                search_id = int(search)
-                params = [search_pattern, search_id]
-            except ValueError:
-                params = [search_pattern, -1]
-        
-        query += ' ORDER BY o.created_at DESC'
-        query += ' LIMIT %s OFFSET %s'
-        params.extend([limit, offset])
-        
+        params = params + [limit, offset]
+
         cursor.execute(query, params)
         orders = cursor.fetchall()
-        
+
         result = []
         for order in orders:
-            # order_no 컬럼을 order_number로 매핑 (SQL에서 이미 alias로 처리됨)
-            # DictCursor를 사용하므로 'order_number' 키로 이미 존재함
+            if order.get('created_at'):
+                order['created_at'] = order['created_at'].isoformat()
             result.append(order)
-        
+
         return {
             'items': result,
             'total': total_count,

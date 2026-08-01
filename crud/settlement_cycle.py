@@ -151,9 +151,8 @@ def generate_settlement_cycles(start_date: date, end_date: date) -> int:
             period_start = current_sunday          # 일요일
             period_end = current_sunday + timedelta(days=6)  # 토요일
 
-            # payout_date: 종료일(토) 기준 3주 후 화요일 (공휴일이면 다음 영업일)
-            three_weeks_later = period_end + timedelta(weeks=3)
-            payout_date = get_next_tuesday(three_weeks_later)
+            # payout_date: 종료일(토) + 17일 = 종료일 이후 3번째 화요일 (공휴일이면 다음 영업일)
+            payout_date = period_end + timedelta(days=17)
             if not is_business_day(payout_date):
                 payout_date = get_next_business_day(payout_date - timedelta(days=1))
 
