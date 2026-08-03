@@ -1559,23 +1559,34 @@ import pymysql as _pymysql
 
 class AppVersionCreate(_BaseModel):
     platform: _Literal['ios', 'android']
+    app_type: _Literal['user', 'owner'] = 'user'
     version: str
     memo: _Optional[str] = None
 
 
 @router.get("/app-versions")
-def list_app_versions(platform: _Optional[str] = None, user=Depends(verify_firebase_token)):
+def list_app_versions(
+    platform: _Optional[str] = None,
+    app_type: _Optional[str] = None,
+    user=Depends(verify_firebase_token),
+):
     """앱 버전 목록 조회 (매니저용)"""
     connection = get_db_connection()
     try:
         cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        conditions = []
+        params = []
         if platform:
-            cursor.execute(
-                "SELECT * FROM app_versions WHERE platform = %s ORDER BY created_at DESC",
-                (platform,)
-            )
-        else:
-            cursor.execute("SELECT * FROM app_versions ORDER BY created_at DESC")
+            conditions.append("platform = %s")
+            params.append(platform)
+        if app_type:
+            conditions.append("app_type = %s")
+            params.append(app_type)
+        query = "SELECT * FROM app_versions"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC"
+        cursor.execute(query, params)
         rows = cursor.fetchall()
         for r in rows:
             r['is_force_update'] = bool(r['is_force_update'])
@@ -1596,8 +1607,8 @@ def create_app_version(body: AppVersionCreate, user=Depends(verify_firebase_toke
     try:
         cursor = connection.cursor(_pymysql.cursors.DictCursor)
         cursor.execute(
-            "INSERT INTO app_versions (platform, version, is_force_update, memo) VALUES (%s, %s, 0, %s)",
-            (body.platform, body.version, body.memo)
+            "INSERT INTO app_versions (platform, app_type, version, is_force_update, memo) VALUES (%s, %s, %s, 0, %s)",
+            (body.platform, body.app_type, body.version, body.memo)
         )
         connection.commit()
         new_id = cursor.lastrowid
