@@ -1626,20 +1626,36 @@ def create_app_version(body: AppVersionCreate, user=Depends(verify_firebase_toke
 
 
 @router.patch("/app-versions/{version_id}")
-def update_app_version_force(version_id: int, is_force_update: bool, user=Depends(verify_firebase_token)):
-    """강제업데이트 여부 변경"""
+def update_app_version_force(
+    version_id: int,
+    is_force_update: _Optional[bool] = None,
+    memo: _Optional[str] = None,
+    user=Depends(verify_firebase_token),
+):
+    """강제업데이트 여부 및 메모 변경"""
     connection = get_db_connection()
     try:
         cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        updates = []
+        params = []
+        if is_force_update is not None:
+            updates.append("is_force_update = %s")
+            params.append(1 if is_force_update else 0)
+        if memo is not None:
+            updates.append("memo = %s")
+            params.append(memo)
+        if not updates:
+            raise HTTPException(status_code=400, detail="변경할 필드가 없습니다")
+        params.append(version_id)
         cursor.execute(
-            "UPDATE app_versions SET is_force_update = %s WHERE id = %s",
-            (1 if is_force_update else 0, version_id)
+            f"UPDATE app_versions SET {', '.join(updates)} WHERE id = %s",
+            params
         )
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Version not found")
         connection.commit()
         cursor.execute("SELECT * FROM app_versions WHERE id = %s", (version_id,))
         row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Version not found")
         row['is_force_update'] = bool(row['is_force_update'])
         if row.get('created_at'):
             row['created_at'] = row['created_at'].strftime('%Y-%m-%d %H:%M:%S')
