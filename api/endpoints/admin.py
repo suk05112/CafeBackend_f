@@ -1653,6 +1653,26 @@ def update_app_version_force(version_id: int, is_force_update: bool, user=Depend
         close_db_connection(connection)
 
 
+@router.delete("/app-versions/{version_id}")
+def delete_app_version(version_id: int, user=Depends(verify_firebase_token)):
+    """앱 버전 삭제"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        cursor.execute("DELETE FROM app_versions WHERE id = %s", (version_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Version not found")
+        connection.commit()
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_app_version: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
 # ── Popup Admin API ────────────────────────────────────────────────────────────
 from models.popup import PopupCreate, PopupUpdate
 
