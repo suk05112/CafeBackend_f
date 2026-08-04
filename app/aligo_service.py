@@ -5,7 +5,7 @@
   - UH_9771: 정산 완료 안내          변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
   - UH_9772: 입점 심사 결과 안내      변수: #{심사결과}, #{상세사유}
   - UJ_1609: 선물 결제 취소 안내      변수: #{sender}, #{menu}
-  - UJ_4468: 미등록 상품권 발신자 환불안내  변수: #{메뉴}
+  - UJ_8028: 환불완료 안내(발신자)  변수: #{메뉴}
              수신자: 발신자(구매자)
              제목: 자동 환불 안내
              내용:
@@ -16,7 +16,7 @@
                환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
                환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
              발송 시점: 스케줄러 자동 환불 완료 후
-  - UJ_8027: 환불완료 안내(수신자)          변수: #{메뉴}, {환불금액}
+  - UJ_8029: 환불완료 안내(수신자)          변수: #{메뉴}, {환불금액}
              수신자: 수신자
              제목: 환불 완료 안내
              내용:
@@ -240,7 +240,7 @@ def send_gift_auto_refund_to_sender(
     menu: str,
     recvname: str = "",
 ) -> dict:
-    """UJ_4468: 미등록 상품권 발신자 환불안내 (발신자/구매자에게 발송)"""
+    """UJ_8028: 환불완료 안내(발신자) (발신자/구매자에게 발송)"""
     message = (
         f"선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.\n\n"
         f"▶상품명: {menu}\n\n"
@@ -248,7 +248,7 @@ def send_gift_auto_refund_to_sender(
     )
     from crud import alimtalk as alimtalk_crud
     return alimtalk_crud.enqueue(
-        tpl_code="UJ_4468",
+        tpl_code="UJ_8028",
         category="AUTO_REFUND_SENDER",
         receiver_phone=receiver,
         recvname=recvname,
@@ -263,7 +263,7 @@ def send_gift_auto_refund_to_receiver(
     refund_amount: str,
     recvname: str = "",
 ) -> dict:
-    """UJ_8027: 미등록 상품권 수신자 환불안내 (수신자에게 발송)"""
+    """UJ_8029: 환불완료 안내(수신자) (수신자에게 발송)"""
     message = (
         f"상품권 등록 기한이 지나 결제가 자동 취소되었습니다.\n"
         f"선물하신 분께 환불이 진행됩니다.\n\n"
@@ -272,7 +272,7 @@ def send_gift_auto_refund_to_receiver(
     )
     from crud import alimtalk as alimtalk_crud
     return alimtalk_crud.enqueue(
-        tpl_code="UJ_8027",
+        tpl_code="UJ_8029",
         category="AUTO_REFUND_RECEIVER",
         receiver_phone=receiver,
         recvname=recvname,
