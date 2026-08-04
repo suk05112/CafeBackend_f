@@ -84,6 +84,7 @@ from core.config import settings
 from app.system_logger import log_external_api_error
 
 ALIGO_SEND_URL = "https://kakaoapi.aligo.in/akv10/alimtalk/send/"
+ALIGO_HISTORY_DETAIL_URL = "https://kakaoapi.aligo.in/akv10/history/detail/"
 
 
 def _normalize_phone(phone: str) -> str:
@@ -178,6 +179,27 @@ def send_alimtalk_log_row(row: dict) -> dict:
         recvname=row.get("recvname") or "",
     )
     return _send(row["tpl_code"], [recipient], button=button)
+
+
+def get_history_detail(mid: str) -> dict:
+    """
+    발송결과 상세 조회 (POST /akv10/history/detail/)
+    rslt='U'면 최종 발송 실패. rsltdate가 비어있으면 아직 결과 미확정.
+    """
+    params = {
+        "apikey": settings.aligo_api_key,
+        "userid": settings.aligo_user_id,
+        "mid": mid,
+    }
+    try:
+        data = urllib.parse.urlencode(params).encode("utf-8")
+        req = urllib.request.Request(ALIGO_HISTORY_DETAIL_URL, data=data, method="POST")
+        with urllib.request.urlopen(req, timeout=10) as res:
+            return json.loads(res.read().decode("utf-8"))
+    except Exception as e:
+        logger.error(f"[알림톡] history/detail 조회 오류 mid={mid}: {e}")
+        log_external_api_error("Aligo", f"history/detail 조회 오류 mid={mid}", e)
+        return {"code": -1, "message": str(e)}
 
 
 # ── 템플릿별 발송 함수 (큐 적재만 수행, 실제 발송은 배치가 처리) ──────────────────
