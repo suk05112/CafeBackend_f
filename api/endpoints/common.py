@@ -185,9 +185,10 @@ def broadcast_notification(notification: NotificationRequest):
 
 
 
-@router.get("/app-version")
+@router.get("/common/app-version")
 def get_app_version(
     platform: Literal['ios', 'android'] = Query(..., description="플랫폼"),
+    app_type: Literal['user', 'owner'] = Query(..., description="앱 종류"),
 ):
     """앱 강제업데이트 여부 확인 — 가장 최근에 등록된 강제업데이트 버전 반환"""
     connection = get_db_connection()
@@ -197,11 +198,11 @@ def get_app_version(
             """
             SELECT version, is_force_update
             FROM app_versions
-            WHERE platform = %s
+            WHERE platform = %s AND app_type = %s
             ORDER BY created_at DESC
             LIMIT 1
             """,
-            (platform,)
+            (platform, app_type)
         )
         row = cursor.fetchone()
         if not row:

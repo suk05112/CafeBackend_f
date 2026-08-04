@@ -1559,23 +1559,34 @@ import pymysql as _pymysql
 
 class AppVersionCreate(_BaseModel):
     platform: _Literal['ios', 'android']
+    app_type: _Literal['user', 'owner'] = 'user'
     version: str
     memo: _Optional[str] = None
 
 
 @router.get("/app-versions")
-def list_app_versions(platform: _Optional[str] = None, user=Depends(verify_firebase_token)):
+def list_app_versions(
+    platform: _Optional[str] = None,
+    app_type: _Optional[str] = None,
+    user=Depends(verify_firebase_token),
+):
     """앱 버전 목록 조회 (매니저용)"""
     connection = get_db_connection()
     try:
         cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        conditions = []
+        params = []
         if platform:
-            cursor.execute(
-                "SELECT * FROM app_versions WHERE platform = %s ORDER BY created_at DESC",
-                (platform,)
-            )
-        else:
-            cursor.execute("SELECT * FROM app_versions ORDER BY created_at DESC")
+            conditions.append("platform = %s")
+            params.append(platform)
+        if app_type:
+            conditions.append("app_type = %s")
+            params.append(app_type)
+        query = "SELECT * FROM app_versions"
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY created_at DESC"
+        cursor.execute(query, params)
         rows = cursor.fetchall()
         for r in rows:
             r['is_force_update'] = bool(r['is_force_update'])
@@ -1596,8 +1607,8 @@ def create_app_version(body: AppVersionCreate, user=Depends(verify_firebase_toke
     try:
         cursor = connection.cursor(_pymysql.cursors.DictCursor)
         cursor.execute(
-            "INSERT INTO app_versions (platform, version, is_force_update, memo) VALUES (%s, %s, 0, %s)",
-            (body.platform, body.version, body.memo)
+            "INSERT INTO app_versions (platform, app_type, version, is_force_update, memo) VALUES (%s, %s, %s, 0, %s)",
+            (body.platform, body.app_type, body.version, body.memo)
         )
         connection.commit()
         new_id = cursor.lastrowid
@@ -1615,20 +1626,36 @@ def create_app_version(body: AppVersionCreate, user=Depends(verify_firebase_toke
 
 
 @router.patch("/app-versions/{version_id}")
-def update_app_version_force(version_id: int, is_force_update: bool, user=Depends(verify_firebase_token)):
-    """강제업데이트 여부 변경"""
+def update_app_version_force(
+    version_id: int,
+    is_force_update: _Optional[bool] = None,
+    memo: _Optional[str] = None,
+    user=Depends(verify_firebase_token),
+):
+    """강제업데이트 여부 및 메모 변경"""
     connection = get_db_connection()
     try:
         cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        updates = []
+        params = []
+        if is_force_update is not None:
+            updates.append("is_force_update = %s")
+            params.append(1 if is_force_update else 0)
+        if memo is not None:
+            updates.append("memo = %s")
+            params.append(memo)
+        if not updates:
+            raise HTTPException(status_code=400, detail="변경할 필드가 없습니다")
+        params.append(version_id)
         cursor.execute(
-            "UPDATE app_versions SET is_force_update = %s WHERE id = %s",
-            (1 if is_force_update else 0, version_id)
+            f"UPDATE app_versions SET {', '.join(updates)} WHERE id = %s",
+            params
         )
-        if cursor.rowcount == 0:
-            raise HTTPException(status_code=404, detail="Version not found")
         connection.commit()
         cursor.execute("SELECT * FROM app_versions WHERE id = %s", (version_id,))
         row = cursor.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Version not found")
         row['is_force_update'] = bool(row['is_force_update'])
         if row.get('created_at'):
             row['created_at'] = row['created_at'].strftime('%Y-%m-%d %H:%M:%S')
@@ -1637,6 +1664,26 @@ def update_app_version_force(version_id: int, is_force_update: bool, user=Depend
         raise
     except Exception as e:
         print(f"Error in update_app_version_force: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        close_db_connection(connection)
+
+
+@router.delete("/app-versions/{version_id}")
+def delete_app_version(version_id: int, user=Depends(verify_firebase_token)):
+    """앱 버전 삭제"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(_pymysql.cursors.DictCursor)
+        cursor.execute("DELETE FROM app_versions WHERE id = %s", (version_id,))
+        if cursor.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Version not found")
+        connection.commit()
+        return {"success": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in delete_app_version: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         close_db_connection(connection)
