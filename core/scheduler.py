@@ -353,7 +353,6 @@ def auto_refund_unregistered_gifts():
                         send_gift_auto_refund_to_receiver(
                             receiver=row["receiver_phone"],
                             menu=menu_name,
-                            refund_amount=f"{amount:,}",
                             recvname=row.get("receiver", ""),
                         )
                     except Exception as e:
@@ -507,10 +506,14 @@ def send_pending_alimtalk():
             log_id = row["id"]
             try:
                 send_result = send_alimtalk_log_row(row)
-                if send_result.get("code") == 0:
-                    aligo_mid = send_result.get("info", {}).get("mid")
-                    alimtalk_crud.mark_sent(log_id, aligo_mid, clock.now())
+                info = send_result.get("info", {}) or {}
+                fcnt = int(info.get("fcnt") or 0)
+                if send_result.get("code") == 0 and fcnt == 0:
+                    alimtalk_crud.mark_sent(log_id, info.get("mid"), clock.now())
                     result["sent"] += 1
+                elif send_result.get("code") == 0:
+                    alimtalk_crud.mark_failed(log_id, f"수신자 접수 실패 (fcnt={fcnt})")
+                    result["failed"] += 1
                 else:
                     alimtalk_crud.mark_failed(log_id, str(send_result.get("message")))
                     result["failed"] += 1

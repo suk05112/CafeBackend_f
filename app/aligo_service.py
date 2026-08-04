@@ -16,15 +16,14 @@
                환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
                환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
              발송 시점: 스케줄러 자동 환불 완료 후
-  - UJ_8029: 환불완료 안내(수신자)          변수: #{메뉴}, {환불금액}
+  - UJ_8029: 환불완료 안내(수신자)          변수: #{메뉴}
              수신자: 수신자
              제목: 환불 완료 안내
              내용:
-               상품권 등록 기한이 지나 결제가 자동 취소되었습니다.
+               선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.
                선물하신 분께 환불이 진행됩니다.
 
-               상품명: #{메뉴}
-               환불 금액: {환불금액}원
+               ▶상품명: #{메뉴}
              발송 시점: 스케줄러 자동 환불 완료 후
 
 알림톡 전송 API 명세 (POST https://kakaoapi.aligo.in/akv10/alimtalk/send/):
@@ -260,15 +259,13 @@ def send_gift_auto_refund_to_sender(
 def send_gift_auto_refund_to_receiver(
     receiver: str,
     menu: str,
-    refund_amount: str,
     recvname: str = "",
 ) -> dict:
     """UJ_8029: 환불완료 안내(수신자) (수신자에게 발송)"""
     message = (
-        f"상품권 등록 기한이 지나 결제가 자동 취소되었습니다.\n"
+        f"선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.\n"
         f"선물하신 분께 환불이 진행됩니다.\n\n"
-        f"상품명: {menu}\n"
-        f"환불 금액: {refund_amount}원"
+        f"▶상품명: {menu}"
     )
     from crud import alimtalk as alimtalk_crud
     return alimtalk_crud.enqueue(
