@@ -139,8 +139,8 @@ async def registerOwner(owner: Owner, request: Request, user=Depends(verify_fire
                 raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="이미 가입된 전화번호입니다.")
 
             cursor.execute(
-                "INSERT INTO owner (name, login_id, email, uid, phone, birthdate, gender, business_number) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                "INSERT INTO owner (name, login_id, email, uid, phone, birthdate, gender) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
                 (
                     tx["verified_name"],
                     owner.login_id,
@@ -149,7 +149,6 @@ async def registerOwner(owner: Owner, request: Request, user=Depends(verify_fire
                     normalized_phone,
                     tx["verified_birthdate"],
                     tx["verified_gender"],
-                    owner.business_number,
                 )
             )
             owner_id = cursor.lastrowid
