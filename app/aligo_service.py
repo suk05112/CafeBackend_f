@@ -3,11 +3,13 @@
 
 템플릿 목록:
   - UH_9771: 정산 완료 안내          변수: #{매장명}, #{정산기간}, #{정산금액}, #{은행명}, #{계좌번호}
-  - UH_9772: 입점 심사 결과 안내      변수: #{심사결과}, #{상세사유}
-  - UJ_1609: 선물 결제 취소 안내      변수: #{sender}, #{menu}
-  - UJ_8028: 환불완료 안내(발신자)  변수: #{메뉴}
+  - UH_9772: 입점 심사 결과 안내      변수: #{심사결과}, #{상세사유}   templateEmType=TEXT(강조표기형)
+             emtitle_1(templtTitle): 입점 심사 결과 안내
+  - UJ_1609: 선물 결제 취소 안내      변수: #{sender}, #{menu}   templateEmType=TEXT(강조표기형)
+             emtitle_1(templtTitle): 주문취소 안내  (subject "선물 결제 취소 안내"와 다름)
+  - UJ_8028: 환불완료 안내(발신자)  변수: #{메뉴}   templateEmType=TEXT(강조표기형)
              수신자: 발신자(구매자)
-             제목: 자동 환불 안내
+             subject: 자동 환불 안내   emtitle_1(templtTitle): 자동 환불 안내
              내용:
                선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.
 
@@ -16,15 +18,22 @@
                환불 금액은 결제하신 수단으로 반환될 예정이며, 카드사 및 결제수단에 따라
                환불 완료까지 영업일 기준 3~7일 정도 소요될 수 있습니다.
              발송 시점: 스케줄러 자동 환불 완료 후
-  - UJ_8029: 환불완료 안내(수신자)          변수: #{메뉴}
+  - UJ_8029: 환불완료 안내(수신자)          변수: #{메뉴}   templateEmType=TEXT(강조표기형)
              수신자: 수신자
-             제목: 환불 완료 안내
+             subject: 환불 완료 안내   emtitle_1(templtTitle): 자동 환불 안내
              내용:
                선물하신 상품권이 발송 후 7일 이내에 등록되지 않아 자동으로 취소 및 환불 처리되었습니다.
                선물하신 분께 환불이 진행됩니다.
 
                ▶상품명: #{메뉴}
              발송 시점: 스케줄러 자동 환불 완료 후
+
+  ※ template/list/ 응답의 templateEmType은 NONE(선택안함)/TEXT(강조표기형)/IMAGE(이미지형)이다.
+    TEXT(강조표기형)인 템플릿(UJ_1609, UJ_8028, UJ_8029)은 emtitle_1에 등록된 templtTitle을
+    반드시 함께 보내야 한다 — 누락 시 "메시지가 템플릿과 일치하지않음"으로 리젝된다
+    (2026-08-05 Aligo 고객센터 확인 — GNB-233).
+    subject(카카오톡 상단 제목)와 emtitle(강조표기 핵심정보)은 별개의 값으로, 항상 같지
+    않다(UJ_1609 참고) — alimtalk_log.emtitle 컬럼에 템플릿별로 독립적으로 저장한다.
 
 알림톡 전송 API 명세 (POST https://kakaoapi.aligo.in/akv10/alimtalk/send/):
   필수 파라미터:
@@ -39,7 +48,9 @@
   선택 파라미터:
     - senddate    : 예약일 (datetime)
     - recvname_N  : 수신자 이름
-    - emtitle_N   : 강조표기형 타이틀
+    - emtitle_N   : 강조표기형 타이틀(templateEmType=TEXT인 템플릿의 templtTitle)
+                    ※ API 문서상 선택(X)이지만, templateEmType=TEXT 템플릿은 사실상 필수 —
+                      누락 시 "메시지가 템플릿과 일치하지않음"으로 리젝됨 (2026-08-05 확인)
     - button_N    : 버튼 정보 (JSON)
     - failover    : 실패 시 대체문자 전송 (Y or N)
     - fsubject_N  : 실패 시 대체문자 제목
@@ -177,6 +188,7 @@ def send_alimtalk_log_row(row: dict) -> dict:
         subject=row["subject"],
         message=row["message"],
         recvname=row.get("recvname") or "",
+        emtitle=row.get("emtitle") or "",
     )
     return _send(row["tpl_code"], [recipient], button=button)
 
@@ -252,6 +264,7 @@ def send_gift_cancel_to_receiver(
         receiver_phone=receiver,
         recvname=recvname,
         subject="선물 결제 취소 안내",
+        emtitle="주문취소 안내",
         message=message,
     )
 
@@ -274,6 +287,7 @@ def send_gift_auto_refund_to_sender(
         receiver_phone=receiver,
         recvname=recvname,
         subject="자동 환불 안내",
+        emtitle="자동 환불 안내",
         message=message,
     )
 
@@ -296,6 +310,7 @@ def send_gift_auto_refund_to_receiver(
         receiver_phone=receiver,
         recvname=recvname,
         subject="환불 완료 안내",
+        emtitle="자동 환불 안내",
         message=message,
     )
 
@@ -321,6 +336,7 @@ def send_store_review_result(
         receiver_phone=receiver,
         recvname=recvname,
         subject="입점 심사 결과 안내",
+        emtitle="입점 심사 결과 안내",
         message=message,
         button=CHANNEL_ADD_BUTTON,
     )

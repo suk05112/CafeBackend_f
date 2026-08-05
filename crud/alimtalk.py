@@ -12,20 +12,25 @@ def enqueue(
     subject: str,
     message: str,
     recvname: str = "",
+    emtitle: str = "",
     button: Optional[dict] = None,
     ref_type: Optional[str] = None,
     ref_id: Optional[int] = None,
 ) -> Dict:
-    """PENDING 상태로 알림톡 큐에 적재"""
+    """
+    PENDING 상태로 알림톡 큐에 적재.
+    emtitle: Aligo emtitle_1로 전달할 강조표기형 핵심정보(등록된 templtTitle과 일치해야 함).
+    templateEmType=TEXT로 등록된 템플릿만 필요하며, subject와 항상 같은 값은 아니다.
+    """
     connection = get_db_connection()
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     try:
         cursor.execute(
             """INSERT INTO alimtalk_log
-               (tpl_code, category, receiver_phone, recvname, subject, message, button_json, ref_type, ref_id, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
+               (tpl_code, category, receiver_phone, recvname, subject, emtitle, message, button_json, ref_type, ref_id, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 'PENDING')""",
             (
-                tpl_code, category, receiver_phone, recvname, subject, message,
+                tpl_code, category, receiver_phone, recvname, subject, emtitle or None, message,
                 json.dumps(button, ensure_ascii=False) if button else None,
                 ref_type, ref_id,
             ),
@@ -157,7 +162,7 @@ def get_log_list(status: Optional[str] = None, page: int = 1, limit: int = 20) -
     try:
         count_sql = "SELECT COUNT(*) as total FROM alimtalk_log WHERE 1=1"
         list_sql = """
-            SELECT id, tpl_code, category, receiver_phone, recvname, subject,
+            SELECT id, tpl_code, category, receiver_phone, recvname, subject, emtitle,
                    ref_type, ref_id, status, retry_count, aligo_mid, fail_reason,
                    sent_at, created_at
             FROM alimtalk_log
@@ -186,6 +191,7 @@ def get_log_list(status: Optional[str] = None, page: int = 1, limit: int = 20) -
                 "receiver_phone": row["receiver_phone"],
                 "recvname": row.get("recvname"),
                 "subject": row["subject"],
+                "emtitle": row.get("emtitle"),
                 "ref_type": row.get("ref_type"),
                 "ref_id": row.get("ref_id"),
                 "status": row["status"],

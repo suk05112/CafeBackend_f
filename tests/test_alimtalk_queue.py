@@ -97,6 +97,7 @@ def test_enqueue_creates_pending_row():
         assert row["retry_count"] == 0
         assert row["tpl_code"] == "UJ_1609"
         assert row["category"] == "GIFT_CANCEL"
+        assert row["emtitle"] == "주문취소 안내", f"emtitle: {row['emtitle']}"
     finally:
         teardown_log(log_id)
 
