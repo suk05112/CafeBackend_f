@@ -58,6 +58,16 @@ class VisitRequest(BaseModel):
     page: str
 
 
+class StoreApplyInquiryRequest(BaseModel):
+    store_name: str
+    applicant_name: str
+    email: str | None = None
+    phone: str
+    region: str
+    message: str
+    privacy_agreed: bool
+
+
 @router.get("/health")
 def health_check():
     """
@@ -246,6 +256,42 @@ def record_visit(visit: VisitRequest):
     except Exception as e:
         logger.error(f"Error in record_visit: {traceback.format_exc()}")
         raise InternalError(e, "record_visit")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/common/store-apply-inquiry")
+def create_store_apply_inquiry(inquiry: StoreApplyInquiryRequest):
+    """매장 입점 문의 등록 (hello-gifnut 입점 문의 페이지)"""
+    if not inquiry.privacy_agreed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="개인정보 수집·이용에 동의해야 합니다."
+        )
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO store_apply_inquiries
+                (store_name, applicant_name, email, phone, region, message, privacy_agreed)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                inquiry.store_name,
+                inquiry.applicant_name,
+                inquiry.email,
+                inquiry.phone,
+                inquiry.region,
+                inquiry.message,
+                inquiry.privacy_agreed,
+            )
+        )
+        connection.commit()
+        return {"created": True}
+    except Exception as e:
+        logger.error(f"Error in create_store_apply_inquiry: {traceback.format_exc()}")
+        raise InternalError(e, "create_store_apply_inquiry")
     finally:
         close_db_connection(connection)
 
