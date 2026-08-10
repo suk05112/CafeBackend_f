@@ -2,6 +2,7 @@
 Common API 엔드포인트
 """
 import traceback
+import json
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel
@@ -45,6 +46,15 @@ common_resources_s3 = boto3.client(
 )
 common_resources_bucket = "gifnut-common-resources"
 
+# 매장 입점 문의 알림용 SNS (Chatbot 경유 Slack 알림)
+sns_client = boto3.client(
+    'sns',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
+    region_name='ap-northeast-2',
+)
+STORE_INQUIRY_SNS_TOPIC_ARN = "arn:aws:sns:ap-northeast-2:008369717511:store-inquiry"
+
 
 class NotificationRequest(BaseModel):
     title: str
@@ -56,6 +66,16 @@ class NotificationRequest(BaseModel):
 class VisitRequest(BaseModel):
     visitor_id: str
     page: str
+
+
+class StoreApplyInquiryRequest(BaseModel):
+    store_name: str
+    applicant_name: str
+    email: str | None = None
+    phone: str
+    region: str
+    message: str
+    privacy_agreed: bool
 
 
 @router.get("/health")
@@ -246,6 +266,67 @@ def record_visit(visit: VisitRequest):
     except Exception as e:
         logger.error(f"Error in record_visit: {traceback.format_exc()}")
         raise InternalError(e, "record_visit")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/common/store-apply-inquiry")
+def create_store_apply_inquiry(inquiry: StoreApplyInquiryRequest):
+    """매장 입점 문의 등록 (hello-gifnut 입점 문의 페이지)"""
+    if not inquiry.privacy_agreed:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="개인정보 수집·이용에 동의해야 합니다."
+        )
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor()
+        cursor.execute(
+            """
+            INSERT INTO store_apply_inquiries
+                (store_name, applicant_name, email, phone, region, message, privacy_agreed)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """,
+            (
+                inquiry.store_name,
+                inquiry.applicant_name,
+                inquiry.email,
+                inquiry.phone,
+                inquiry.region,
+                inquiry.message,
+                inquiry.privacy_agreed,
+            )
+        )
+        connection.commit()
+
+        try:
+            notification = {
+                "version": "1.0",
+                "source": "custom",
+                "content": {
+                    "textType": "client-markdown",
+                    "title": ":tada: 기프넛 입점 문의 접수",
+                    "description": (
+                        f"*매장명*: {inquiry.store_name}\n"
+                        f"*성함*: {inquiry.applicant_name}\n"
+                        f"*연락처*: {inquiry.phone}\n"
+                        f"*이메일*: {inquiry.email or '-'}\n"
+                        f"*주소*: {inquiry.region}\n"
+                        f"*문의내용*: {inquiry.message}"
+                    ),
+                },
+            }
+            sns_client.publish(
+                TopicArn=STORE_INQUIRY_SNS_TOPIC_ARN,
+                Message=json.dumps(notification, ensure_ascii=False),
+            )
+        except Exception as e:
+            logger.error(f"Error notifying store_apply_inquiry via SNS: {traceback.format_exc()}")
+
+        return {"created": True}
+    except Exception as e:
+        logger.error(f"Error in create_store_apply_inquiry: {traceback.format_exc()}")
+        raise InternalError(e, "create_store_apply_inquiry")
     finally:
         close_db_connection(connection)
 
