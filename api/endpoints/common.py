@@ -2,6 +2,7 @@
 Common API 엔드포인트
 """
 import traceback
+import json
 from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel
@@ -44,6 +45,15 @@ common_resources_s3 = boto3.client(
     config=Config(signature_version='s3v4')
 )
 common_resources_bucket = "gifnut-common-resources"
+
+# 매장 입점 문의 알림용 SNS (Chatbot 경유 Slack 알림)
+sns_client = boto3.client(
+    'sns',
+    aws_access_key_id=settings.aws_access_key_id,
+    aws_secret_access_key=settings.aws_secret_access_key,
+    region_name='ap-northeast-2',
+)
+STORE_INQUIRY_SNS_TOPIC_ARN = "arn:aws:sns:ap-northeast-2:008369717511:store-inquiry"
 
 
 class NotificationRequest(BaseModel):
@@ -288,6 +298,31 @@ def create_store_apply_inquiry(inquiry: StoreApplyInquiryRequest):
             )
         )
         connection.commit()
+
+        try:
+            notification = {
+                "version": "1.0",
+                "source": "custom",
+                "content": {
+                    "textType": "client-markdown",
+                    "title": ":tada: 기프넛 입점 문의 접수",
+                    "description": (
+                        f"*매장명*: {inquiry.store_name}\n"
+                        f"*성함*: {inquiry.applicant_name}\n"
+                        f"*연락처*: {inquiry.phone}\n"
+                        f"*이메일*: {inquiry.email or '-'}\n"
+                        f"*주소*: {inquiry.region}\n"
+                        f"*문의내용*: {inquiry.message}"
+                    ),
+                },
+            }
+            sns_client.publish(
+                TopicArn=STORE_INQUIRY_SNS_TOPIC_ARN,
+                Message=json.dumps(notification, ensure_ascii=False),
+            )
+        except Exception as e:
+            logger.error(f"Error notifying store_apply_inquiry via SNS: {traceback.format_exc()}")
+
         return {"created": True}
     except Exception as e:
         logger.error(f"Error in create_store_apply_inquiry: {traceback.format_exc()}")
