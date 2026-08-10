@@ -2,6 +2,7 @@
 Common API 엔드포인트
 """
 import traceback
+from datetime import datetime, timezone, timedelta
 from fastapi import APIRouter, HTTPException, status, Query
 from pydantic import BaseModel
 from typing import Literal
@@ -23,6 +24,8 @@ import boto3
 from botocore.client import Config
 
 router = APIRouter()
+
+KST = timezone(timedelta(hours=9))
 
 # CloudWatch 로거 설정 (health check 실패 시 로깅용)
 cloudwatch_logger = logging.getLogger("cafe_backend")
@@ -48,6 +51,11 @@ class NotificationRequest(BaseModel):
     body: str
     target: Literal["all_users", "all_owners", "all"] = "all"
     use_marketing: bool = False
+
+
+class VisitRequest(BaseModel):
+    visitor_id: str
+    page: str
 
 
 @router.get("/health")
@@ -214,5 +222,60 @@ def get_app_version(
     except Exception as e:
         logger.error(f"Error in get_app_version: {traceback.format_exc()}")
         raise InternalError(e, "get_app_version")
+    finally:
+        close_db_connection(connection)
+
+
+@router.post("/common/visit")
+def record_visit(visit: VisitRequest):
+    """페이지 방문 기록 (page별 일일 UV) — 같은 방문자가 같은 날 같은 page를 재방문해도 1회만 기록"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor()
+        today = datetime.now(KST).date()
+        cursor.execute(
+            """
+            INSERT INTO site_visit_logs (page, visitor_id, visit_date)
+            VALUES (%s, %s, %s)
+            ON DUPLICATE KEY UPDATE id = id
+            """,
+            (visit.page, visit.visitor_id, today)
+        )
+        connection.commit()
+        return {"recorded": cursor.rowcount == 1}
+    except Exception as e:
+        logger.error(f"Error in record_visit: {traceback.format_exc()}")
+        raise InternalError(e, "record_visit")
+    finally:
+        close_db_connection(connection)
+
+
+@router.get("/common/visitors")
+def get_visitor_counts(page: str = Query(..., description="페이지 식별자 (예: home, profile)")):
+    """페이지별 방문자수 조회 — 오늘 UV, 전체 누적 UV"""
+    connection = get_db_connection()
+    try:
+        cursor = connection.cursor(pymysql.cursors.DictCursor)
+        today = datetime.now(KST).date()
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM site_visit_logs WHERE page = %s AND visit_date = %s",
+            (page, today)
+        )
+        today_count = cursor.fetchone()["cnt"]
+
+        cursor.execute(
+            "SELECT COUNT(*) AS cnt FROM site_visit_logs WHERE page = %s",
+            (page,)
+        )
+        total_count = cursor.fetchone()["cnt"]
+
+        return {
+            "page": page,
+            "today_count": today_count,
+            "total_count": total_count,
+        }
+    except Exception as e:
+        logger.error(f"Error in get_visitor_counts: {traceback.format_exc()}")
+        raise InternalError(e, "get_visitor_counts")
     finally:
         close_db_connection(connection)
