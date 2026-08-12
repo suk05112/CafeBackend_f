@@ -51,6 +51,47 @@ def get_menus_by_store(store_id: int) -> List[Dict]:
         close_db_connection(connection)
 
 
+def get_voucher_menus() -> List[Dict]:
+    """금액권(교환권) 상품 리스트 조회
+
+    금액권은 전용 가상매장의 menu 레코드로 관리되며, 특정 매장에 속하지 않으므로
+    매장 메뉴 추천과 달리 거리/지역 조건 없이 액면가 오름차순으로 반환한다.
+    """
+    connection = get_db_connection()
+    cursor = connection.cursor(pymysql.cursors.DictCursor)
+
+    try:
+        cursor.execute("""
+            SELECT id, store_id, menu_name, price, description, image_key
+            FROM menu
+            WHERE product_type = 'VOUCHER' AND status = 'ACTIVE' AND is_deleted = 0
+            ORDER BY price ASC
+        """)
+
+        rows = cursor.fetchall()
+        vouchers = []
+
+        for row in rows:
+            menu_photo_url = None
+            if row['image_key']:
+                menu_photo_url = get_s3_public_url(bucket_name, row['image_key'])
+
+            vouchers.append({
+                # 구매 시 store_id가 필요하므로 앱이 하드코딩하지 않도록 함께 내려준다
+                "store_id": row['store_id'],
+                "menu_id": row['id'],
+                "menu_name": row['menu_name'],
+                "price": row['price'],
+                "description": row['description'],
+                "menu_photo": menu_photo_url,
+            })
+
+        return vouchers
+    finally:
+        cursor.close()
+        close_db_connection(connection)
+
+
 def get_menu_by_id(menu_id: int) -> Optional[Dict]:
     """메뉴 상세 조회"""
     connection = get_db_connection()
