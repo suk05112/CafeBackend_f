@@ -264,45 +264,32 @@ def getTodayUsedGifticon(store_id: int):
     cursor = connection.cursor(pymysql.cursors.DictCursor)  # DB에 접속 및 DB 객체를 가져옴
 
     try:
+        # 메뉴 정보는 발급 시점 스냅샷 우선 사용 (메뉴 변경/삭제와 무관하게 사용 당시 내역 유지)
         cursor.execute('''
         SELECT
-            id, 
-            used_time, 
-            menu_id
-        FROM gifticon
-        Where store_id =%s
-        AND DATE(used_time) = CURDATE()
-        ''', (store_id))
-        
-        # DB에서 데이터를 가져오기
+            g.id,
+            g.used_at AS used_time,
+            COALESCE(g.menu_name_snapshot, m.menu_name, '') AS menu_name,
+            COALESCE(g.price_snapshot, m.price, 0) AS price
+        FROM gifticon g
+        LEFT JOIN menu m ON g.menu_id = m.id
+        WHERE g.store_id = %s
+          AND g.status = 'USED'
+          AND g.used_at IS NOT NULL
+          AND DATE(g.used_at) = CURDATE()
+        ORDER BY g.used_at DESC
+        ''', (store_id,))
+
         rows = cursor.fetchall()
-        gifticonList = []
-        
-        for row in rows:
-            print(row)
-            menu_id = row['menu_id']
-            
-            menu_query = '''
-            SELECT
-                name,
-                price
-            FROM menu
-            Where id = %s
-            '''
-    
-            cursor.execute(menu_query, (menu_id))
-    
-            # DB에서 데이터를 가져오기
-            menu = cursor.fetchone()
-            
-            # store 데이터를 구성
-            gificon = {
+        gifticonList = [
+            {
                 "id": row['id'],
                 "used_time": row['used_time'],
-                "menu_name": menu['name'],
-                "price": menu['price']      
+                "menu_name": row['menu_name'],
+                "price": row['price'],
             }
-            gifticonList.append(gificon)
+            for row in rows
+        ]
 
         return {"gifticonList": gifticonList}
     
