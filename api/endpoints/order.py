@@ -188,7 +188,8 @@ def getOrderList(user_id: int, user=Depends(verify_firebase_token)):
                 s.store_name AS name,
                 o.status,
                 o.payment,
-                m.menu_name
+                m.menu_name,
+                g.product_type
             FROM orders o
             JOIN store s ON o.store_id = s.id
             LEFT JOIN orders_gifticon og ON o.id = og.order_id
@@ -211,6 +212,7 @@ def getOrderList(user_id: int, user=Depends(verify_firebase_token)):
                 "sender": row['sender'] if row['sender'] else "",
                 "price": row['price'] if row['price'] else 0,
                 "menu_name": row['menu_name'] if row['menu_name'] else "",
+                "product_type": row.get('product_type') or 'MENU',
                 "payment": row['payment'] if row['payment'] else "",
                 "status": row['status'] if row['status'] else "",
                 "created_time": row['created_time'].isoformat() if row['created_time'] else None
@@ -312,7 +314,7 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
 
         # 4. 발급 시점 메뉴 정보 스냅샷 조회
         cursor.execute(
-            "SELECT menu_name, price, description, image_key FROM menu WHERE id = %s",
+            "SELECT menu_name, price, description, image_key, product_type FROM menu WHERE id = %s",
             (gifticon.menu_id,)
         )
         menu_row = cursor.fetchone()
@@ -326,17 +328,20 @@ def requestPaymentUrl(user_id: int, gifticon: Gifticon, user=Depends(verify_fire
         price_snapshot = menu_row['price']
         description_snapshot = menu_row['description']
         image_key_snapshot = menu_row['image_key']
+        product_type = menu_row['product_type']
 
         # 5. gifticon INSERT (status='PENDING': 결제 완료 콜백에서 UNUSED로 전환)
         # purchaser_refund_deadline: 구매자 100% 환불 마감일을 발급 시점 정책(60일)으로 고정 저장
         purchaser_refund_deadline = (get_kst_now() + timedelta(days=60)).date()
         cursor.execute(
             """INSERT INTO gifticon (user_id, type, sender, receiver, receiver_phone, menu_id, store_id, order_id, status,
-                                      menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot, purchaser_refund_deadline)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', %s, %s, %s, %s, %s)""",
+                                      menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot, purchaser_refund_deadline,
+                                      product_type)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, 'PENDING', %s, %s, %s, %s, %s, %s)""",
             (user_id, gifticon.type, gifticon.sender, gifticon.receiver,
              gifticon.receiver_phone_number, gifticon.menu_id, gifticon.store_id, order_id,
-             menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot, purchaser_refund_deadline)
+             menu_name_snapshot, price_snapshot, description_snapshot, image_key_snapshot, purchaser_refund_deadline,
+             product_type)
         )
         gifticon_id = cursor.lastrowid
 
@@ -591,14 +596,14 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
                 g.validity,
                 g.created_at AS gifticon_created_at,
                 g.image_key_snapshot,
-                m.id AS menu_id,
-                m.menu_name,
-                m.price AS menu_price,
-                og.menu_id,
+                g.product_type,
+                g.menu_id AS menu_id,
+                COALESCE(g.menu_name_snapshot, m.menu_name, '') AS menu_name,
+                COALESCE(g.price_snapshot, m.price, 0) AS menu_price,
                 og.receiver_id AS orders_gifticon_receiver_id
             FROM orders_gifticon og
             JOIN gifticon g ON og.gifticon_id = g.id
-            JOIN menu m ON g.menu_id = m.id
+            LEFT JOIN menu m ON g.menu_id = m.id
             WHERE og.order_id = %s
             ORDER BY g.created_at ASC
         """
@@ -625,6 +630,7 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
                 "receiver_phone": row['receiver_phone'],
                 # 구매자 응답에는 기프티콘 개별 상태(사용여부/환불진행상태)를 노출하지 않음
                 "validity": row['validity'].isoformat() if row['validity'] else None,
+                "product_type": row.get('product_type') or 'MENU',
                 "menu_id": row['menu_id'],
                 "menu_name": row['menu_name'],
                 "menu_price": row['menu_price'] if row['menu_price'] else 0,
@@ -633,16 +639,20 @@ def getOrderDetail(order_id: int, user=Depends(verify_firebase_token)):
                 "is_receiver_linked": is_receiver_linked
             }
             gifticon_list.append(gifticon_item)
-        
+
+        # 금액권 주문은 전용 가상매장으로 등록되므로 매장 정보를 노출하지 않는다
+        is_voucher_order = any(g['product_type'] == 'VOUCHER' for g in gifticon_list)
+
         # 4. 응답 데이터 구성
         order_detail = {
             "order_id": order['order_id'],
             "order_no": order['order_no'],
             "user_id": order['user_id'],
-            "store_id": order['store_id'],
-            "store_name": order['store_name'],
-            "store_address": order['store_address'],
-            "store_telephone": order['store_telephone'],
+            "product_type": 'VOUCHER' if is_voucher_order else 'MENU',
+            "store_id": None if is_voucher_order else order['store_id'],
+            "store_name": '' if is_voucher_order else order['store_name'],
+            "store_address": '' if is_voucher_order else order['store_address'],
+            "store_telephone": '' if is_voucher_order else order['store_telephone'],
             "amount": order['amount'],
             "status": order['status'],
             "payment": order['payment'],

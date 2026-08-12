@@ -507,7 +507,7 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
         JOIN gifticon g ON sd.gifticon_id = g.id
         LEFT JOIN menu m ON g.menu_id = m.id
         WHERE sd.settlement_id IS NULL
-          AND g.store_id = %s
+          AND COALESCE(g.used_store_id, g.store_id) = %s
           AND g.used_at >= %s
           AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
         ORDER BY g.used_at ASC
@@ -735,18 +735,18 @@ def get_settlement_cycle_preview(cycle_id: int) -> Optional[Dict]:
 
         cursor.execute("""
             SELECT
-                g.store_id,
+                COALESCE(g.used_store_id, g.store_id) AS store_id,
                 st.store_name,
                 SUM(sd.sales_amount) AS total_sales,
                 COUNT(*) AS detail_count
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
-            LEFT JOIN store st ON g.store_id = st.id
+            LEFT JOIN store st ON COALESCE(g.used_store_id, g.store_id) = st.id
             WHERE sd.settlement_id IS NULL
               AND g.used_at >= %s
               AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
-            GROUP BY g.store_id, st.store_name
-            ORDER BY g.store_id
+            GROUP BY COALESCE(g.used_store_id, g.store_id), st.store_name
+            ORDER BY COALESCE(g.used_store_id, g.store_id)
         """, (period_start, period_end))
         store_rows = cursor.fetchall()
 

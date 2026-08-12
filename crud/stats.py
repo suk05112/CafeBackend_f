@@ -83,7 +83,7 @@ def get_dashboard_summary() -> Dict:
             # 이번 주기 미연결 settlement_details 집계 (정산 예정)
             cursor.execute("""
                 SELECT
-                    COUNT(DISTINCT g.store_id) AS expected_store_count,
+                    COUNT(DISTINCT COALESCE(g.used_store_id, g.store_id)) AS expected_store_count,
                     COALESCE(SUM(sd.sales_amount), 0) AS expected_settlement_amount
                 FROM settlement_details sd
                 JOIN gifticon g ON sd.gifticon_id = g.id
@@ -455,9 +455,10 @@ def create_settlement_data(cycle_id: int) -> Dict:
         payout_date = cycle['payout_date']
 
         # 매장별 총 매출 및 건별 기본 수수료 합계 집계 (settlement_details와 정합성 보장)
+        # 정산 귀속 매장: 금액권은 사용 매장(used_store_id), 메뉴권은 발행 매장(store_id)
         cursor.execute("""
             SELECT
-                g.store_id,
+                COALESCE(g.used_store_id, g.store_id) AS store_id,
                 SUM(sd.sales_amount) AS total_sales,
                 SUM(sd.fee_supply) AS total_fee_supply,
                 SUM(sd.fee_vat) AS total_fee_vat,
@@ -466,11 +467,11 @@ def create_settlement_data(cycle_id: int) -> Dict:
                 COALESCE(a.account, '') AS account_number
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
-            LEFT JOIN account a ON g.store_id = a.store_id
+            LEFT JOIN account a ON COALESCE(g.used_store_id, g.store_id) = a.store_id
             WHERE sd.settlement_id IS NULL
               AND g.used_at >= %s
               AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
-            GROUP BY g.store_id, a.bank, a.account
+            GROUP BY COALESCE(g.used_store_id, g.store_id), a.bank, a.account
         """, (period_start, period_end))
 
         store_rows = cursor.fetchall()
@@ -547,7 +548,7 @@ def create_settlement_data(cycle_id: int) -> Dict:
                     JOIN gifticon g ON sd.gifticon_id = g.id
                     SET sd.settlement_id = %s
                     WHERE sd.settlement_id IS NULL
-                      AND g.store_id = %s
+                      AND COALESCE(g.used_store_id, g.store_id) = %s
                       AND g.used_at >= %s
                       AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY)
                 """, (settlement_id, store_id, period_start, period_end))

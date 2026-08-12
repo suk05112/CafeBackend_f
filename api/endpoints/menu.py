@@ -48,6 +48,17 @@ def get_recommended_menus(
         raise InternalError(e, "menu")
 
 
+@router.get("/vouchers")
+def get_voucher_menus():
+    """금액권(교환권) 상품 리스트 조회. 액면가 오름차순."""
+    try:
+        vouchers = menu_crud.get_voucher_menus()
+        return {"voucherList": vouchers}
+    except Exception as e:
+        logger.error(f"Error in get_voucher_menus: {traceback.format_exc()}")
+        raise InternalError(e, "vouchers")
+
+
 @router.get("/list/{store_id}")
 def get_menu_list(store_id: int):
     """매장별 메뉴 리스트 조회"""

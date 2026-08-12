@@ -4,7 +4,7 @@ from app.auth.auth_dependency import verify_firebase_token, verify_firebase_toke
 import traceback
 import os
 
-from typing import Union
+from typing import Union, Optional
 from pydantic import BaseModel
 from loguru import logger
 
@@ -61,6 +61,7 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
                 g.price_snapshot,
                 g.description_snapshot,
                 g.image_key_snapshot,
+                g.product_type,
                 s.store_name
             FROM gifticon g
             LEFT JOIN store s ON g.store_id = s.id
@@ -74,18 +75,21 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
         for row in rows:
             image_key = row.get('image_key_snapshot') or ''
             menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
+            product_type = row.get('product_type') or 'MENU'
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
                 "name": row.get('menu_name_snapshot') or '',
                 "price": row.get('price_snapshot') or 0,
                 "description": row.get('description_snapshot') or '',
+                "product_type": product_type,
                 "validity": row['validity'],
                 "sender": row['sender'],
                 "receiver": row['receiver'],
                 "status": row['status'],
                 "gift_code": row.get('gift_code'),
                 "menu_url": menu_url,
-                "store_name": row.get('store_name') or ''
+                # 금액권은 사용처가 정해지지 않았으므로 매장명을 노출하지 않는다
+                "store_name": '' if product_type == 'VOUCHER' else (row.get('store_name') or '')
             }
 
             gifticonList.append(gifticon)
@@ -136,24 +140,16 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             order_id_result = cursor.fetchone()
             order_id_value = order_id_result['order_id'] if order_id_result else None
 
-        cursor.execute('''SELECT store_lat, store_lng, store_name, store_address
-        FROM store
-        WHERE id=%s ;''', (gifticon['store_id'],))
-        
-        store_info = cursor.fetchone()
-        
-        if not store_info:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Store not found"
-            )
-        
+        product_type = gifticon.get('product_type') or 'MENU'
+        is_voucher = product_type == 'VOUCHER'
+
         image_key = gifticon.get('image_key_snapshot') or ''
         menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
             "gift_code": gifticon['gift_code'],
             "order_id": order_id_value,
+            "product_type": product_type,
             "validity": gifticon['validity'],
             "purchaser_refund_deadline": gifticon.get('purchaser_refund_deadline'),
             "sender": gifticon['sender'],
@@ -163,13 +159,29 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             "menu_url" : menu_url,
             "msg" : gifticon.get('msg'),
             "created_time" : gifticon['created_at'],
-            "store_id" : gifticon['store_id'],
-            "store_lat" : store_info["store_lat"],
-            "store_lng" : store_info["store_lng"],
-            "store_name" : store_info["store_name"],
-            "store_address" : store_info["store_address"]
-
         }
+
+        # 금액권은 입점 매장 어디서나 사용 가능하므로 특정 매장 정보를 내려주지 않는다
+        if not is_voucher:
+            cursor.execute('''SELECT store_lat, store_lng, store_name, store_address
+            FROM store
+            WHERE id=%s ;''', (gifticon['store_id'],))
+
+            store_info = cursor.fetchone()
+
+            if not store_info:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Store not found"
+                )
+
+            gifticon_response.update({
+                "store_id": gifticon['store_id'],
+                "store_lat": store_info["store_lat"],
+                "store_lng": store_info["store_lng"],
+                "store_name": store_info["store_name"],
+                "store_address": store_info["store_address"],
+            })
     
         print("\ngifticon", gifticon_response)
     
@@ -184,18 +196,54 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
         cursor.close()
         close_db_connection(connection)
 
+class UseGifticonRequest(BaseModel):
+    """사용처리 요청. store_id는 사용처리하는 매장 (금액권 필수, 메뉴권 선택)"""
+    store_id: Optional[int] = None
+
+
+def _verify_owner_store(cursor, user, store_id: int) -> Optional[dict]:
+    """사용처리 요청 매장이 요청자(사장님) 소유이고 영업 가능 상태인지 검증.
+
+    금액권은 사용처가 곧 정산처이므로 클라이언트가 보낸 store_id를 그대로 신뢰할 수 없다.
+    owner 토큰의 uid로 소유권을 확인한다. 검증 실패 시 None 반환.
+    """
+    cursor.execute(
+        "SELECT id, owner_id, inspection_status, contract_completed FROM store WHERE id = %s",
+        (store_id,)
+    )
+    store = cursor.fetchone()
+    if not store:
+        return None
+
+    # 검수/계약 미완료 매장은 정산 대상이 아니므로 사용처리 불가
+    if store['inspection_status'] != 'APPROVED' or store['contract_completed'] != 'COMPLETED':
+        return None
+
+    # user가 None인 경우는 인증 우회 IP(내부 테스트)이므로 소유권 검증을 건너뛴다
+    if user is None:
+        return store
+
+    uid = user.get("uid")
+    cursor.execute("SELECT id FROM owner WHERE uid = %s LIMIT 1", (uid,))
+    owner = cursor.fetchone()
+    if not owner or store['owner_id'] != owner['id']:
+        return None
+
+    return store
+
+
 @router.patch("/use/{gifticon_id}")
-def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
+def useGifticon(gifticon_id: int, body: Optional[UseGifticonRequest] = None, user=Depends(verify_firebase_token_any)):
     connection = get_db_connection()  # 환경에 맞는 DB 연결
     cursor = connection.cursor(pymysql.cursors.DictCursor)
-       
+
     try:
 
         if gifticon_id == 9999:
             return {'result': 0}
 
         cursor.execute(
-            """SELECT g.status, g.validity, o.amount AS total_price
+            """SELECT g.status, g.validity, g.product_type, g.store_id, o.amount AS total_price
                FROM gifticon g
                JOIN orders o ON g.order_id = o.id
                WHERE g.id = %s""",
@@ -215,14 +263,31 @@ def useGifticon(gifticon_id: int, user=Depends(verify_firebase_token_any)):
         if validity and validity < get_kst_now().date():
             return {'result': 2}  # 유효기간 만료
 
+        # 사용 매장 검증
+        # 금액권은 사용처가 곧 정산처이므로 store_id 필수. 메뉴권은 선택(미전송 시 기존 동작 유지).
+        is_voucher = (gifticon.get('product_type') or 'MENU') == 'VOUCHER'
+        request_store_id = body.store_id if body else None
+        used_store_id = None
+
+        if request_store_id is not None:
+            store = _verify_owner_store(cursor, user, request_store_id)
+            if store is None:
+                return {'result': 4}  # 매장 검증 실패 (본인 매장 아님/미계약/없음)
+            used_store_id = request_store_id
+            # 메뉴권은 발행 매장과 사용 매장이 일치해야 함
+            if not is_voucher and gifticon['store_id'] != request_store_id:
+                return {'result': 5}  # 다른 매장의 기프티콘
+        elif is_voucher:
+            return {'result': 4}  # 금액권은 store_id 없이 사용처리 불가
+
         sales_amount = int(gifticon['total_price'])
 
         connection.begin()
 
         # 원자적 상태 전환: UNUSED인 경우에만 UPDATE
         cursor.execute(
-            "UPDATE gifticon SET status='USED', used_at=NOW() WHERE id=%s AND status='UNUSED'",
-            (gifticon_id,)
+            "UPDATE gifticon SET status='USED', used_at=NOW(), used_store_id=%s WHERE id=%s AND status='UNUSED'",
+            (used_store_id, gifticon_id)
         )
         if cursor.rowcount == 0:
             connection.rollback()

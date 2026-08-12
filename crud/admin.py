@@ -5,6 +5,7 @@ from typing import Optional, Dict, List
 from db.session import get_db_connection, close_db_connection
 from core import clock
 from core.s3_config import S3_CLIENT, BUCKET_NAME, get_s3_public_url
+from core.voucher import VOUCHER_STORE_ID
 from botocore.exceptions import ClientError
 from crud import store as store_crud
 from crud import menu as menu_crud
@@ -100,8 +101,9 @@ def get_stores(connection, search: Optional[str] = None, page: int = 1, limit: i
     cursor = connection.cursor(pymysql.cursors.DictCursor)
 
     def _build_conditions(search, inspection_status, contract_completed):
-        conditions = []
-        params = []
+        # 금액권 전용 가상매장은 실제 매장이 아니므로 관리자 목록에서 제외
+        conditions = ['s.id != %s']
+        params = [VOUCHER_STORE_ID]
         if search:
             conditions.append('(s.store_name LIKE %s OR o.name LIKE %s)')
             pattern = f'%{search}%'
@@ -779,14 +781,14 @@ def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        # 전체 개수 조회
-        cursor.execute('SELECT COUNT(*) as total FROM menu')
+        # 전체 개수 조회 (금액권은 매장 메뉴가 아니므로 제외)
+        cursor.execute('SELECT COUNT(*) as total FROM menu WHERE store_id != %s', (VOUCHER_STORE_ID,))
         total_count = cursor.fetchone()['total']
-        
+
         # 페이지네이션 계산
         offset = (page - 1) * limit
         total_pages = (total_count + limit - 1) // limit if total_count > 0 else 1
-        
+
         # 데이터 조회
         cursor.execute('''
             SELECT
@@ -798,9 +800,10 @@ def get_all_menus(connection, page: int = 1, limit: int = 20) -> Dict:
                 s.store_name
             FROM menu m
             LEFT JOIN store s ON m.store_id = s.id
+            WHERE m.store_id != %s
             ORDER BY m.id DESC
             LIMIT %s OFFSET %s
-        ''', (limit, offset))
+        ''', (VOUCHER_STORE_ID, limit, offset))
         
         menus = cursor.fetchall()
         
