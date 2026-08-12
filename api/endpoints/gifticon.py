@@ -61,6 +61,7 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
                 g.price_snapshot,
                 g.description_snapshot,
                 g.image_key_snapshot,
+                g.product_type,
                 s.store_name
             FROM gifticon g
             LEFT JOIN store s ON g.store_id = s.id
@@ -74,18 +75,21 @@ def getGifticonList(user_id: int, user=Depends(verify_firebase_token)):
         for row in rows:
             image_key = row.get('image_key_snapshot') or ''
             menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
+            product_type = row.get('product_type') or 'MENU'
             gifticon = {
                 "gifticon_id": row['gifticon_id'],
                 "name": row.get('menu_name_snapshot') or '',
                 "price": row.get('price_snapshot') or 0,
                 "description": row.get('description_snapshot') or '',
+                "product_type": product_type,
                 "validity": row['validity'],
                 "sender": row['sender'],
                 "receiver": row['receiver'],
                 "status": row['status'],
                 "gift_code": row.get('gift_code'),
                 "menu_url": menu_url,
-                "store_name": row.get('store_name') or ''
+                # 금액권은 사용처가 정해지지 않았으므로 매장명을 노출하지 않는다
+                "store_name": '' if product_type == 'VOUCHER' else (row.get('store_name') or '')
             }
 
             gifticonList.append(gifticon)
@@ -136,24 +140,16 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             order_id_result = cursor.fetchone()
             order_id_value = order_id_result['order_id'] if order_id_result else None
 
-        cursor.execute('''SELECT store_lat, store_lng, store_name, store_address
-        FROM store
-        WHERE id=%s ;''', (gifticon['store_id'],))
-        
-        store_info = cursor.fetchone()
-        
-        if not store_info:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Store not found"
-            )
-        
+        product_type = gifticon.get('product_type') or 'MENU'
+        is_voucher = product_type == 'VOUCHER'
+
         image_key = gifticon.get('image_key_snapshot') or ''
         menu_url = get_s3_public_url(bucket_name, image_key) if image_key else ''
         gifticon_response = {
             "gifticon_id": gifticon['id'],
             "gift_code": gifticon['gift_code'],
             "order_id": order_id_value,
+            "product_type": product_type,
             "validity": gifticon['validity'],
             "purchaser_refund_deadline": gifticon.get('purchaser_refund_deadline'),
             "sender": gifticon['sender'],
@@ -163,13 +159,29 @@ def getGifticon(gifticon_id: int, user=Depends(verify_firebase_token)):
             "menu_url" : menu_url,
             "msg" : gifticon.get('msg'),
             "created_time" : gifticon['created_at'],
-            "store_id" : gifticon['store_id'],
-            "store_lat" : store_info["store_lat"],
-            "store_lng" : store_info["store_lng"],
-            "store_name" : store_info["store_name"],
-            "store_address" : store_info["store_address"]
-
         }
+
+        # 금액권은 입점 매장 어디서나 사용 가능하므로 특정 매장 정보를 내려주지 않는다
+        if not is_voucher:
+            cursor.execute('''SELECT store_lat, store_lng, store_name, store_address
+            FROM store
+            WHERE id=%s ;''', (gifticon['store_id'],))
+
+            store_info = cursor.fetchone()
+
+            if not store_info:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail="Store not found"
+                )
+
+            gifticon_response.update({
+                "store_id": gifticon['store_id'],
+                "store_lat": store_info["store_lat"],
+                "store_lng": store_info["store_lng"],
+                "store_name": store_info["store_name"],
+                "store_address": store_info["store_address"],
+            })
     
         print("\ngifticon", gifticon_response)
     
