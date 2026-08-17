@@ -67,7 +67,12 @@ def generate_order_no(connection) -> str:
                 "SELECT COUNT(*) as cnt FROM orders WHERE DATE(created_at) = CURDATE()"
             )
             seq = cursor.fetchone()['cnt'] + 1
-            return f"{yyddd}{seq + 5000:05d}"
+            while True:
+                order_no = f"{yyddd}{seq + 5000:05d}"
+                cursor.execute("SELECT 1 FROM orders WHERE order_no = %s", (order_no,))
+                if not cursor.fetchone():
+                    return order_no
+                seq += 1
         finally:
             cursor.execute("SELECT RELEASE_LOCK('order_no_gen')")
     finally:
