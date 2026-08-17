@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import pymysql
 from core.config import settings
 from core.fees import PG_FEE_RATE_MAP, PG_FEE_RATE_DEFAULT
+from core.voucher import VOUCHER_STORE_ID
 
 
 def get_connection(db_name: str):
@@ -64,11 +65,19 @@ def aggregate_one_day(cursor, target: date, base_fee_rate: float) -> dict:
     new_store_count = cursor.fetchone()[0] or 0
 
     # 당일 활성 매장 수 (발행 또는 사용 발생)
+    # 발행은 발행처(store_id), 사용은 사용처(used_store_id) 기준으로 각각 집계 후 합집합.
+    # 금액권은 전용 가상매장에서 발행되므로 발행 기준에서 제외하고, 실제 사용 매장만 활성으로 계산한다.
     cursor.execute("""
-        SELECT COUNT(DISTINCT store_id) FROM gifticon
-        WHERE (DATE(created_at) = %s AND status NOT IN ('PENDING','REFUNDED','CANCELED'))
-           OR (DATE(used_at) = %s AND status = 'USED')
-    """, (d, d))
+        SELECT COUNT(*) FROM (
+            SELECT store_id AS sid FROM gifticon
+            WHERE DATE(created_at) = %s
+              AND status NOT IN ('PENDING','REFUNDED','CANCELED')
+              AND store_id != %s
+            UNION
+            SELECT COALESCE(used_store_id, store_id) AS sid FROM gifticon
+            WHERE DATE(used_at) = %s AND status = 'USED'
+        ) AS active
+    """, (d, VOUCHER_STORE_ID, d))
     active_store_count = cursor.fetchone()[0] or 0
 
     # 발행 수 / 발행 금액 (발행 시점 스냅샷 기준)
