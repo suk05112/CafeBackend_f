@@ -286,12 +286,13 @@ def get_store_giftcards(connection, store_id: int, page: int = 1, limit: int = 1
     cursor = connection.cursor(pymysql.cursors.DictCursor)
     
     try:
-        # 전체 개수 조회
+        # 이 매장이 발행했거나(store_id) 이 매장에서 사용된(used_store_id) 기프티콘.
+        # 금액권은 전용 가상매장에서 발행되므로 사용처 기준으로만 잡힌다.
         cursor.execute('''
             SELECT COUNT(*) as total
             FROM gifticon g
-            WHERE g.store_id = %s
-        ''', (store_id,))
+            WHERE g.store_id = %s OR g.used_store_id = %s
+        ''', (store_id, store_id))
         total_count = cursor.fetchone()['total']
         
         # 페이지네이션 계산
@@ -310,10 +311,10 @@ def get_store_giftcards(connection, store_id: int, page: int = 1, limit: int = 1
                 COALESCE(g.menu_name_snapshot, m.menu_name) as menu_name
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
-            WHERE g.store_id = %s
+            WHERE g.store_id = %s OR g.used_store_id = %s
             ORDER BY g.created_at DESC
             LIMIT %s OFFSET %s
-        ''', (store_id, limit, offset))
+        ''', (store_id, store_id, limit, offset))
         
         giftcards = cursor.fetchall()
         
