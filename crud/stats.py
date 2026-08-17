@@ -34,11 +34,11 @@ def get_dashboard_summary() -> Dict:
         # orders.status가 PENDING(결제 대기/미완료)인 건도 제외 (GNB-208)
         cursor.execute("""
             SELECT
-                m.price AS menu_price,
+                COALESCE(g.price_snapshot, m.price, 0) AS menu_price,
                 o.amount AS order_amount,
                 LOWER(COALESCE(o.pgcode, '')) AS pgcode
             FROM gifticon g
-            JOIN menu m ON g.menu_id = m.id
+            LEFT JOIN menu m ON g.menu_id = m.id
             LEFT JOIN orders o ON g.order_id = o.id
             LEFT JOIN settlement_details sd ON sd.gifticon_id = g.id
             LEFT JOIN settlement s ON sd.settlement_id = s.settlement_id
@@ -329,11 +329,11 @@ def get_dashboard_settlement_cycles(page: int = 1, size: int = 10) -> Dict:
             period_start = r['period_start_date']
             period_end = r['period_end_date']
 
-            # 해당 주기 미사용 금액: 기간 내 발행된 기프티콘 중 미사용 상태 menu.price 합계
+            # 해당 주기 미사용 금액: 기간 내 발행된 기프티콘 중 미사용 상태 발행가 합계
             cursor.execute("""
-                SELECT COALESCE(SUM(m.price), 0) AS unused_amount
+                SELECT COALESCE(SUM(COALESCE(g.price_snapshot, m.price, 0)), 0) AS unused_amount
                 FROM gifticon g
-                JOIN menu m ON g.menu_id = m.id
+                LEFT JOIN menu m ON g.menu_id = m.id
                 WHERE g.created_at >= %s
                   AND g.created_at < DATE_ADD(%s, INTERVAL 1 DAY)
                   AND g.status IN ('UNUSED', 'PENDING', 'EXPIRED')

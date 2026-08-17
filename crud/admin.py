@@ -37,11 +37,11 @@ def get_dashboard_statistics(connection) -> Dict:
         gift_issued_month = int(gift_row['gift_issued_month'] or 0)
         gift_used_count = int(gift_row['gift_used_count'] or 0)
 
-        # gifticon 사용금액 집계 (menu JOIN 필요)
+        # gifticon 사용금액 집계 (발행 시점 스냅샷 기준)
         cursor.execute('''
             SELECT
-                COALESCE(SUM(CASE WHEN g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY) THEN m.price ELSE 0 END), 0) AS gift_used_amount_today,
-                COALESCE(SUM(CASE WHEN g.used_at >= %s THEN m.price ELSE 0 END), 0) AS gift_used_amount_month
+                COALESCE(SUM(CASE WHEN g.used_at >= %s AND g.used_at < DATE_ADD(%s, INTERVAL 1 DAY) THEN COALESCE(g.price_snapshot, m.price, 0) ELSE 0 END), 0) AS gift_used_amount_today,
+                COALESCE(SUM(CASE WHEN g.used_at >= %s THEN COALESCE(g.price_snapshot, m.price, 0) ELSE 0 END), 0) AS gift_used_amount_month
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
             WHERE g.status = 'USED'
@@ -305,9 +305,9 @@ def get_store_giftcards(connection, store_id: int, page: int = 1, limit: int = 1
                 g.created_at,
                 g.used_at,
                 g.status,
-                m.price as amount,
+                COALESCE(g.price_snapshot, m.price, 0) as amount,
                 g.user_id,
-                m.menu_name as menu_name
+                COALESCE(g.menu_name_snapshot, m.menu_name) as menu_name
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
             WHERE g.store_id = %s
@@ -588,13 +588,13 @@ def get_user_giftcards(connection, user_id: int) -> List[Dict]:
         cursor.execute('''
             SELECT 
                 g.id,
-                m.price,
+                COALESCE(g.price_snapshot, m.price, 0) AS price,
                 g.gift_code,
                 g.validity,
                 g.created_at as received_at,
                 g.used_at,
                 g.status,
-                m.menu_name
+                COALESCE(g.menu_name_snapshot, m.menu_name) AS menu_name
             FROM gifticon g
             LEFT JOIN menu m ON g.menu_id = m.id
             WHERE g.user_id = %s
@@ -740,13 +740,13 @@ def get_order_giftcards(connection, order_id: int) -> List[Dict]:
         cursor.execute('''
             SELECT 
                 g.id,
-                m.price,
+                COALESCE(g.price_snapshot, m.price, 0) AS price,
                 g.gift_code,
                 g.validity,
                 g.created_at as received_at,
                 g.used_at,
                 g.status,
-                m.menu_name,
+                COALESCE(g.menu_name_snapshot, m.menu_name) AS menu_name,
                 s.store_name,
                 s.id as store_id
             FROM gifticon g

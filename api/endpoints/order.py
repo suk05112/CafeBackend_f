@@ -193,7 +193,7 @@ def getOrderList(user_id: int, user=Depends(verify_firebase_token)):
                 s.store_name AS name,
                 o.status,
                 o.payment,
-                m.menu_name,
+                COALESCE(g.menu_name_snapshot, m.menu_name) AS menu_name,
                 g.product_type
             FROM orders o
             JOIN store s ON o.store_id = s.id
@@ -856,9 +856,10 @@ def refundGifticon(request: Request, order_id: int, body: Optional[RefundRequest
                 try:
                     cursor.execute(
                         """
-                        SELECT g.receiver_phone, g.sender, m.menu_name, g.receiver
+                        SELECT g.receiver_phone, g.sender, g.receiver,
+                               COALESCE(g.menu_name_snapshot, m.menu_name, '') AS menu_name
                         FROM gifticon g
-                        JOIN menu m ON g.menu_id = m.id
+                        LEFT JOIN menu m ON g.menu_id = m.id
                         WHERE g.id = %s
                         LIMIT 1
                         """,
