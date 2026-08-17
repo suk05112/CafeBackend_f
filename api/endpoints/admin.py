@@ -1898,21 +1898,28 @@ def get_alimtalk_logs_api(
 
 @router.post("/alimtalk/retry")
 def retry_alimtalk_api(log_ids: list[int], user=Depends(verify_firebase_token)):
-    """선택한 알림톡 로그를 즉시 재발송한다 (자동 배치와 달리 5회 재시도 상한 미적용)"""
+    """
+    선택한 알림톡 로그를 즉시 재발송한다 (자동 배치와 달리 5회 재시도 상한 미적용).
+    접수 성공(code=0, fcnt=0) 건은 REQUESTED로 표시되며, 최종 발송 결과(SENT/FAILED)는
+    자동 배치(send_pending_alimtalk)가 history/detail로 확인하여 확정한다.
+    """
     try:
         from crud import alimtalk as alimtalk_crud
         from app.aligo_service import send_alimtalk_log_row
-        from core import clock
 
         rows = alimtalk_crud.get_by_ids(log_ids)
-        result = {"requested": len(log_ids), "sent": 0, "failed": 0, "not_found": len(log_ids) - len(rows)}
+        result = {"requested_count": len(log_ids), "requested": 0, "failed": 0, "not_found": len(log_ids) - len(rows)}
         for row in rows:
             try:
                 send_result = send_alimtalk_log_row(row)
-                if send_result.get("code") == 0:
-                    aligo_mid = send_result.get("info", {}).get("mid")
-                    alimtalk_crud.mark_sent(row["id"], aligo_mid, clock.now())
-                    result["sent"] += 1
+                info = send_result.get("info", {}) or {}
+                fcnt = int(info.get("fcnt") or 0)
+                if send_result.get("code") == 0 and fcnt == 0:
+                    alimtalk_crud.mark_requested(row["id"], info.get("mid"))
+                    result["requested"] += 1
+                elif send_result.get("code") == 0:
+                    alimtalk_crud.mark_failed(row["id"], f"수신자 접수 실패 (fcnt={fcnt})")
+                    result["failed"] += 1
                 else:
                     alimtalk_crud.mark_failed(row["id"], str(send_result.get("message")))
                     result["failed"] += 1

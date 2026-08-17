@@ -10,7 +10,7 @@ from core import clock
 from core.config import settings
 from db.session import get_db_connection, close_db_connection
 from app.system_logger import log_scheduler_error
-from app.aligo_service import send_gift_auto_refund_to_sender, send_gift_auto_refund_to_receiver, send_alimtalk_log_row
+from app.aligo_service import send_gift_auto_refund_to_sender, send_gift_auto_refund_to_receiver, send_alimtalk_log_row, get_history_detail
 from crud import alimtalk as alimtalk_crud
 from scripts.aggregate_daily_platform_stats import aggregate_one_day, upsert_stats, get_base_fee_rate
 
@@ -353,7 +353,6 @@ def auto_refund_unregistered_gifts():
                         send_gift_auto_refund_to_receiver(
                             receiver=row["receiver_phone"],
                             menu=menu_name,
-                            refund_amount=f"{amount:,}",
                             recvname=row.get("receiver", ""),
                         )
                     except Exception as e:
@@ -481,14 +480,17 @@ def generate_weekly_settlements():
 
 def send_pending_alimtalk():
     """
-    alimtalk_log에서 PENDING + 재시도 가능한 FAILED(retry_count < 5) 건을 조회하여
-    실제 알리고 발송을 수행하고 상태를 갱신한다.
+    1) alimtalk_log에서 PENDING 건을 조회해 알리고 발송을 요청한다.
+       접수 성공(code=0, fcnt=0)이면 REQUESTED로 표시한다 (최종 발송 성공 아님).
+    2) REQUESTED 건을 history/detail로 조회해 최종 결과(rslt)를 확인, SENT/FAILED로 확정한다.
+       아직 결과가 나오지 않았으면 REQUESTED로 남겨두고 다음 배치에서 재확인한다.
+    FAILED는 자동 재시도하지 않는다 — 관리자가 /admin/alimtalk/retry로 수동 재발송한다.
     MySQL GET_LOCK으로 다중 인스턴스 중복 실행 방지.
     """
     connection = get_db_connection()
     lock_cursor = connection.cursor(pymysql.cursors.Cursor)
     lock_acquired = False
-    result = {"processed": 0, "sent": 0, "failed": 0}
+    result = {"processed": 0, "sent": 0, "failed": 0, "requested": 0}
 
     try:
         lock_acquired = _acquire_lock(lock_cursor, "send_pending_alimtalk")
@@ -496,29 +498,57 @@ def send_pending_alimtalk():
             result["skipped"] = "lock"
             return result
 
-        rows = alimtalk_crud.get_pending_and_retryable(limit=100)
-        if not rows:
-            return result
-
-        result["processed"] = len(rows)
-        logger.info(f"[scheduler] send_pending_alimtalk: {len(rows)}건 대상")
-
-        for row in rows:
+        # 1) PENDING 건 발송 요청
+        pending_rows = alimtalk_crud.get_pending(limit=100)
+        for row in pending_rows:
             log_id = row["id"]
             try:
                 send_result = send_alimtalk_log_row(row)
-                if send_result.get("code") == 0:
-                    aligo_mid = send_result.get("info", {}).get("mid")
-                    alimtalk_crud.mark_sent(log_id, aligo_mid, clock.now())
-                    result["sent"] += 1
+                info = send_result.get("info", {}) or {}
+                fcnt = int(info.get("fcnt") or 0)
+                if send_result.get("code") == 0 and fcnt == 0:
+                    alimtalk_crud.mark_requested(log_id, info.get("mid"))
+                    result["requested"] += 1
+                elif send_result.get("code") == 0:
+                    alimtalk_crud.mark_failed(log_id, f"수신자 접수 실패 (fcnt={fcnt})")
+                    result["failed"] += 1
                 else:
                     alimtalk_crud.mark_failed(log_id, str(send_result.get("message")))
                     result["failed"] += 1
             except Exception as e:
                 alimtalk_crud.mark_failed(log_id, str(e))
                 result["failed"] += 1
-                logger.error(f"[scheduler] send_pending_alimtalk id={log_id} 실패: {e}")
+                logger.error(f"[scheduler] send_pending_alimtalk 발송 id={log_id} 실패: {e}")
                 log_scheduler_error("send_pending_alimtalk", e)
+
+        # 2) REQUESTED 건 최종 결과 확인
+        requested_rows = alimtalk_crud.get_requested_for_confirm(limit=100)
+        for row in requested_rows:
+            log_id = row["id"]
+            mid = row.get("aligo_mid")
+            if not mid:
+                alimtalk_crud.mark_failed(log_id, "aligo_mid 없음 (확인 불가)")
+                result["failed"] += 1
+                continue
+            try:
+                detail = get_history_detail(mid)
+                items = detail.get("list") or []
+                if detail.get("code") != 0 or not items:
+                    continue  # 아직 결과 미확정 — 다음 배치에서 재확인
+                rslt = items[0].get("rslt")
+                if rslt == "U":
+                    alimtalk_crud.mark_failed(log_id, items[0].get("rslt_message") or "발송 실패")
+                    result["failed"] += 1
+                else:
+                    alimtalk_crud.mark_sent(log_id, mid, clock.now())
+                    result["sent"] += 1
+            except Exception as e:
+                logger.error(f"[scheduler] send_pending_alimtalk 결과확인 id={log_id}: {e}")
+                log_scheduler_error("send_pending_alimtalk", e)
+
+        result["processed"] = len(pending_rows) + len(requested_rows)
+        if result["processed"]:
+            logger.info(f"[scheduler] send_pending_alimtalk: {result}")
 
     except Exception as e:
         logger.error(f"[scheduler] send_pending_alimtalk 오류: {e}")

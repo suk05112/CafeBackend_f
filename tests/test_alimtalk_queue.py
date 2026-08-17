@@ -97,25 +97,26 @@ def test_enqueue_creates_pending_row():
         assert row["retry_count"] == 0
         assert row["tpl_code"] == "UJ_1609"
         assert row["category"] == "GIFT_CANCEL"
+        assert row["emtitle"] == "주문취소 안내", f"emtitle: {row['emtitle']}"
     finally:
         teardown_log(log_id)
 
 
-# ── T02: 배치가 PENDING 건을 성공 발송 → SENT ────────────────────────────────
-def test_batch_sends_pending_success():
+# ── T02: 배치가 PENDING 건을 접수 성공 → REQUESTED (최종 발송 성공 아님) ────
+def test_batch_sends_pending_to_requested():
     log_id = insert_log(status="PENDING")
     try:
-        with patch("core.scheduler.send_alimtalk_log_row", return_value={"code": 0, "info": {"mid": "test-mid-1"}}):
+        with patch("core.scheduler.send_alimtalk_log_row", return_value={"code": 0, "info": {"mid": "test-mid-1", "fcnt": 0}}), \
+             patch("core.scheduler.get_history_detail", return_value={"code": 0, "list": []}):
             send_pending_alimtalk()
         row = fetch_log(log_id)
-        assert row["status"] == "SENT", f"상태: {row['status']}"
+        assert row["status"] == "REQUESTED", f"상태: {row['status']}"
         assert row["aligo_mid"] == "test-mid-1"
-        assert row["sent_at"] is not None
     finally:
         teardown_log(log_id)
 
 
-# ── T03: 배치가 실패 시 FAILED + retry_count 증가 ────────────────────────────
+# ── T03: 배치가 발송 요청 자체 실패 시 FAILED + retry_count 증가 ─────────────
 def test_batch_marks_failed_and_increments_retry_count():
     log_id = insert_log(status="PENDING")
     try:
@@ -129,55 +130,100 @@ def test_batch_marks_failed_and_increments_retry_count():
         teardown_log(log_id)
 
 
-# ── T04: 상한 미만 FAILED 건은 배치 재시도 대상에 포함 ───────────────────────
-def test_batch_retries_failed_under_cap():
-    log_id = insert_log(status="FAILED", retry_count=3)
-    try:
-        with patch("core.scheduler.send_alimtalk_log_row", return_value={"code": 0, "info": {"mid": "retry-ok"}}):
-            send_pending_alimtalk()
-        row = fetch_log(log_id)
-        assert row["status"] == "SENT", f"상태: {row['status']}"
-    finally:
-        teardown_log(log_id)
-
-
-# ── T05: 상한(5회) 도달한 FAILED 건은 자동 배치 대상에서 제외 ────────────────
-def test_batch_excludes_failed_at_cap():
-    log_id = insert_log(status="FAILED", retry_count=5)
+# ── T04: FAILED 건은 자동 배치가 건드리지 않는다 (수동 재시도만) ────────────
+def test_batch_never_touches_failed():
+    log_id = insert_log(status="FAILED", retry_count=1)
     try:
         with patch("core.scheduler.send_alimtalk_log_row") as mock_send:
             send_pending_alimtalk()
+        mock_send.assert_not_called()
         row = fetch_log(log_id)
         assert row["status"] == "FAILED", f"상태 유지되어야 함: {row['status']}"
-        assert row["retry_count"] == 5, "retry_count 변화 없어야 함"
-        # 이 row에 대해 호출되지 않았는지는 상태 불변으로 간접 확인 (다른 PENDING 건과 공유 호출일 수 있어 row 단위로 검증)
+        assert row["retry_count"] == 1, "retry_count 변화 없어야 함"
     finally:
         teardown_log(log_id)
 
 
-# ── T06: 관리자 수동 재발송은 상한(5회) 무시 ─────────────────────────────────
+# ── T05: REQUESTED 건은 history/detail의 rslt='U'면 FAILED로 확정 ───────────
+def test_requested_confirmed_failed_on_rslt_u():
+    log_id = insert_log(status="REQUESTED")
+    conn = new_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE alimtalk_log SET aligo_mid=%s WHERE id=%s", ("mid-fail", log_id))
+    conn.commit()
+    conn.close()
+    try:
+        with patch("core.scheduler.get_history_detail", return_value={
+            "code": 0, "list": [{"rslt": "U", "rslt_message": "메시지가 템플릿과 일치하지않음"}]
+        }):
+            send_pending_alimtalk()
+        row = fetch_log(log_id)
+        assert row["status"] == "FAILED", f"상태: {row['status']}"
+        assert row["fail_reason"] == "메시지가 템플릿과 일치하지않음"
+    finally:
+        teardown_log(log_id)
+
+
+# ── T06: REQUESTED 건은 history/detail의 rslt가 실패가 아니면 SENT로 확정 ───
+def test_requested_confirmed_sent():
+    log_id = insert_log(status="REQUESTED")
+    conn = new_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE alimtalk_log SET aligo_mid=%s WHERE id=%s", ("mid-ok", log_id))
+    conn.commit()
+    conn.close()
+    try:
+        with patch("core.scheduler.get_history_detail", return_value={
+            "code": 0, "list": [{"rslt": "3"}]
+        }):
+            send_pending_alimtalk()
+        row = fetch_log(log_id)
+        assert row["status"] == "SENT", f"상태: {row['status']}"
+        assert row["sent_at"] is not None
+    finally:
+        teardown_log(log_id)
+
+
+# ── T07: REQUESTED 건은 결과 미확정이면 그대로 REQUESTED 유지 ───────────────
+def test_requested_stays_when_result_unconfirmed():
+    log_id = insert_log(status="REQUESTED")
+    conn = new_conn()
+    cur = conn.cursor()
+    cur.execute("UPDATE alimtalk_log SET aligo_mid=%s WHERE id=%s", ("mid-pending", log_id))
+    conn.commit()
+    conn.close()
+    try:
+        with patch("core.scheduler.get_history_detail", return_value={"code": 0, "list": []}):
+            send_pending_alimtalk()
+        row = fetch_log(log_id)
+        assert row["status"] == "REQUESTED", f"상태 유지되어야 함: {row['status']}"
+    finally:
+        teardown_log(log_id)
+
+
+# ── T08: 관리자 수동 재발송은 상한(5회) 무시하고 REQUESTED로 표시 ───────────
 def test_manual_retry_ignores_cap():
     """
     admin.py의 retry_alimtalk_api()가 하는 것과 동일한 흐름을 재현:
-    get_by_ids()는 재시도 상한과 무관하게 조회하고, 즉시 발송 후 결과를 기록한다.
+    get_by_ids()는 재시도 상한과 무관하게 조회하고, 접수 성공 시 REQUESTED로 표시한다.
     """
     log_id = insert_log(status="FAILED", retry_count=5)
     try:
         rows = alimtalk_crud.get_by_ids([log_id])
         assert len(rows) == 1, "상한과 무관하게 조회되어야 함"
 
-        with patch("app.aligo_service.send_alimtalk_log_row", return_value={"code": 0, "info": {"mid": "manual-ok"}}) as mock_dispatch:
+        with patch("app.aligo_service.send_alimtalk_log_row", return_value={"code": 0, "info": {"mid": "manual-ok", "fcnt": 0}}) as mock_dispatch:
             send_result = mock_dispatch(rows[0])
         assert send_result.get("code") == 0
-        alimtalk_crud.mark_sent(log_id, "manual-ok", clock.now())
+        alimtalk_crud.mark_requested(log_id, "manual-ok")
         row = fetch_log(log_id)
-        assert row["status"] == "SENT"
+        assert row["status"] == "REQUESTED"
         assert row["retry_count"] == 5, "수동 재발송 성공 시 retry_count는 그대로 유지"
     finally:
         teardown_log(log_id)
 
 
-# ── T07: 상태 필터 + 페이지네이션 ────────────────────────────────────────────
+# ── T09: 상태 필터 + 페이지네이션 ────────────────────────────────────────────
 def test_get_log_list_filters_and_paginates():
     id1 = insert_log(status="PENDING", receiver_phone="01011110001")
     id2 = insert_log(status="FAILED", receiver_phone="01011110002")
@@ -196,7 +242,7 @@ def test_get_log_list_filters_and_paginates():
         teardown_log(id3)
 
 
-# ── T08: ENV=test 환경에서 5분→1분 interval 등록 확인 ────────────────────────
+# ── T10: ENV=test 환경에서 5분→1분 interval 등록 확인 ────────────────────────
 def test_scheduler_interval_registration():
     os.environ["ENV"] = "test"
     try:
@@ -222,13 +268,15 @@ if __name__ == "__main__":
     print("=" * 60)
 
     run("T01: 공개 함수 호출 → PENDING row 생성", test_enqueue_creates_pending_row)
-    run("T02: 배치 발송 성공 → SENT", test_batch_sends_pending_success)
-    run("T03: 배치 발송 실패 → FAILED + retry_count 증가", test_batch_marks_failed_and_increments_retry_count)
-    run("T04: 상한 미만 FAILED → 재시도 대상 포함", test_batch_retries_failed_under_cap)
-    run("T05: 상한(5회) 도달 FAILED → 자동배치 제외", test_batch_excludes_failed_at_cap)
-    run("T06: 관리자 수동 재발송 → 상한 무시", test_manual_retry_ignores_cap)
-    run("T07: 상태 필터 + 페이지네이션", test_get_log_list_filters_and_paginates)
-    run("T08: ENV=test 1분 interval 등록 확인", test_scheduler_interval_registration)
+    run("T02: 배치 발송 접수 성공 → REQUESTED", test_batch_sends_pending_to_requested)
+    run("T03: 배치 발송 요청 실패 → FAILED + retry_count 증가", test_batch_marks_failed_and_increments_retry_count)
+    run("T04: FAILED 건은 자동 배치가 건드리지 않음", test_batch_never_touches_failed)
+    run("T05: REQUESTED → rslt=U → FAILED 확정", test_requested_confirmed_failed_on_rslt_u)
+    run("T06: REQUESTED → rslt 정상 → SENT 확정", test_requested_confirmed_sent)
+    run("T07: REQUESTED → 결과 미확정 → REQUESTED 유지", test_requested_stays_when_result_unconfirmed)
+    run("T08: 관리자 수동 재발송 → 상한 무시, REQUESTED로 표시", test_manual_retry_ignores_cap)
+    run("T09: 상태 필터 + 페이지네이션", test_get_log_list_filters_and_paginates)
+    run("T10: ENV=test 1분 interval 등록 확인", test_scheduler_interval_registration)
 
     print("=" * 60)
     passed = sum(1 for ok, _ in results if ok)

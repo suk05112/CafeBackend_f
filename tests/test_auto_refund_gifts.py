@@ -331,7 +331,6 @@ def test_alimtalk_sent_to_sender_and_receiver():
         _, receiver_kwargs = mock_receiver.call_args
         assert receiver_kwargs["receiver"] == "01000000000"
         assert receiver_kwargs["menu"] == "테스트메뉴"
-        assert receiver_kwargs["refund_amount"] == "5,000"
     finally:
         teardown_test_data(order_id, gifticon_id)
 
