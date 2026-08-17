@@ -256,12 +256,12 @@ def auto_refund_unregistered_gifts():
                 g.receiver_phone,
                 g.receiver,
                 g.sender,
-                m.menu_name,
+                COALESCE(g.menu_name_snapshot, m.menu_name, '') AS menu_name,
                 u.phone AS sender_phone,
                 r.id AS failed_refund_id
             FROM orders o
             JOIN gifticon g ON g.order_id = o.id
-            JOIN menu m ON m.id = g.menu_id
+            LEFT JOIN menu m ON m.id = g.menu_id
             LEFT JOIN user u ON u.id = o.user_id
             LEFT JOIN refund r ON r.order_id = o.id AND r.status = 'FAILED'
             WHERE o.status = 'COMPLETED'

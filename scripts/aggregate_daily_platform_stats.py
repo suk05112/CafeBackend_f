@@ -71,11 +71,11 @@ def aggregate_one_day(cursor, target: date, base_fee_rate: float) -> dict:
     """, (d, d))
     active_store_count = cursor.fetchone()[0] or 0
 
-    # 발행 수 / 발행 금액 (menu.price 기준)
+    # 발행 수 / 발행 금액 (발행 시점 스냅샷 기준)
     cursor.execute("""
-        SELECT COUNT(*), COALESCE(SUM(m.price), 0)
+        SELECT COUNT(*), COALESCE(SUM(COALESCE(g.price_snapshot, m.price, 0)), 0)
         FROM gifticon g
-        JOIN menu m ON g.menu_id = m.id
+        LEFT JOIN menu m ON g.menu_id = m.id
         WHERE DATE(g.created_at) = %s
           AND g.status NOT IN ('PENDING', 'REFUNDED', 'CANCELED')
     """, (d,))

@@ -129,7 +129,7 @@ def get_settlement_detail(settlement_id: int) -> List[Dict]:
     try:
         cursor.execute("""
             SELECT
-                m.menu_name AS name,
+                COALESCE(g.menu_name_snapshot, m.menu_name) AS name,
                 sd.sales_amount AS price,
                 g.used_at AS used_time
             FROM settlement_details sd
@@ -416,7 +416,7 @@ def get_owner_settlement_detail(settlement_id: int) -> Optional[Dict]:
 
         cursor.execute("""
             SELECT sd.id, sd.gifticon_id, sd.sales_amount, sd.fee_amount, sd.settlement_amount,
-                g.used_at, m.menu_name
+                g.used_at, COALESCE(g.menu_name_snapshot, m.menu_name) AS menu_name
             FROM settlement_details sd
             JOIN gifticon g ON sd.gifticon_id = g.id
             LEFT JOIN menu m ON g.menu_id = m.id
@@ -502,7 +502,7 @@ def _compute_preview_totals(cursor, store_id: int, cycle: Dict) -> Optional[Dict
     cursor.execute("""
         SELECT sd.id AS detail_id, sd.gifticon_id, sd.sales_amount,
                sd.fee_supply, sd.fee_vat, sd.fee_amount, sd.settlement_amount,
-               g.used_at, m.menu_name
+               g.used_at, COALESCE(g.menu_name_snapshot, m.menu_name) AS menu_name
         FROM settlement_details sd
         JOIN gifticon g ON sd.gifticon_id = g.id
         LEFT JOIN menu m ON g.menu_id = m.id
@@ -926,7 +926,7 @@ def get_settlement_detail_for_admin(settlement_id: int, detail_page: int = 1, de
                 sd.id,
                 sd.gifticon_id,
                 g.used_at,
-                m.menu_name,
+                COALESCE(g.menu_name_snapshot, m.menu_name) AS menu_name,
                 sd.sales_amount,
                 sd.fee_rate,
                 sd.fee_supply,
